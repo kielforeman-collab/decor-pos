@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4e00237b0bbfd296c2f92df4bd0510066ad7557160f2ae694b146bdf52bf1b43 # shrinks to a = Money { amount: -14959.5820, currency: Usd }, b = Money { amount: 95379.3673, currency: Usd }, qty = 23377.8223
