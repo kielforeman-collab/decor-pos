@@ -1,0 +1,22 @@
+[package]
+name = "df-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Axum REST + WebSocket API with utoipa OpenAPI 3.1 for decor-pos (Phase 0 skeleton)"
+
+[dependencies]
+axum = { workspace = true }
+df-auth = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+utoipa = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tower = { workspace = true }
