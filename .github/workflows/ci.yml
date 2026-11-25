@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  SQLX_OFFLINE: "true"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (warnings denied)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: No floating-point money
+        # Zero floating-point money (spec §8): f32/f64 must not appear in
+        # the financial crates' sources. Fails the build if it does.
+        run: |
+          if grep -rnE '\bf(32|64)\b' crates/df-domain/src crates/df-db/src crates/df-auth/src; then
+            echo "ERROR: f32/f64 found in a financial crate — money paths must use rust_decimal::Decimal"
+            exit 1
+          fi
+
+      - name: Tests (nextest)
+        run: cargo nextest run --workspace
+
+      - name: Doc tests
+        run: cargo test --workspace --doc
