@@ -1,0 +1,14 @@
+[package]
+name = "df-auth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Argon2id, WebAuthn/Passkeys, OIDC/SSO, RBAC, counter PIN/badge auth for decor-pos"
+
+[dependencies]
+argon2 = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
