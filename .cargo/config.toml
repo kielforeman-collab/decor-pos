@@ -1,0 +1,5 @@
+# sqlx is used with runtime-checked queries only in Phase 0 (no `query!`
+# macros), so the workspace builds without a live database.
+# SQLX_OFFLINE=true makes that explicit for sqlx's compile-time checks.
+[env]
+SQLX_OFFLINE = "true"
