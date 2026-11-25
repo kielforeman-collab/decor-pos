@@ -19,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0 OR MIT"
@@ -37,9 +37,13 @@ df-auth = { path = "crates/df-auth" }
 df-db = { path = "crates/df-db" }
 df-domain = { path = "crates/df-domain" }
 df-edge = { path = "crates/df-edge" }
+df-edi = { path = "crates/df-edi" }
 df-hw = { path = "crates/df-hw" }
+df-jobs = { path = "crates/df-jobs" }
 df-payments = { path = "crates/df-payments" }
+df-reports = { path = "crates/df-reports" }
 df-sync = { path = "crates/df-sync" }
+df-tinter = { path = "crates/df-tinter" }
 proptest = "1"
 rand = "0.9"
 rust_decimal = { version = "1", features = ["serde"] }
@@ -48,6 +52,7 @@ serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "sqlite", "runtime-tokio", "rust_decimal", "uuid", "chrono", "migrate", "macros", "any"] }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+toml = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
 utoipa = { version = "5", features = ["axum_extras"] }

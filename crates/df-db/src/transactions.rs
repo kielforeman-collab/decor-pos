@@ -133,6 +133,20 @@ pub async fn count_transactions_for_store(pool: &AnyPool, store_id: Uuid) -> Res
     i64_col(&row, "n")
 }
 
+/// All transactions for a store, oldest first. Callers filter by
+/// date / status in Rust (see `list_tint_jobs_for_store` for why the
+/// date filter is not SQL).
+pub async fn list_transactions_for_store(
+    pool: &AnyPool,
+    store_id: Uuid,
+) -> Result<Vec<Transaction>, DbError> {
+    let rows = sqlx::query("SELECT * FROM transactions WHERE store_id = ? ORDER BY created_at ASC")
+        .bind(uuid_str(store_id))
+        .fetch_all(pool)
+        .await?;
+    rows.iter().map(transaction_from_row).collect()
+}
+
 pub async fn set_transaction_status(pool: &AnyPool, id: Uuid, status: &str) -> Result<(), DbError> {
     sqlx::query("UPDATE transactions SET status = ? WHERE id = ?")
         .bind(status)

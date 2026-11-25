@@ -20,6 +20,10 @@ pub enum EdgeError {
     Payment(#[from] PaymentError),
     #[error("hardware error: {0}")]
     Hw(#[from] HwError),
+    #[error("tinter error: {0}")]
+    Tinter(#[from] df_tinter::TinterError),
+    #[error("report error: {0}")]
+    Report(#[from] df_reports::ReportError),
     #[error("invalid input: {0}")]
     InvalidInput(String),
     #[error("not found: {0}")]

@@ -132,6 +132,22 @@ pub async fn inventory_on_hand(
         .fold(Decimal::ZERO, |acc, delta| acc + delta))
 }
 
+/// All inventory ledger entries for a store, oldest first — the raw
+/// material for a low-stock report, which derives on-hand balances
+/// per product by summing `delta_on_hand` in Rust (see
+/// [`inventory_on_hand`]).
+pub async fn list_inventory_entries_for_store(
+    pool: &AnyPool,
+    store_id: Uuid,
+) -> Result<Vec<InventoryLedgerEntry>, DbError> {
+    let rows =
+        sqlx::query("SELECT * FROM inventory_ledger WHERE store_id = ? ORDER BY created_at ASC")
+            .bind(uuid_str(store_id))
+            .fetch_all(pool)
+            .await?;
+    rows.iter().map(inventory_entry_from_row).collect()
+}
+
 // --- till sessions ----------------------------------------------------------
 
 pub async fn insert_till_session<'e, E>(executor: E, till: &TillSession) -> Result<(), DbError>

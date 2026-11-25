@@ -6,10 +6,12 @@ is the goal; see the canonical spec at
 `../your_files/decor-fusion-pos-plan/architectural-specification.md`
 (spec §1–§9).
 
-> **Phase 1 (v0.2) is what this repo contains right now.** Offline
-> counter POS: `df-edge` + `df-sync` + `df-hw` + `df-payments` are
-> real, `df-server edge` mode serves the local POS API, and the
-> `pos-desktop` counter UI is built. See "What's real vs stub" below.
+> **Phase 2 (v0.3) is what this repo contains right now.** Paint
+> tinting is real end to end: the virtual tinter dispenses through
+> `df-edge`, `df-reports` and `df-jobs` are real, the HQ admin API
+> serves formulas/levels/reports, and `df-server reports` /
+> `df-server jobs run` retrieve them from the CLI. See "What's real
+> vs stub" below.
 
 ## Build & test
 
@@ -34,14 +36,45 @@ cargo run -p df-server -- edge --db sqlite:edge.db \
 cd apps/pos-desktop && npm install && npm run dev   # http://localhost:1420
 ```
 
-Or run the API skeleton:
+Or run the API skeleton (admin endpoints need `--db` + `--org-id`;
+without them they return 503):
 
 ```sh
-cargo run -p df-api        # http://127.0.0.1:3000/health
+cargo run -p df-api -- --db sqlite:edge.db --org-id <uuid> --store-id <uuid>
 cargo run -p df-server -- --help
 ```
 
-## What's real vs stub (Phase 1)
+Tinting + reports (edge mode serves these on the same port):
+
+```sh
+# Dispense a customer's past color against a sale line:
+curl -X POST http://127.0.0.1:8080/pos/tinting/dispense \
+  -H 'content-type: application/json' \
+  -d '{"formula_id":null,"customer_id":"<uuid>","job_id":null,"color_query":"White Dove","transaction_id":"<uuid>","line_no":1,"dispenser":null}'
+curl 'http://127.0.0.1:8080/pos/tinting/formulas?customer_id=<uuid>'
+curl http://127.0.0.1:8080/pos/tinting/colorants
+curl 'http://127.0.0.1:8080/pos/reports/daily-usage?date=2026-11-25'
+curl 'http://127.0.0.1:8080/pos/reports/low-stock?date=2026-11-25'
+
+# Same reports/jobs from the CLI (no server; the DB must exist):
+cargo run -p df-server -- reports --db sqlite:edge.db --org-id <uuid> \
+  --store-id <uuid> --kind daily-usage --currency USD
+cargo run -p df-server -- reports --db sqlite:edge.db --org-id <uuid> \
+  --store-id <uuid> --kind shortage
+cargo run -p df-server -- jobs run --db sqlite:edge.db --org-id <uuid> \
+  --store-id <uuid> --currency USD
+cargo run -p df-server -- jobs run --db sqlite:edge.db --org-id <uuid> \
+  --store-id <uuid> --job shortage-alerts --currency USD
+```
+
+`--currency` may be omitted when the database has a store row
+(`df-server edge` seeds no store row, so pass it for edge
+databases). The low-stock product half needs operator-configured
+thresholds — set them with
+`POST /pos/reports/low-stock/thresholds` on the edge, or wait for
+the Phase 3 min/max table; the colorant half always works.
+
+## What's real vs stub (Phase 2)
 
 Real, tested:
 
@@ -56,17 +89,24 @@ Real, tested:
   spec §5 tables (organizations, stores, users, products, color
   catalog, colorants, tint formulas, customers, pricing rules, AR
   ledger, transactions, inventory ledger, tills, payments, sync
-  outbox). SQLite round-trip tests pass, including file-backed
-  databases (`sqlite:edge.db` creates the file on open); the
-  PostgreSQL path is migration-embedded and compile-checked — a
-  live-Postgres round-trip test is still open (needs a running
-  PG 16+).
+  outbox) plus the Phase 2 tint tables (`tint_jobs`,
+  `colorant_levels`) and the EDI tables (`purchase_orders`,
+  `purchase_order_lines`, `edi_documents`). SQLite round-trip tests
+  pass, including file-backed databases (`sqlite:edge.db` creates
+  the file on open); the PostgreSQL path is migration-embedded and
+  compile-checked — a live-Postgres round-trip test is still open
+  (needs a running PG 16+).
 - `df-auth` — Argon2id password hashing/verification, counter PIN and
   badge-token hashing, RBAC roles/permissions. WebAuthn/Passkeys and
   OIDC are trait + stub only (return `NotImplemented`).
 - `df-api` — Axum skeleton, OpenAPI 3.1 via utoipa
   (`/api-docs/openapi.json`), working `/health`. Auth routes exist
-  and return 501.
+  and return 501. Phase 2 admin endpoints are real when the binary
+  is started with `--db` (+ `--org-id`, `--store-id`): color search,
+  tint formulas (list/search by color and by customer, create),
+  colorant levels (list, set level/threshold), reports (daily usage,
+  low stock, shortage alerts) — all backed by the `df-db` repos over
+  `AnyPool`. Without `--db` they return 503.
 - `df-sync` — UUIDv7 outbox (`Outbox`, `DeltaBatch`), `HqSink`
   trait (boxed-future form), idempotent `MemoryHq` (replays are
   no-ops, counted as duplicates), conflict resolver
@@ -81,7 +121,17 @@ Real, tested:
   real `df-payments` and `df-hw` crates (its placeholder copies
   were deleted in the integration). Sync drains the outbox to an
   `HqSink`; `df-server edge` wires an in-process `MemoryHq`, so
-  sync works out of the box in the dev path.
+  sync works out of the box in the dev path. Phase 2: hosts an
+  in-process `VirtualTinter` backed by the `colorant_levels` +
+  `tint_jobs` tables — `POST /pos/tinting/dispense` resolves a
+  formula by id or by a customer's past color, dispenses, and
+  persists the job + decrements the levels in one SQLite
+  transaction (a failed dispense decrements nothing and still
+  records a failed job); `GET /pos/tinting/formulas`,
+  `/pos/tinting/colors`, `/pos/tinting/colorants`,
+  `/pos/reports/daily-usage`, `/pos/reports/low-stock`, and
+  `POST /pos/reports/low-stock/thresholds` (operator-configured
+  product thresholds — there is no min-level table yet).
 - `df-hw` — ESC/POS receipts (`ReceiptBuilder`, 42-column, partial
   cut), ZPL can/shelf labels, HID scanner parsing (`qty*barcode`
   prefix, case multipliers), `MockPrinter` / `MockDrawer`,
@@ -94,8 +144,57 @@ Real, tested:
   (credentials from env only; live calls not implemented — returns
   `NotSupported`, no network), per-tender surcharge rules
   (`compute_surcharge`: pct + flat, capped, never negative).
-- `df-server` — `edge` mode real (local SQLite + POS HTTP/WS API,
-  mock terminal + in-process `MemoryHq`); `standalone`, `hq`,
+- `df-tinter` — `TinterPlugin` trait (sync, deterministic),
+  `VirtualTinter` simulator (exact Decimal shot math, atomic
+  failure — nothing decremented on a short or unknown colorant),
+  tint-job lifecycle (`Queued → Dispensing → Done/Failed`), color
+  search + per-customer formula history (in-memory), ZPL can
+  labels, demo seed catalog/colorants for tests. No hardware
+  bridge in this crate (file-drop/TCP/serial bridges are not
+  built); the `df-plugin-sdk` HTTP adapter is not unified with
+  this trait yet (see below).
+- `df-edi` — file-based vendor EDI: low-stock PO generation (one
+  PO per vendor, exact Decimal math), X12 850 build/parse
+  round-trip, 856/810 intake parsing, CSV intake + vendor catalog
+  import, PO/EDI-document repos. No SFTP/AS2 transport and no live
+  vendor endpoint (Phase 4).
+- `df-plugin-sdk` — plugin manifest (`plugin.toml`) + `PluginHost`
+  over HTTP (real: spawns the child, polls health, hand-rolled
+  loopback HTTP/1.1 client, tested against a real axum server) and
+  `HttpTinterPlugin` (the spec §6.2 tinter interface over
+  HTTP/JSON). gRPC and WASM transports are honest stubs
+  (`NotSupported`). **Not wired to `df-tinter`**: the SDK adapter
+  speaks HTTP/JSON and the trait is sync in-process — unifying them
+  (an adapter that presents an `HttpTinterPlugin` as a
+  `TinterPlugin`, or vice versa) is follow-up wiring, not done in
+  Phase 2. `PaymentPlugin`, `EdiVendorPlugin`, `AccountingPlugin`
+  are not implemented.
+- `df-reports` — real (JSON + plain text, all Decimal, no floats):
+  daily usage report (tints dispensed + per-color breakdown,
+  colorant consumed in fl oz + cost, sales totals from completed
+  transactions), low-stock report (products below caller-supplied
+  minimums from ledger balances + colorants at/below threshold,
+  with draft PO suggestions via `df-edi`), colorant shortage
+  alerts (standalone or as a report section). No PDF / Typst /
+  Excel output — that is Phase 3/6.
+- `df-jobs` — real scheduled job runner: named jobs with daily
+  (06:00 UTC) or manual schedules, `run_now` / `run_all` /
+  `run_due(now)` entry points (testable without wall-clock
+  waiting), a thin periodic tokio loop wrapper, and every run
+  recorded (name, `ran_at`, success/failure, summary, JSON
+  output) in the runner's in-memory history. The three Phase 2
+  daily jobs (`daily-usage`, `low-stock`, `shortage-alerts`)
+  produce their reports via `df-reports`. Run history is **not
+  persisted** — there is no `job_runs` table yet (Phase 3); it
+  lives as long as the process does. There is no daemon worker
+  yet — `df-server jobs run` is the run-once path; schedule it
+  with cron/systemd for daily runs.
+- `df-server` — `edge` mode real (local SQLite + POS HTTP/WS API
+  incl. the Phase 2 tinting/report endpoints, mock terminal +
+  in-process `MemoryHq`); `reports` mode real (prints a report as
+  JSON: `--kind daily-usage | low-stock | shortage`); `jobs run`
+  real (runs the Phase 2 daily jobs once and prints the recorded
+  runs as JSON, exit 1 if any run failed); `standalone`, `hq`,
   `worker`, `migrate` still exit 2.
 - `pos-desktop` — Tauri 2 counter POS (`apps/pos-desktop/`):
   React 19 + TypeScript + Vite frontend, complete and build-verified
@@ -113,18 +212,45 @@ Real, tested:
   `cargo run -p pos-desktop --features tauri-shell` on a machine
   with the Tauri 2 system libraries.
 
-Exit test: `crates/df-edge/tests/offline_checkout_parity.rs`
-(`offline_checkout_print_reconnect_parity`,
-`offline_return_reverses_ledger`) — offline cash sale → print →
-reconnect → HQ inventory/transaction/AR parity, replay is a no-op,
-return reverses the ledgers on the next sync.
+Exit tests:
+
+- Phase 1: `crates/df-edge/tests/offline_checkout_parity.rs`
+  (`offline_checkout_print_reconnect_parity`,
+  `offline_return_reverses_ledger`) — offline cash sale → print →
+  reconnect → HQ inventory/transaction/AR parity, replay is a no-op,
+  return reverses the ledgers on the next sync.
+- Phase 2: `crates/df-edge/tests/tint_dispense_end_to_end.rs`
+  (`tint_dispense_end_to_end`, `failed_dispense_decrements_nothing`)
+  — formula lookup by past color → virtual tinter dispenses it →
+  levels decrement by exactly the formula amounts → tint job
+  recorded against the sale line → daily usage report shows the
+  consumption → a colorant at its threshold raises a shortage
+  alert; and a short dispense 409s with nothing decremented and a
+  failed job recorded.
 
 Stubs (crate exists, `phase0_stub()`, no implementation):
 
-- `df-tinter`, `df-edi`, `df-plugin-sdk`, `df-jobs`, `df-reports` —
-  implemented in Phases 2–6.
 - `df-server` — `standalone`, `hq`, `worker`, `migrate` modes
   report "not implemented".
+
+Known gaps (stated plainly, not hidden):
+
+- Live-Postgres round-trip is untested for every crate (no PG 16+
+  in this VM); the PostgreSQL path is migration-embedded and
+  compile-checked only.
+- No product min-level table exists, so low-stock product
+  thresholds are caller-supplied (edge operator config /
+  `POST /pos/reports/low-stock/thresholds`); the HQ API and the
+  `df-server reports` low-stock path report colorants only.
+- `HttpTinterPlugin` (SDK, HTTP/JSON) is not unified with the
+  `df-tinter` trait (sync, in-process); the edge hosts only the
+  virtual tinter. No file-drop/TCP/serial hardware bridge exists.
+- A stored formula with nonzero `sub_shots` cannot be dispensed
+  in v0.3 (the domain model is ounces + shots only); it fails with
+  a clear error instead of guessing.
+- Job-run history is in-memory only; no daemon worker; the
+  `df-api` binary runs no migrations (the database must already
+  exist).
 
 ## Deferred
 
@@ -133,16 +259,30 @@ post-v1.0** (spec §9). There is no COLORx code, plugin, or protocol
 work anywhere in this repo. The generic `df-tinter` bridge (Phase 2)
 and the `TinterPlugin` trait are the integration point for later.
 
-## What's next (Phase 2, v0.3)
+## Phase 2 spec items deliberately left out
 
-`color_catalog`, `tint_formulas`, colorant COGS costing, searchable
-customer/job/room formula history, `df-tinter` generic
-watch-folder/TCP/serial bridge + virtual simulator + ZPL can-label
-templates, and the feature-flagged decorating verticals
-(`vertical_flooring`, `vertical_window_treatments`,
-`vertical_wallpaper`, `vertical_sample_loans`). Benjamin Moore
-COLORx stays deferred (spec §9) — Phase 2 ships the generic bridge
-and simulator only.
+The spec §7 Phase 2 row also names the feature-flagged decorating
+verticals — `vertical_flooring`, `vertical_window_treatments`,
+`vertical_wallpaper`, `vertical_sample_loans` — and the generic
+watch-folder/TCP/serial tinter bridge. None of those are built in
+v0.3: this phase ships the paint & tinting core (catalog, formulas,
+colorant COGS costing, customer/job formula history, virtual
+simulator + ZPL can labels, reports, daily jobs) and the file-based
+EDI that was pulled forward. The verticals and the hardware bridge
+are the remaining Phase 2 work; the feature flags for them exist in
+`df-domain` but no vertical code is behind them yet.
+
+## What's next (Phase 3, v0.4)
+
+Contractor AR (charge accounts, job sub-ledgers, credit holds,
+collections, Typst PDF monthly statements, aging & finance
+charges), back-office web UI (inventory, min/max POs — including
+the min-level table the low-stock report needs — PO receiving,
+inter-store transfers, physical counts, shelf tags, bulk matrix
+pricing), accounting CSV/IIF + QuickBooks/Xero plugin hooks, a
+`job_runs` table + daemon worker so scheduled jobs persist and run
+without cron, and the `HttpTinterPlugin` ↔ `TinterPlugin`
+unification. Benjamin Moore COLORx stays deferred (spec §9).
 
 ## License
 

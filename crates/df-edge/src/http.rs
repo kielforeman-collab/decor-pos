@@ -19,6 +19,19 @@
 //! * `POST /pos/sync/run` — syncs against the in-process [`MemoryHq`]
 //!   when one was configured with [`Edge::set_hq`](crate::edge::Edge::set_hq),
 //!   else `503` with a clear message.
+//! * `GET /pos/tinting/formulas?query=&customer_id=&job_id=` —
+//!   search stored formulas by color name/code, or a customer's
+//!   colour history (newest first; `job_id` scopes to one job)
+//! * `POST /pos/tinting/dispense` — [`DispenseTintRequest`](crate::tinting::DispenseTintRequest)
+//! * `GET /pos/tinting/colorants` — levels + shortage alerts
+//! * `GET /pos/tinting/colors?manufacturer=&query=` — color search
+//! * `GET /pos/reports/daily-usage?date=YYYY-MM-DD` — daily usage
+//!   report (defaults to today, UTC)
+//! * `GET /pos/reports/low-stock?date=YYYY-MM-DD` — low-stock
+//!   report (defaults to today, UTC)
+//! * `POST /pos/reports/low-stock/thresholds` — set the
+//!   operator-configured product thresholds the low-stock report
+//!   uses (`Vec<ProductThreshold>`)
 //! * `GET /ws/v1/store/{store_id}` — WebSocket; sends a `connected`
 //!   event, then one JSON event per completed sale/return.
 //!
@@ -28,19 +41,24 @@
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{Path, State, WebSocketUpgrade};
+use axum::extract::{Path, Query, State, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::NaiveDate;
+use df_reports::{DailyUsageReport, LowStockReport, ProductThreshold};
+use df_tinter::TinterError;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use uuid::Uuid;
 
 use crate::edge::Edge;
 use crate::error::EdgeError;
+use crate::tinting::{ColorantsResponse, DispenseTintRequest, DispenseTintResponse};
 use crate::types::{CompletedSale, PricePreview, ReturnLineInput, SaleInput, TenderInput, ZReport};
-use df_db::models::{TillSession, Transaction};
+use df_db::models::{ColorCatalogEntry, TillSession, TintFormula, Transaction};
 use df_domain::Money;
 use df_sync::{ApplyReport, SyncState};
 
@@ -102,6 +120,8 @@ fn err_response(err: EdgeError) -> (StatusCode, Json<ErrorResponse>) {
         EdgeError::Till(_) => StatusCode::CONFLICT,
         EdgeError::NoPaymentProvider(_) | EdgeError::NoHq(_) => StatusCode::SERVICE_UNAVAILABLE,
         EdgeError::Sync(_) | EdgeError::Payment(_) => StatusCode::BAD_GATEWAY,
+        EdgeError::Tinter(TinterError::InsufficientColorant { .. }) => StatusCode::CONFLICT,
+        EdgeError::Tinter(_) => StatusCode::BAD_REQUEST,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (
@@ -243,6 +263,110 @@ async fn sync_run(State(edge): State<Arc<Edge>>) -> HandlerResult<ApplyReport> {
         .map_err(err_response)
 }
 
+// --- tinting + reports (Phase 2) ------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct FormulaQuery {
+    pub query: Option<String>,
+    pub customer_id: Option<Uuid>,
+    pub job_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ColorQuery {
+    pub manufacturer: Option<String>,
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReportQuery {
+    pub date: Option<String>,
+}
+
+/// `?date=YYYY-MM-DD`, defaulting to today (UTC). A malformed date
+/// is a 400, not a silent default.
+fn report_date(query: &ReportQuery) -> Result<NaiveDate, (StatusCode, Json<ErrorResponse>)> {
+    match &query.date {
+        None => Ok(chrono::Utc::now().date_naive()),
+        Some(text) => NaiveDate::from_str(text).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("date must be YYYY-MM-DD, got {text:?}"),
+                }),
+            )
+        }),
+    }
+}
+
+async fn dispense_tint(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<DispenseTintRequest>,
+) -> HandlerResult<DispenseTintResponse> {
+    edge.dispense_tint(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_formulas(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<FormulaQuery>,
+) -> HandlerResult<Vec<TintFormula>> {
+    edge.search_tint_formulas(query.query.as_deref(), query.customer_id, query.job_id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_colors(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<ColorQuery>,
+) -> HandlerResult<Vec<ColorCatalogEntry>> {
+    let manufacturer = query.manufacturer.as_deref().unwrap_or("");
+    let q = query.query.as_deref().unwrap_or("");
+    edge.search_colors(manufacturer, q)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_colorants(State(edge): State<Arc<Edge>>) -> HandlerResult<ColorantsResponse> {
+    edge.colorant_levels().await.map(Json).map_err(err_response)
+}
+
+async fn daily_usage(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<ReportQuery>,
+) -> Result<Json<DailyUsageReport>, (StatusCode, Json<ErrorResponse>)> {
+    let date = report_date(&query)?;
+    edge.daily_usage(date).await.map(Json).map_err(err_response)
+}
+
+async fn low_stock(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<ReportQuery>,
+) -> Result<Json<LowStockReport>, (StatusCode, Json<ErrorResponse>)> {
+    let date = report_date(&query)?;
+    edge.low_stock(date).await.map(Json).map_err(err_response)
+}
+
+async fn set_thresholds(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<Vec<ProductThreshold>>,
+) -> Json<ThresholdsResponse> {
+    let count = body.len();
+    edge.set_product_thresholds(body);
+    Json(ThresholdsResponse {
+        thresholds_set: count,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThresholdsResponse {
+    pub thresholds_set: usize,
+}
+
 async fn ws_handler(
     State(edge): State<Arc<Edge>>,
     Path(store_id): Path<Uuid>,
@@ -311,6 +435,13 @@ pub fn router(edge: Edge) -> Router {
         .route("/pos/layaways", post(record_layaway))
         .route("/pos/sync/state", get(sync_state))
         .route("/pos/sync/run", post(sync_run))
+        .route("/pos/tinting/dispense", post(dispense_tint))
+        .route("/pos/tinting/formulas", get(list_formulas))
+        .route("/pos/tinting/colors", get(list_colors))
+        .route("/pos/tinting/colorants", get(list_colorants))
+        .route("/pos/reports/daily-usage", get(daily_usage))
+        .route("/pos/reports/low-stock", get(low_stock))
+        .route("/pos/reports/low-stock/thresholds", post(set_thresholds))
         .route("/ws/v1/store/{store_id}", get(ws_handler))
         .with_state(state)
 }
@@ -390,7 +521,7 @@ mod tests {
         let (status, body) = get_json(router.clone(), "/health").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ok");
-        assert_eq!(body["version"], "0.2.0");
+        assert_eq!(body["version"], "0.3.0");
 
         let (status, body) = post_json(
             router,

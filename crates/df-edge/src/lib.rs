@@ -27,6 +27,7 @@ pub mod http;
 pub mod hw;
 pub mod payments;
 pub mod pricing;
+pub mod tinting;
 pub mod types;
 
 pub use df_db::models::TillSession;
@@ -39,6 +40,10 @@ pub use hw::{
 pub use payments::{
     MockTerminal, PaymentError, PaymentProvider, PaymentRequest, PaymentResult, PaymentStatus,
     SurchargeRule, TenderKind, compute_surcharge, surcharge_rule_for,
+};
+pub use tinting::{
+    ColorantLevelView, ColorantsResponse, DispenseTintRequest, DispenseTintResponse,
+    tint_job_to_row, virtual_tinter_from_levels,
 };
 pub use types::{
     CompletedSale, EdgeConfig, PricePreview, PricePreviewLine, ReturnLineInput, SaleInput,

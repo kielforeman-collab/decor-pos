@@ -1,6 +1,8 @@
 //! Database errors.
 
+use rust_decimal::Decimal;
 use thiserror::Error;
+use uuid::Uuid;
 
 #[derive(Debug, Error)]
 pub enum DbError {
@@ -12,4 +14,13 @@ pub enum DbError {
     InvalidData(String),
     #[error("row not found: {0}")]
     NotFound(String),
+    #[error(
+        "insufficient colorant {colorant_id} at store {store_id}: need {needed} fl oz, have {on_hand} fl oz"
+    )]
+    InsufficientColorant {
+        colorant_id: Uuid,
+        store_id: Uuid,
+        needed: Decimal,
+        on_hand: Decimal,
+    },
 }

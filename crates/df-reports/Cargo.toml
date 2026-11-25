@@ -4,6 +4,18 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Phase 0 stub — df-reports is implemented in a later phase (see spec §7)"
+description = "Daily usage, low-stock and colorant shortage reports computed from df-db data (Phase 2, v0.3; spec §7)"
 
 [dependencies]
+chrono = { workspace = true }
+df-db = { workspace = true }
+df-domain = { workspace = true }
+df-edi = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

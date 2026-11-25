@@ -4,6 +4,17 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Phase 0 stub — df-plugin-sdk is implemented in a later phase (see spec §7)"
+description = "Out-of-process plugin host for decor-pos: plugin.toml manifests, real HTTP plugin processes, HttpTinterPlugin adapter (spec §6.2). gRPC and WASM transports are honest NotSupported stubs in Phase 2"
 
 [dependencies]
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }

@@ -25,6 +25,12 @@
 //! run them inside one transaction (`&mut *tx`) or standalone
 //! (`&pool`).
 //!
+//! Phase 2 adds the spec §5.3/§7 tint tables (`tint_jobs`,
+//! `colorant_levels` in migration `0003_phase2`) and the repositories
+//! in [`tint`]: color search, colorant CRUD, formula lookup by id /
+//! color / customer history, tint-job persistence, and the atomic
+//! colorant-level decrement a dispense runs.
+//!
 //! SQLite (edge) FK note: the edge schema deliberately omits FOREIGN
 //! KEY references to HQ reference data (stores, users, customers,
 //! jobs, products) — the edge must keep selling when that data has
@@ -39,6 +45,7 @@ pub mod error;
 pub mod inventory;
 pub mod models;
 pub mod repos;
+pub mod tint;
 pub mod transactions;
 
 pub use error::DbError;
@@ -46,6 +53,7 @@ pub use inventory::*;
 pub use models::*;
 pub use repos::*;
 pub use sqlx::AnyPool;
+pub use tint::*;
 pub use transactions::*;
 
 /// Which migration set to apply.

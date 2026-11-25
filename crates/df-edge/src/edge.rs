@@ -59,6 +59,8 @@ use crate::types::{
     SaleLineInput, TenderInput, ZReport,
 };
 use df_payments::SurchargeRule;
+use df_reports::ProductThreshold;
+use df_tinter::VirtualTinter;
 
 /// Re-exported so callers use one path for the till row type.
 pub use df_db::models::TillSession;
@@ -164,6 +166,13 @@ pub struct Edge {
     hq: Arc<RwLock<Option<Arc<MemoryHq>>>>,
     holds: Arc<Mutex<HashMap<Uuid, SaleInput>>>,
     events: broadcast::Sender<String>,
+    /// The hosted in-process virtual tinter (Phase 2). Its levels
+    /// are re-synced from the database on every dispense; the
+    /// database is the source of truth.
+    tinter: Arc<Mutex<VirtualTinter>>,
+    /// Operator-configured product min levels for the low-stock
+    /// report (no min-level table exists yet — see `df-reports`).
+    product_thresholds: Arc<RwLock<Vec<ProductThreshold>>>,
 }
 
 impl std::fmt::Debug for Edge {
@@ -193,6 +202,8 @@ impl Edge {
             hq: Arc::new(RwLock::new(None)),
             holds: Arc::new(Mutex::new(HashMap::new())),
             events,
+            tinter: Arc::new(Mutex::new(VirtualTinter::new("virtual-simulator"))),
+            product_thresholds: Arc::new(RwLock::new(Vec::new())),
         })
     }
 
@@ -202,6 +213,17 @@ impl Edge {
 
     pub fn pool(&self) -> &AnyPool {
         &self.pool
+    }
+
+    /// The hosted virtual tinter (shared, behind a lock).
+    pub(crate) fn tinter(&self) -> &Arc<Mutex<VirtualTinter>> {
+        &self.tinter
+    }
+
+    /// The operator-configured product thresholds for the low-stock
+    /// report (see [`crate::tinting::Edge::set_product_thresholds`]).
+    pub(crate) fn product_thresholds(&self) -> &Arc<RwLock<Vec<ProductThreshold>>> {
+        &self.product_thresholds
     }
 
     /// Subscribe to sale/return events (JSON strings) broadcast after

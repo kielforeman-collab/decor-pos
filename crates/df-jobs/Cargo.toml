@@ -4,6 +4,19 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Phase 0 stub — df-jobs is implemented in a later phase (see spec §7)"
+description = "Scheduled job runner: daily usage report, low-stock check, colorant shortage alerts (Phase 2, v0.3; spec §7)"
 
 [dependencies]
+chrono = { workspace = true }
+df-db = { workspace = true }
+df-domain = { workspace = true }
+df-reports = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

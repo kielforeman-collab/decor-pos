@@ -332,6 +332,37 @@ pub struct PaymentRow {
     pub created_at: DateTime<Utc>,
 }
 
+/// One row of `tint_jobs` (Phase 2, spec §5.3/§7). `status` is
+/// `queued` | `dispensing` | `done` | `failed`; `dispensed_json` is
+/// the exact amounts dispensed (`[{ "code": "Y3", "fl_oz": "…" }]`);
+/// `error` is set when the job failed. A tinted sale line traces to
+/// its dispense record through `transaction_id` + `line_no`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TintJobRow {
+    pub id: Uuid,
+    pub formula_id: Uuid,
+    pub transaction_id: Option<Uuid>,
+    pub line_no: Option<i32>,
+    pub status: String,
+    pub dispensed_json: serde_json::Value,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+/// One row of `colorant_levels` (Phase 2): on-hand colorant inventory
+/// for one colorant at one store, in exact fluid ounces (`Decimal` —
+/// never floats). `low_threshold_fl_oz` is the per-colorant level at
+/// or below which a shortage alert is due.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ColorantLevelRow {
+    pub colorant_id: Uuid,
+    pub store_id: Uuid,
+    pub on_hand_fl_oz: Decimal,
+    pub low_threshold_fl_oz: Decimal,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// One row of `sync_state`: the last batch HQ acknowledged for a store.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SyncStateRow {

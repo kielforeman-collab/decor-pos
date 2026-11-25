@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Phase 0 stub — df-tinter is implemented in a later phase (see spec §7)"
+description = "TinterPlugin trait, virtual tinter simulator, color lookup, formula history and ZPL can labels (Phase 2, spec §6.2/§7)"
 
 [dependencies]
+chrono = { workspace = true }
+df-domain = { workspace = true }
+df-hw = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
