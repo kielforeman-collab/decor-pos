@@ -1,0 +1,42 @@
+[package]
+name = "pos-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Tauri 2 counter POS for decor-pos: keyboard-first checkout over an in-process df-edge (Phase 1, v0.2)"
+
+[lib]
+name = "pos_desktop_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pos-desktop"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { workspace = true }
+df-db = { workspace = true }
+df-domain = { workspace = true }
+df-edge = { workspace = true }
+df-hw = { workspace = true }
+df-payments = { workspace = true }
+df-sync = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+tauri = { version = "2", optional = true }
+
+[build-dependencies]
+tauri-build = { version = "2", optional = true }
+
+[features]
+default = []
+# The native Tauri shell. Needs the Tauri 2 system libraries
+# (webkit2gtk, libsoup, GTK) — see apps/pos-desktop/README.md.
+# Without it the crate still compiles as a plain library + binary
+# (the binary prints the dev-path instructions and exits).
+tauri-shell = ["dep:tauri", "dep:tauri-build"]

@@ -4,6 +4,15 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Phase 0 stub — df-payments is implemented in a later phase (see spec §7)"
+description = "Payments for decor-pos: PaymentProvider trait, surcharge rules, standalone and Stripe Terminal modes, mock terminal"
 
 [dependencies]
+chrono = { workspace = true }
+df-domain = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

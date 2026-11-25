@@ -225,3 +225,118 @@ pub struct ArLedgerEntry {
     pub statement_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
+
+// --- Phase 1 models (spec §5.5) --------------------------------------------
+
+/// One row of `transactions` (spec §5.5). Money is `Decimal` at scale 4;
+/// `doc_type` is `sale` | `return` | `quote` | `order` | `layaway`,
+/// `status` is `open` | `parked` | `completed` | `voided`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Transaction {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub store_id: Uuid,
+    pub till_session_id: Option<Uuid>,
+    pub doc_number: String,
+    pub doc_type: String,
+    pub status: String,
+    pub customer_id: Option<Uuid>,
+    pub job_id: Option<Uuid>,
+    pub po_number: Option<String>,
+    pub salesperson_id: Option<Uuid>,
+    pub cashier_id: Option<Uuid>,
+    pub currency: String,
+    pub subtotal: Decimal,
+    pub tax_total: Decimal,
+    pub eco_fee_total: Decimal,
+    pub pos_fee_total: Decimal,
+    pub grand_total: Decimal,
+    pub deposit_paid: Decimal,
+    pub fulfillment_mode: String,
+    pub scheduled_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One row of `transaction_lines` (spec §5.5). `qty` is negative on
+/// return lines; `line_total` is the signed extended total.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TransactionLine {
+    pub id: Uuid,
+    pub transaction_id: Uuid,
+    pub line_no: i32,
+    pub product_id: Uuid,
+    pub description: String,
+    pub qty: Decimal,
+    pub uom_code: String,
+    pub unit_price: Decimal,
+    pub base_unit_cost: Decimal,
+    pub tint_unit_cost: Decimal,
+    pub discount_amount: Decimal,
+    pub tax_amount: Decimal,
+    pub eco_fee_amount: Decimal,
+    pub line_total: Decimal,
+    pub tint_formula_id: Option<Uuid>,
+    pub prompts_json: serde_json::Value,
+    pub vertical_spec_json: serde_json::Value,
+    pub linked_po_line_id: Option<Uuid>,
+    pub fulfilled_qty: Decimal,
+}
+
+/// One append-only row of `inventory_ledger` (spec §5.5). Balances are
+/// derived by summing `delta_on_hand` per product — never stored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InventoryLedgerEntry {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub store_id: Uuid,
+    pub product_id: Uuid,
+    pub lot_number: Option<String>,
+    pub delta_on_hand: Decimal,
+    pub delta_committed: Decimal,
+    pub delta_on_order: Decimal,
+    pub delta_in_transit: Decimal,
+    pub unit_cost: Decimal,
+    pub reason_type: String,
+    pub reference_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One row of `till_sessions`. `status` is `open` | `closed`;
+/// `closed_at`, `counted_cash` and `expected_cash` are set on close.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TillSession {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub store_id: Uuid,
+    pub cashier_id: Uuid,
+    pub opened_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub opening_float: Decimal,
+    pub counted_cash: Option<Decimal>,
+    pub expected_cash: Option<Decimal>,
+    pub status: String,
+}
+
+/// One row of `payments`. No card number / PAN / CVV columns exist
+/// anywhere in this schema (spec §8 guardrail 3): only the tender, the
+/// amount actually collected, a reference and the authorization token.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaymentRow {
+    pub id: Uuid,
+    pub transaction_id: Uuid,
+    pub tender: String,
+    pub amount: Decimal,
+    pub reference: String,
+    pub authorization: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One row of `sync_state`: the last batch HQ acknowledged for a store.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncStateRow {
+    pub store_id: Uuid,
+    pub last_batch_id: Option<Uuid>,
+    pub last_synced_at: Option<DateTime<Utc>>,
+    pub pending_count: i64,
+}

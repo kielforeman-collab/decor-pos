@@ -4,10 +4,15 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Unified df-server CLI binary (standalone, hq, edge, worker, migrate) — Phase 0 stub"
+description = "Unified df-server CLI binary (standalone, hq, edge, worker, migrate) — edge mode live in Phase 1 (v0.2)"
 
 [dependencies]
 clap = { workspace = true }
+df-domain = { workspace = true }
+df-edge = { workspace = true }
+df-sync = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
 
 [[bin]]
 name = "df-server"

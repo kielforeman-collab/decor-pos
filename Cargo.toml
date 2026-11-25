@@ -15,10 +15,11 @@ members = [
     "crates/df-jobs",
     "crates/df-reports",
     "crates/df-server",
+    "apps/pos-desktop/src-tauri",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0 OR MIT"
@@ -29,12 +30,16 @@ homepage = "https://example.invalid/decor-pos"
 [workspace.dependencies]
 anyhow = "1"
 argon2 = "0.5"
-axum = { version = "0.8", features = ["json", "macros"] }
+axum = { version = "0.8", features = ["json", "macros", "ws"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4", features = ["derive"] }
 df-auth = { path = "crates/df-auth" }
 df-db = { path = "crates/df-db" }
 df-domain = { path = "crates/df-domain" }
+df-edge = { path = "crates/df-edge" }
+df-hw = { path = "crates/df-hw" }
+df-payments = { path = "crates/df-payments" }
+df-sync = { path = "crates/df-sync" }
 proptest = "1"
 rand = "0.9"
 rust_decimal = { version = "1", features = ["serde"] }

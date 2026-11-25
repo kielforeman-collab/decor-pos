@@ -11,7 +11,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await
         .expect("bind 127.0.0.1:3000");
-    println!("df-api 0.1.0 listening on http://127.0.0.1:3000");
+    println!("df-api 0.2.0 listening on http://127.0.0.1:3000");
     println!("OpenAPI: http://127.0.0.1:3000/api-docs/openapi.json");
     axum::serve(listener, router).await.expect("serve df-api");
 }

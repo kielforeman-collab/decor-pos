@@ -408,6 +408,15 @@ pub async fn get_store_by_code(pool: &AnyPool, org_id: Uuid, code: &str) -> Resu
     store_from_row(&row)
 }
 
+pub async fn get_store(pool: &AnyPool, id: Uuid) -> Result<Store, DbError> {
+    let row = sqlx::query("SELECT * FROM stores WHERE id = ?")
+        .bind(uuid_str(id))
+        .fetch_one(pool)
+        .await
+        .map_err(not_found(&format!("store {id}")))?;
+    store_from_row(&row)
+}
+
 // --- users ----------------------------------------------------------------
 
 pub async fn insert_user(pool: &AnyPool, user: &UserRow) -> Result<(), DbError> {
@@ -482,6 +491,15 @@ pub async fn get_product_by_sku(
         .fetch_one(pool)
         .await
         .map_err(not_found(&format!("product {sku}")))?;
+    product_from_row(&row)
+}
+
+pub async fn get_product(pool: &AnyPool, id: Uuid) -> Result<Product, DbError> {
+    let row = sqlx::query("SELECT * FROM products WHERE id = ?")
+        .bind(uuid_str(id))
+        .fetch_one(pool)
+        .await
+        .map_err(not_found(&format!("product {id}")))?;
     product_from_row(&row)
 }
 

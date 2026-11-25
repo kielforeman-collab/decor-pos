@@ -1,4 +1,4 @@
-//! `df-db` — sqlx repositories & migrations (Phase 0, v0.1).
+//! `df-db` — sqlx repositories & migrations (Phase 1, v0.2).
 //!
 //! Two dialects, one repository implementation:
 //!
@@ -16,15 +16,37 @@
 //! path is migration-embedded and compile-checked; a live-Postgres
 //! round-trip test is a Phase 1 item (needs a running PG 16+).
 //! See `repos.rs` for why ids/money/timestamps cross the driver as text.
+//!
+//! Phase 1 adds the spec §5.5 tables (`transactions`,
+//! `transaction_lines`, `inventory_ledger`, `till_sessions`,
+//! `payments`, `sync_outbox`, `sync_state`) in migration `0002_phase1`
+//! and the repositories in [`transactions`] and [`inventory`]. Write
+//! functions there are generic over any sqlx executor, so a caller can
+//! run them inside one transaction (`&mut *tx`) or standalone
+//! (`&pool`).
+//!
+//! SQLite (edge) FK note: the edge schema deliberately omits FOREIGN
+//! KEY references to HQ reference data (stores, users, customers,
+//! jobs, products) — the edge must keep selling when that data has
+//! not synced down yet (sqlx enables SQLite FK enforcement by
+//! default, so a reference would block the sale). PostgreSQL (HQ)
+//! enforces the full FK graph from spec §5. Edge-owned chains
+//! (`transaction_lines` / `payments` → `transactions`) are still
+//! enforced in SQLite.
 
+pub mod codec;
 pub mod error;
+pub mod inventory;
 pub mod models;
 pub mod repos;
+pub mod transactions;
 
 pub use error::DbError;
+pub use inventory::*;
 pub use models::*;
 pub use repos::*;
 pub use sqlx::AnyPool;
+pub use transactions::*;
 
 /// Which migration set to apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +70,19 @@ pub async fn connect(url: &str) -> Result<AnyPool, DbError> {
     if url.contains(":memory:") {
         options = options.max_connections(1);
     }
+    // sqlx's SQLite driver opens an existing file but does not create
+    // a missing one unless `mode=rwc` is set — so a fresh
+    // `sqlite:edge.db` (the form `df-server edge --help` documents)
+    // failed with "unable to open database file". Append the mode for
+    // file URLs that do not already set one.
+    let owned;
+    let url = if url.starts_with("sqlite:") && !url.contains(":memory:") && !url.contains("mode=") {
+        let sep = if url.contains('?') { '&' } else { '?' };
+        owned = format!("{url}{sep}mode=rwc");
+        &owned
+    } else {
+        url
+    };
     Ok(options.connect(url).await?)
 }
 
