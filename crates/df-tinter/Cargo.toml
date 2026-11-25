@@ -1,0 +1,9 @@
+[package]
+name = "df-tinter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Phase 0 stub — df-tinter is implemented in a later phase (see spec §7)"
+
+[dependencies]
