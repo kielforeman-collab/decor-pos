@@ -18,6 +18,7 @@ df-domain = { workspace = true }
 df-edi = { workspace = true }
 df-hw = { workspace = true }
 df-payments = { workspace = true }
+df-portal = { workspace = true }
 df-reports = { workspace = true }
 df-sync = { workspace = true }
 df-tinter = { workspace = true }

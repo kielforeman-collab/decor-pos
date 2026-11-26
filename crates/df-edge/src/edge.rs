@@ -255,7 +255,7 @@ impl Edge {
         self.printer.read().expect("printer lock").clone()
     }
 
-    fn default_provider(&self) -> Option<Arc<dyn PaymentProvider>> {
+    pub(crate) fn default_provider(&self) -> Option<Arc<dyn PaymentProvider>> {
         self.provider.read().expect("provider lock").clone()
     }
 

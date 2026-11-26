@@ -9,6 +9,8 @@
 //! checkout time from `df-domain` math and the append-only ledgers
 //! (`inventory_ledger`, `ar_ledger`) carry the audit trail.
 
+use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use sqlx::{AnyPool, Executor};
 use uuid::Uuid;
 
@@ -147,11 +149,59 @@ pub async fn list_transactions_for_store(
     rows.iter().map(transaction_from_row).collect()
 }
 
+pub async fn list_transactions_for_customer(
+    pool: &AnyPool,
+    customer_id: Uuid,
+) -> Result<Vec<Transaction>, DbError> {
+    let rows =
+        sqlx::query("SELECT * FROM transactions WHERE customer_id = ? ORDER BY created_at DESC")
+            .bind(uuid_str(customer_id))
+            .fetch_all(pool)
+            .await?;
+    rows.iter().map(transaction_from_row).collect()
+}
+
 pub async fn set_transaction_status(pool: &AnyPool, id: Uuid, status: &str) -> Result<(), DbError> {
     sqlx::query("UPDATE transactions SET status = ? WHERE id = ?")
         .bind(status)
         .bind(uuid_str(id))
         .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Mark a transaction completed (status + completion timestamp),
+/// e.g. a BOPIS pickup collected at the counter.
+pub async fn complete_transaction<'e, E>(
+    executor: E,
+    id: Uuid,
+    completed_at: DateTime<Utc>,
+) -> Result<(), DbError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
+{
+    sqlx::query("UPDATE transactions SET status = 'completed', completed_at = ? WHERE id = ?")
+        .bind(dt_str(completed_at))
+        .bind(uuid_str(id))
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+/// Set a transaction line's fulfilled quantity (BOPIS pickup
+/// completion marks each line fully fulfilled).
+pub async fn set_transaction_line_fulfilled<'e, E>(
+    executor: E,
+    line_id: Uuid,
+    fulfilled_qty: Decimal,
+) -> Result<(), DbError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
+{
+    sqlx::query("UPDATE transaction_lines SET fulfilled_qty = ? WHERE id = ?")
+        .bind(dec_str(fulfilled_qty))
+        .bind(uuid_str(line_id))
+        .execute(executor)
         .await?;
     Ok(())
 }

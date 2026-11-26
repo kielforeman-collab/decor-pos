@@ -30,6 +30,8 @@ pub enum EdgeError {
     Crm(#[from] df_crm::CrmError),
     #[error("delivery error: {0}")]
     Delivery(#[from] df_delivery::DeliveryError),
+    #[error("portal error: {0}")]
+    Portal(#[from] df_portal::PortalError),
     #[error("invalid input: {0}")]
     InvalidInput(String),
     #[error("credit blocked: {0}")]

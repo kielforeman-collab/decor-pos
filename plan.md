@@ -121,21 +121,30 @@ only its own section, ticking items as they are verified — not when code merel
 - SFTP is a local stand-in only (no SSH/remote/delivery confirmation); AS2 has no network/crypto; POD is bytes+hash over JSON, no camera hardware, no photo stored; ack application is a report, PO untouched; 832 mark-applied records review only, no repricing; lapsed report is edge-only (no df-api read); activity-filter endpoint parses leniently, so running it on a customer-dialect view matches every activity — use the customer endpoint for customer views; PG round-trip still untested.
 - Fixes folded in during verification: df-api version strings 0.4.0 → 0.5.0 (health test), df-edge re-exports/signatures aligned to the sibling crates (old 4-arg `assign_delivery` removed, 7-arg state-machine version kept), `Serialize` added to df-edi row types, df-server `run_edi_intake` refactored behind an `EdiCtx` struct (clippy too-many-arguments).
 
-## Phase 5 — Mobile PWA/Tauri & Contractor Portal (v0.6) — ⬜ NOT STARTED
+## Phase 5 — Mobile PWA/Tauri & Contractor Portal (v0.6) — ✅ DONE Nov 26, 2026
 ### Scope
-- ⬜ `mobile-pwa` — unified offline-first app + Tauri 2 Mobile wrapper
-- ⬜ Warehouse — PO receive, counts, transfers
-- ⬜ Outside Sales — KPIs, CRM, quotes
-- ⬜ Delivery Driver — POD flow
-- ⬜ `web-portal` — 24/7 Contractor Portal: invoices, statements, formula reorders, US/CA online bill pay
-- ⬜ Retail BOPIS storefront
+- ✅ `df-portal` (new crate, pure domain) — portal access (`portal_enabled` gate), bill-pay intent validation, formula-reorder requests, BOPIS order validation, mobile KPIs view
+- ✅ Migration `0010_phase5` — `portal_payments` (idempotency-keyed bill payments, provider reference only, no PAN/CVV) + `bopis_orders` (guest pickup contact) (both dialects)
+- ✅ `df-edge` portal wiring — portal customer/invoices/statements/formulas/payments, formula reorder (priced via matrix path, line linked to formula), bill pay (mock-provider authorize → FIFO AR post, idempotent replay), catalog, BOPIS order + pickup completion, mobile KPIs
+- ✅ `mobile-pwa` — React 19 + TS + Vite on :1422, offline-first (hand-rolled SW + manifest, localStorage outbox + manual Sync), Tauri 2 Mobile wrapper files (`src-tauri/tauri.conf.json`, unverified — no Android SDK in VM)
+- ✅ Warehouse — PO receive, counts, transfers (all real edge API)
+- ✅ Outside Sales — KPIs, CRM, quotes (all real edge API)
+- ✅ Delivery Driver — POD flow (canvas signature + photo file → SHA-256; server gates on both)
+- ✅ `web-portal` — React 19 + TS + Vite on :1423, 24/7 Contractor Portal: overview, invoices, statements, formula reorders, US/CA online bill pay (mock provider)
+- ✅ Retail BOPIS storefront — React 19 + TS + Vite on :1424: public catalog, cart, mock checkout, order status + counter pickup completion
+- ✅ Demo seed `apps/phase5-seed-demo.sql` — portal contractor C-PORTAL (700.00 open), formula OC-17 White Dove, 10 gal on hand
 ### Exit test
-- ⬜ Contractor online formula reorder + statement payment auto-applied to AR
+- ✅ Contractor online formula reorder + statement payment auto-applied to AR — Rust exit test `phase5_portal_exit` + my own live HTTP re-verification: reorder TX-000001 (2 gal, grand 216.1088) → bill pay 150.00 card (mock_1, FIFO to oldest 400.00 charge) → balance 700.00 → 550.00 exactly, replay returns same entry, statement closing 550.00; BOPIS order TX-000002 → pickup completed, on-hand 10 → 8, committed 0
 ### Verification
-- ⬜ `cargo test --workspace` — count TBD
-- ⬜ clippy clean, fmt clean, frontend builds clean
+- ✅ `cargo test --workspace` — 328/328 passing (Phase 4 was 327; Phase 5 added 1 exit test)
+- ✅ clippy clean, fmt clean
+- ✅ Frontend `npm run build` clean — mobile-pwa (255 kB JS), web-portal (237 kB), web-storefront (236 kB)
+- ✅ Live HTTP verification by me from a clean seeded edge: portal reorder + bill pay + replay + BOPIS order/pickup + KPIs (open_orders 2, AR 550.00)
 ### GitHub
-- ⬜ Push via connector in one commit once verified
+- ⬜ NOT pushed yet (local only; main still at `65e96f0`) — push via connector in one commit once Kiel asks
+### Known limits
+- PG round-trip still untested; bill pay has no surcharge in v0.6; portal has no separate login (customer id is the scope — anyone with the id can view that contractor's portal); mobile KPIs use the UTC calendar day (store-local day is a follow-up); BOPIS pickup completion is not idempotent (a double-complete is refused as already-completed, but the mobile outbox replay of POD/counts/PO-receives can double-apply — only portal bill-pay is idempotent); POD stores photo ref + hash only, no photo bytes, no upload endpoint; Tauri Mobile wrapper unverified (no Android SDK in VM); statements tab is empty until a month-end run exists; API-shape notes: Money currency serializes as `"Usd"`/`"Cad"` (not `"USD"`), reorder fulfillment over HTTP is `"Pickup"`/`"Delivery"` (variant names), statements return raw decimal strings (not Money objects); Vite dev binds `::1` only — use `http://localhost:<port>`, not `127.0.0.1`.
+- Fixes folded in during verification: health-version test assert 0.5.0 → 0.6.0; `default_provider` made `pub(crate)` for the portal module; `insert_order_tx` args bundled into `OrderTxParams` (clippy too-many-arguments).
 
 ## Phase 6 — BI, Scheduling+, Migrator & v1.0 — ⬜ NOT STARTED
 ### Scope

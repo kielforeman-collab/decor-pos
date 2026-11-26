@@ -345,6 +345,36 @@ pub struct ArLedgerEntry {
 
 // --- Phase 1 models (spec §5.5) --------------------------------------------
 
+/// One row of `portal_payments` (Phase 5, spec §6.1
+/// `POST /portal/payments/intent`). Keyed by the client-generated
+/// idempotency key: a retried bill payment with the same key
+/// returns the original AR payment entry and posts nothing twice.
+/// `provider_reference` is the provider's reference string only —
+/// no card data, no PAN/CVV, ever.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PortalPaymentRow {
+    pub idempotency_key: String,
+    pub customer_id: Uuid,
+    pub payment_entry_id: Uuid,
+    pub amount: Decimal,
+    pub method: String,
+    pub provider_reference: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One row of `bopis_orders` (Phase 5): who picks a BOPIS order
+/// up and how the store reaches them. The order itself is a
+/// `transactions` row (`doc_type = 'order'`, fulfillment
+/// `'pickup'`); this table holds only the guest contact details,
+/// since a BOPIS buyer has no customer account.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BopisOrderRow {
+    pub order_id: Uuid,
+    pub pickup_name: String,
+    pub contact: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// One row of `transactions` (spec §5.5). Money is `Decimal` at scale 4;
 /// `doc_type` is `sale` | `return` | `quote` | `order` | `layaway`,
 /// `status` is `open` | `parked` | `completed` | `voided`.

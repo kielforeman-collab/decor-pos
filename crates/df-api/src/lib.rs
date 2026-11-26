@@ -66,7 +66,7 @@ pub struct ApiState {
 impl Default for ApiState {
     fn default() -> Self {
         Self {
-            version: "0.5.0",
+            version: "0.6.0",
             pool: None,
             org_id: None,
             store_id: None,
@@ -1068,7 +1068,7 @@ mod tests {
         .await
         .unwrap();
         ApiState {
-            version: "0.5.0",
+            version: "0.6.0",
             pool: Some(pool),
             org_id: Some(org_id),
             store_id: Some(store_id),
@@ -1128,7 +1128,7 @@ mod tests {
             .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["status"], "ok");
-        assert_eq!(value["version"], "0.5.0");
+        assert_eq!(value["version"], "0.6.0");
     }
 
     #[tokio::test]

@@ -43,6 +43,7 @@ pub mod http;
 pub mod hw;
 pub mod inventory;
 pub mod payments;
+pub mod portal;
 pub mod pricing;
 pub mod tinting;
 pub mod types;
@@ -84,6 +85,7 @@ pub use payments::{
     MockTerminal, PaymentError, PaymentProvider, PaymentRequest, PaymentResult, PaymentStatus,
     SurchargeRule, TenderKind, compute_surcharge, surcharge_rule_for,
 };
+pub use portal::{BopisOrderResponse, BopisOrderView, PortalCustomerView, PortalReorderResponse};
 pub use tinting::{
     ColorantLevelView, ColorantsResponse, DispenseTintRequest, DispenseTintResponse,
     tint_job_to_row, virtual_tinter_from_levels,

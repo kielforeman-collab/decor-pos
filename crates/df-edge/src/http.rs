@@ -97,6 +97,20 @@
 //! * `POST /edi/price-applications/{id}/mark-applied` — record the review decision (reprices nothing)
 //! * `GET /edi/transport?vendor_id=` — transport audit trail for a vendor
 //! * `POST /edi/catalog/import` — vendor catalog CSV import
+//! * `GET /portal/customers/{id}` — portal customer + open AR balance (`portal_enabled` required)
+//! * `GET /portal/customers/{id}/invoices` — the contractor's transactions, newest first
+//! * `GET /portal/customers/{id}/statements` — the contractor's frozen monthly statements
+//! * `GET /portal/customers/{id}/formulas` — the contractor's stored formulas (colour history)
+//! * `GET /portal/customers/{id}/payments` — past portal bill payments, newest first
+//! * `POST /portal/reorders` — reorder a stored formula as an open order (pickup/delivery)
+//! * `POST /portal/payments` — online bill pay: mock-provider authorization, then FIFO AR
+//!   allocation; the idempotency key makes a retry a no-op
+//! * `GET /catalog/products` — public active-product catalog for the BOPIS storefront
+//! * `POST /bopis/orders` — place a BOPIS pickup order (card authorized via the mock provider)
+//! * `GET /bopis/orders/{id}` — a BOPIS order with lines + pickup details
+//! * `POST /bopis/orders/{id}/complete-pickup` — counter pickup completion (stock to sold)
+//! * `GET /mobile/kpis?store_id=` — Outside Sales KPIs: today's sales, open quotes/orders,
+//!   total open AR, deliveries out
 //! * `GET /ws/v1/store/{store_id}` — WebSocket; sends a `connected`
 //!   event, then one JSON event per completed sale/return.
 //!
@@ -140,15 +154,19 @@ use crate::inventory::{
     ReceivePurchaseOrderRequest, ReplenishmentSuggestRequest, ScanCountRequest,
     SetReorderPointRequest, ShelfTagResponse, StartCountRequest, SuggestedPurchaseOrder, Transfer,
 };
+use crate::portal::{
+    BopisOrderResponse, BopisOrderView, PortalCustomerView, PortalReorderResponse,
+};
 use crate::tinting::{ColorantsResponse, DispenseTintRequest, DispenseTintResponse};
 use crate::types::{CompletedSale, PricePreview, ReturnLineInput, SaleInput, TenderInput, ZReport};
 use df_db::InventoryBalance;
 use df_db::models::{
-    Appointment, ColorCatalogEntry, CrmActivity, CrmSavedView, DeliveryPod, PricingRuleRow,
-    ReorderPoint, TillSession, TintFormula, Transaction,
+    Appointment, ColorCatalogEntry, CrmActivity, CrmSavedView, DeliveryPod, PortalPaymentRow,
+    PricingRuleRow, Product, ReorderPoint, StatementRow, TillSession, TintFormula, Transaction,
 };
 use df_domain::Money;
 use df_edi::EdiDocument;
+use df_portal::{BillPayIntent, BillPayResult, BopisOrderRequest, MobileKpis, ReorderRequest};
 use df_sync::{ApplyReport, SyncState};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,6 +234,8 @@ fn err_response(err: EdgeError) -> (StatusCode, Json<ErrorResponse>) {
         ) => StatusCode::INTERNAL_SERVER_ERROR,
         EdgeError::Edi(_) => StatusCode::BAD_REQUEST,
         EdgeError::Crm(_) | EdgeError::Delivery(_) => StatusCode::BAD_REQUEST,
+        EdgeError::Portal(df_portal::PortalError::NotPortalEnabled) => StatusCode::FORBIDDEN,
+        EdgeError::Portal(_) => StatusCode::BAD_REQUEST,
         EdgeError::Db(df_db::DbError::NotFound(_)) => StatusCode::NOT_FOUND,
         EdgeError::Db(df_db::DbError::InvalidData(_)) => StatusCode::BAD_REQUEST,
         EdgeError::Db(df_db::DbError::PodIncomplete { .. }) => StatusCode::BAD_REQUEST,
@@ -484,6 +504,11 @@ pub struct ShelfTagQuery {
 pub struct ArAgingQuery {
     pub store_id: Option<Uuid>,
     pub as_of: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoreQuery {
+    pub store_id: Option<Uuid>,
 }
 
 fn store_or_default(edge: &Edge, store_id: Option<Uuid>) -> Uuid {
@@ -1295,7 +1320,122 @@ async fn handle_ws(edge: Arc<Edge>, socket: WebSocket) {
     }
 }
 
+// --- contractor portal / BOPIS / mobile KPIs (Phase 5, v0.6) -------------
 /// Build the edge router. The caller passes an `Arc<Edge>` as state.
+async fn portal_customer(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<PortalCustomerView> {
+    edge.portal_customer(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn portal_invoices(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<Vec<Transaction>> {
+    edge.portal_invoices(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn portal_statements(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<Vec<StatementRow>> {
+    edge.portal_statements(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn portal_formulas(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<Vec<TintFormula>> {
+    edge.portal_formulas(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn portal_payments_list(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<Vec<PortalPaymentRow>> {
+    edge.portal_payments(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn portal_reorder(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<ReorderRequest>,
+) -> HandlerResult<PortalReorderResponse> {
+    edge.portal_reorder(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn portal_pay_bill(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<BillPayIntent>,
+) -> HandlerResult<BillPayResult> {
+    edge.portal_pay_bill(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn catalog_products(State(edge): State<Arc<Edge>>) -> HandlerResult<Vec<Product>> {
+    edge.catalog_products()
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn bopis_order_create(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<BopisOrderRequest>,
+) -> HandlerResult<BopisOrderResponse> {
+    edge.record_bopis_order(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn bopis_order_get(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<BopisOrderView> {
+    edge.bopis_order(id).await.map(Json).map_err(err_response)
+}
+
+async fn bopis_pickup_complete(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<BopisOrderView> {
+    edge.complete_bopis_pickup(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn mobile_kpis(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<StoreQuery>,
+) -> HandlerResult<MobileKpis> {
+    edge.mobile_kpis(store_or_default(&edge, query.store_id))
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
 pub fn router(edge: Edge) -> Router {
     let state = Arc::new(edge);
     Router::new()
@@ -1404,6 +1544,21 @@ pub fn router(edge: Edge) -> Router {
         )
         .route("/edi/transport", get(list_transport_records))
         .route("/edi/catalog/import", post(import_catalog))
+        .route("/portal/customers/{id}", get(portal_customer))
+        .route("/portal/customers/{id}/invoices", get(portal_invoices))
+        .route("/portal/customers/{id}/statements", get(portal_statements))
+        .route("/portal/customers/{id}/formulas", get(portal_formulas))
+        .route("/portal/customers/{id}/payments", get(portal_payments_list))
+        .route("/portal/reorders", post(portal_reorder))
+        .route("/portal/payments", post(portal_pay_bill))
+        .route("/catalog/products", get(catalog_products))
+        .route("/bopis/orders", post(bopis_order_create))
+        .route("/bopis/orders/{id}", get(bopis_order_get))
+        .route(
+            "/bopis/orders/{id}/complete-pickup",
+            post(bopis_pickup_complete),
+        )
+        .route("/mobile/kpis", get(mobile_kpis))
         .route("/ws/v1/store/{store_id}", get(ws_handler))
         .with_state(state)
 }
@@ -1483,7 +1638,7 @@ mod tests {
         let (status, body) = get_json(router.clone(), "/health").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ok");
-        assert_eq!(body["version"], "0.5.0");
+        assert_eq!(body["version"], "0.6.0");
 
         let (status, body) = post_json(
             router,

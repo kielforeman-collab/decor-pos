@@ -1,0 +1,15 @@
+[package]
+name = "df-portal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Contractor portal, mobile PWA and BOPIS domain for decor-pos (Phase 5, v0.6): portal access, bill-pay intents, formula reorders, pickup orders, mobile KPIs"
+
+[dependencies]
+chrono = { workspace = true }
+df-domain = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
