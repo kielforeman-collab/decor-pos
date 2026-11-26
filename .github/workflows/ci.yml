@@ -13,7 +13,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -39,6 +39,16 @@ jobs:
             echo "ERROR: f32/f64 found in a financial crate — money paths must use rust_decimal::Decimal"
             exit 1
           fi
+
+      - name: Install Typst 0.15.1
+        # df-jobs renders real statement PDFs via Typst (see
+        # crates/df-reports/src/statement.rs); the runner has no
+        # typst binary, so install the same version verified locally.
+        run: |
+          curl -fsSL -o /tmp/typst.tar.xz https://github.com/typst/typst/releases/download/v0.15.1/typst-x86_64-unknown-linux-musl.tar.xz
+          tar -xJf /tmp/typst.tar.xz -C /tmp
+          sudo install -m 755 /tmp/typst-x86_64-unknown-linux-musl/typst /usr/local/bin/typst
+          typst --version
 
       - name: Tests (nextest)
         run: cargo nextest run --workspace
