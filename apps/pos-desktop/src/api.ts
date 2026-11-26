@@ -55,7 +55,7 @@ async function http<T>(path: string, body?: unknown): Promise<T> {
     headers: { 'content-type': 'application/json', ...authHeaders() },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
-  const json = await res.json()
+  const json = await res.json().catch(() => null)
   if (!res.ok) {
     if (res.status === 401) {
       clearSession()

@@ -266,7 +266,7 @@ only its own section, ticking items as they are verified — not when code merel
 - The VM's Postgres is ephemeral: a VM restart wipes /tmp (URL file) — the 16 package survived the last restart, only the cluster needed re-starting and the role/DB re-creating.
 - F8/F9/F10 stay OPEN. No COLORx code. No f32/f64 money code.
 
-## GUI product import — ✅ DONE Nov 26, 2026 (build only, NOT pushed, no version bump)
+## GUI product import — ✅ DONE Nov 26, 2026 (pushed `240f386`, no version bump)
 ### Scope
 - ✅ "Import products" button on the back-office Inventory tab (apps/web-backoffice, :1421): file picker accepts .xlsx and .csv; the spreadsheet is parsed IN THE BROWSER with SheetJS (`xlsx` 0.18.5, new dep) — the file itself is never uploaded, only parsed JSON rows are POSTed. Reads sheet "EXCEL" when present, else the first sheet; first row is the header.
 - ✅ Preview before anything is sent: row count, first ~5 ready rows (SKU, name, list price, net price), and every row that will be skipped with its reason (skipped list capped at 20 shown). Confirm button posts only the problem-free rows; result shows created / updated / failed plus a per-row failure table. Inventory refreshes after a successful import.
@@ -282,7 +282,7 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ `cargo fmt --check` clean and `cargo clippy -p df-db -p df-edge --all-targets` clean for the touched crates (clippy run before the final fmt pass; fmt touches formatting only)
 - ✅ Full `cargo test -p df-db -p df-edge` suite: **115 passed, 0 failed** (exit 0; ~10.5 min, dominated by the slow Argon2-seeded auth tests — no failures anywhere, including all pre-existing suites)
 ### GitHub
-- ⬜ NOT pushed (build only, per task — Kiel clicks the button himself when ready; push is his call). No version bump, no tag.
+- ✅ Pushed Nov 26 via connector in ONE commit `240f386` (369 files, 6 new; 2 binary PWA icons excluded — connector cannot carry binaries)
 ### Known limits
 - Imported products carry the seed defaults (product_type "paint_base", base_uom "gal", fresh department/tax-class UUIDs) — the price list has no UOM/type/department columns. A later pass could map BM Size codes to UOMs or real departments; deliberately not invented here.
 - Category / UPC / MSRP / MAP are not stored — if Kiel wants them searchable later, `products` needs new columns (a migration, not a silent drop).
