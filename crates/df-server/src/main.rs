@@ -1812,6 +1812,18 @@ async fn run_edge(
             std::process::exit(1);
         }
     };
+    // First boot seeds the configured org + store rows (a no-op when
+    // they already exist). Without this, a fresh database has an empty
+    // `stores` table and store-validating flows — e.g. the GUI product
+    // import — fail with "row not found".
+    match edge.ensure_configured_store().await {
+        Ok(true) => println!("df-server edge: seeded store {store_id} (org {org_id}) — first boot"),
+        Ok(false) => {}
+        Err(err) => {
+            eprintln!("df-server edge: failed to seed store: {err}");
+            std::process::exit(1);
+        }
+    };
     // Standalone/mock terminal: card tenders approve locally so the
     // POS API works out of the box with no real terminal attached.
     edge.set_payment_provider(Arc::new(MockTerminal::new()));

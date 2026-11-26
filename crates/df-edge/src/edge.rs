@@ -36,7 +36,8 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::Utc;
 use df_db::models::{
-    ArLedgerEntry, InventoryLedgerEntry, PaymentRow, Transaction, TransactionLine,
+    ArLedgerEntry, InventoryLedgerEntry, Organization, PaymentRow, Store, Transaction,
+    TransactionLine,
 };
 use df_db::{AnyPool, DbError};
 use df_domain::{Currency, Money};
@@ -240,6 +241,63 @@ impl Edge {
             product_thresholds: Arc::new(RwLock::new(Vec::new())),
             email_outbox_dir: Arc::new(RwLock::new(None)),
         })
+    }
+
+    /// Ensure the configured org + store rows exist, creating them
+    /// with placeholder details when a fresh database has none.
+    ///
+    /// `Edge::open` seeds nothing, so a first-boot database has an
+    /// empty `stores` table and any flow that validates the store
+    /// (e.g. the GUI product import's `get_store` check) fails with
+    /// "row not found". The server calls this once at startup; it is
+    /// a no-op when the rows already exist, and it never overwrites
+    /// existing details. Country/region/postal/timezone are
+    /// placeholders — there is no store-edit UI yet.
+    /// Returns true when it created the store row.
+    pub async fn ensure_configured_store(&self) -> Result<bool, EdgeError> {
+        let org_id = self.config.org_id;
+        match df_db::get_organization(self.pool(), org_id).await {
+            Ok(_) => {}
+            Err(DbError::NotFound(_)) => {
+                df_db::insert_organization(
+                    self.pool(),
+                    &Organization {
+                        id: org_id,
+                        name: self.config.store_name.clone(),
+                        default_currency: self.config.currency.code().to_string(),
+                        enabled_modules: serde_json::json!({"core_pos": true}),
+                        settings_json: serde_json::json!({}),
+                        created_at: Utc::now(),
+                    },
+                )
+                .await?;
+            }
+            Err(err) => return Err(err.into()),
+        }
+        match df_db::get_store(self.pool(), self.config.store_id).await {
+            Ok(_) => Ok(false),
+            Err(DbError::NotFound(_)) => {
+                df_db::insert_store(
+                    self.pool(),
+                    &Store {
+                        id: self.config.store_id,
+                        org_id,
+                        code: "MAIN".to_string(),
+                        name: self.config.store_name.clone(),
+                        country_code: String::new(),
+                        region_code: String::new(),
+                        postal_code: String::new(),
+                        currency: self.config.currency.code().to_string(),
+                        tax_zone_id: Uuid::now_v7(),
+                        timezone: "UTC".to_string(),
+                        is_warehouse: false,
+                    },
+                )
+                .await?;
+                Ok(true)
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Set the directory scheduled report emails queue into (see
