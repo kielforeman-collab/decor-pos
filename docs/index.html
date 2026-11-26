@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deploy decor-pos v1.0 — Open-Source Paint &amp; Decorating POS</title>
+<style>
+  :root { --ink:#111; --muted:#555; --line:#ddd; --bg:#fff; --soft:#f6f6f6; --warn-bg:#fff4e5; --warn-border:#e8a13c; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:var(--ink); background:var(--bg); line-height:1.55; }
+  main { max-width:860px; margin:0 auto; padding:32px 20px 64px; }
+  h1 { font-size:2rem; margin:0 0 4px; }
+  h2 { font-size:1.35rem; margin:2.2em 0 .5em; padding-top:1.2em; border-top:1px solid var(--line); }
+  h3 { font-size:1.05rem; margin:1.6em 0 .4em; }
+  p, li { font-size:1rem; }
+  .sub { color:var(--muted); margin:0 0 1.5em; }
+  .badge { display:inline-block; font-size:.8rem; font-weight:600; border:1px solid var(--line); border-radius:999px; padding:2px 10px; margin-right:6px; }
+  .warn { background:var(--warn-bg); border:1px solid var(--warn-border); border-left-width:5px; padding:12px 16px; border-radius:6px; margin:1.2em 0; }
+  .warn strong { display:block; margin-bottom:2px; }
+  pre { background:var(--soft); border:1px solid var(--line); border-radius:6px; padding:12px 14px; overflow-x:auto; font-size:.88rem; line-height:1.5; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.9em; }
+  pre code { font-size:1em; }
+  table { border-collapse:collapse; width:100%; margin:1em 0; font-size:.95rem; }
+  th, td { text-align:left; border-bottom:1px solid var(--line); padding:8px 10px; vertical-align:top; }
+  th { background:var(--soft); }
+  a { color:#0b5fff; }
+  .links { display:flex; flex-wrap:wrap; gap:8px; margin:1.2em 0; }
+  .links a { border:1px solid var(--line); border-radius:6px; padding:6px 12px; text-decoration:none; color:var(--ink); font-size:.92rem; }
+  .links a:hover { background:var(--soft); }
+  footer { margin-top:3em; padding-top:1em; border-top:1px solid var(--line); color:var(--muted); font-size:.88rem; }
+  .step { font-weight:700; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Deploy decor-pos</h1>
+  <p class="sub">Open-source Rust paint &amp; decorating POS — <strong>v1.0</strong>, all 7 phases complete, 402/402 tests passing.</p>
+  <p>
+    <span class="badge">v1.0</span>
+    <span class="badge">Rust 1.99</span>
+    <span class="badge">Apache-2.0 OR MIT</span>
+  </p>
+  <div class="links">
+    <a href="https://github.com/kielforeman-collab/decor-pos">Repository</a>
+    <a href="https://github.com/kielforeman-collab/decor-pos/releases/tag/v1.0">Release v1.0</a>
+    <a href="https://github.com/kielforeman-collab/decor-pos/blob/main/plan.md">Progress plan</a>
+    <a href="https://github.com/kielforeman-collab/decor-pos/blob/main/docs/security-review-v1.0.md">Security review</a>
+    <a href="https://github.com/kielforeman-collab/decor-pos/blob/main/docs/self-hosting.md">Self-hosting doc</a>
+  </div>
+
+  <div class="warn">
+    <strong>Read this first — v1.0 has no authentication.</strong>
+    The edge HTTP API and the HQ read API have no auth, and RBAC is defined but never enforced.
+    Run this on a trusted local network or behind a VPN with your own auth in front — never on the open internet.
+    Full details in the <a href="https://github.com/kielforeman-collab/decor-pos/blob/main/docs/security-review-v1.0.md">security review</a>.
+  </div>
+
+  <h2>Option A — Docker Compose (recommended)</h2>
+  <p>One command brings up the store daemon (edge, SQLite), the HQ read API, and a provisioned PostgreSQL that nothing connects to yet in v1.0.</p>
+  <p><span class="step">1.</span> Clone the repo and set your environment:</p>
+  <pre><code>git clone https://github.com/kielforeman-collab/decor-pos.git
+cd decor-pos
+cp .env.example .env
+# Edit .env: replace STORE_ID / ORG_ID with fresh UUIDv7s
+# and set POSTGRES_PASSWORD. Never commit a real .env.</code></pre>
+  <p><span class="step">2.</span> Start it:</p>
+  <pre><code>docker compose up --build -d</code></pre>
+  <p><span class="step">3.</span> Check it answers:</p>
+  <pre><code>curl -s http://localhost:8080/health   # edge
+curl -s http://localhost:3000/health   # api
+curl -s http://localhost:3000/api-docs/openapi.json | head -c 400</code></pre>
+  <p>Stop with <code>docker compose down</code> (volumes kept) or <code>docker compose down -v</code> (deletes the SQLite database and Postgres data). The edge database is the <code>edgedata</code> volume (<code>/data/edge.db</code> in the container) — back it up by copying it out:</p>
+  <pre><code>docker compose cp edge:/data/edge.db ./</code></pre>
+  <p><strong>Honest caveat:</strong> the Docker image and the compose stack were validated by review and YAML parse only — <code>docker build</code> and <code>docker compose up</code> were never run in the build VM (no Docker daemon there). The build commands inside the image are the same <code>cargo build --release --locked</code> that is tested, but run it once on a Docker host and watch the first boot.</p>
+
+  <h2>Option B — Single binary (no Docker)</h2>
+  <p>Needs Rust 1.99+ and a C toolchain. Build the two binaries, then run the edge daemon and the read API against the same SQLite file:</p>
+  <pre><code>cargo build --release --locked -p df-server -p df-api
+./target/release/df-server edge --db sqlite:edge.db \
+  --store-id &lt;uuid&gt; --org-id &lt;uuid&gt; --listen 127.0.0.1:8080
+./target/release/df-api --db sqlite:edge.db \
+  --org-id &lt;uuid&gt; --store-id &lt;uuid&gt; --listen 127.0.0.1:3000</code></pre>
+  <p><code>df-server edge</code> creates and migrates the SQLite database on open. <code>df-api</code> runs no migrations — the database must already exist.</p>
+
+  <h2>Option C — Dev mode (edge + web apps)</h2>
+  <p>For trying the screens. Start the edge daemon (Option B, or <code>cargo run -p df-server -- edge --db sqlite:edge.db --store-id &lt;uuid&gt; --listen 127.0.0.1:8080</code>), then any frontend with <code>npm install &amp;&amp; npm run dev</code>. Each app talks to the edge on <code>:8080</code>.</p>
+  <table>
+    <tr><th>App</th><th>Folder</th><th>Dev URL</th><th>What it is</th></tr>
+    <tr><td>Counter POS</td><td><code>apps/pos-desktop</code></td><td>http://localhost:1420</td><td>Till, checkout, holds, quotes, returns, Z-report</td></tr>
+    <tr><td>Back-office</td><td><code>apps/web-backoffice</code></td><td>http://localhost:1421</td><td>Inventory, purchasing, transfers, counts, pricing, AR, CRM, delivery, BI</td></tr>
+    <tr><td>Mobile PWA</td><td><code>apps/mobile-pwa</code></td><td>http://localhost:1422</td><td>Warehouse, outside sales, driver POD (offline-first)</td></tr>
+    <tr><td>Contractor portal</td><td><code>apps/web-portal</code></td><td>http://localhost:1423</td><td>Invoices, statements, formula reorders, online bill pay</td></tr>
+    <tr><td>BOPIS storefront</td><td><code>apps/web-storefront</code></td><td>http://localhost:1424</td><td>Public catalog, cart, counter pickup</td></tr>
+  </table>
+
+  <h2>Environment variables</h2>
+  <table>
+    <tr><th>Variable</th><th>Default</th><th>Notes</th></tr>
+    <tr><td><code>STORE_ID</code></td><td><em>required</em></td><td>UUID of the store the edge serves</td></tr>
+    <tr><td><code>ORG_ID</code></td><td><em>required</em></td><td>UUID of the organization</td></tr>
+    <tr><td><code>STORE_NAME</code></td><td>Decor POS Store</td><td>Shown on receipts</td></tr>
+    <tr><td><code>CURRENCY</code></td><td>USD</td><td><code>USD</code> or <code>CAD</code></td></tr>
+    <tr><td><code>POSTGRES_USER</code> / <code>POSTGRES_PASSWORD</code> / <code>POSTGRES_DB</code></td><td><code>decor</code> / <em>required</em> / <code>decorpos</code></td><td>Provisioned for future HQ; unused in v1.0</td></tr>
+    <tr><td><code>STRIPE_API_KEY</code>, <code>STRIPE_TERMINAL_LOCATION_ID</code></td><td><em>empty</em></td><td>Env-only; empty = mock terminal. Live Stripe Terminal calls are not implemented in v1.0</td></tr>
+    <tr><td><code>DF_TYPST_BIN</code></td><td><em>empty</em></td><td>Path to a <code>typst</code> binary for monthly-statement PDFs (not bundled in the image)</td></tr>
+  </table>
+
+  <h2>Importing legacy Decor Fusion data</h2>
+  <p>The migrator imports customers, products, formulas (tracking records only), AR balances and inventory from CSV, with SHA-256 checksums per file and row and a manifest of imported / skipped / failed rows. Re-importing is a no-op for rows already imported.</p>
+  <pre><code>df-server migrate import --db sqlite:edge.db --org-id &lt;uuid&gt; \
+  --store-id &lt;uuid&gt; --dir ./legacy [--out manifest.json]</code></pre>
+  <p>Sample fixtures ship in <code>crates/df-migrator/fixtures/</code>.</p>
+
+  <h2>What v1.0 does — and does not do yet</h2>
+  <h3>Working</h3>
+  <ul>
+    <li>Offline counter POS with tills, holds, quotes, returns, layaways, Z-reports, and replay-safe sync</li>
+    <li>Formula tracking (lookup by name/code, customer colour history, reorders) — the POS never drives a tint machine</li>
+    <li>Contractor AR: charge accounts, credit checks, FIFO payments, finance charges, Typst PDF statements</li>
+    <li>Vendor EDI (X12 850/855/856/810/832) with 3-way match, CRM, delivery dispatch and proof-of-delivery</li>
+    <li>Mobile PWA, contractor portal with online bill pay, BOPIS storefront</li>
+    <li>BI dashboards, eco-fee remittance, labour forecasting, legacy migrator, chaos-tested sync</li>
+  </ul>
+  <h3>Not yet / stubbed</h3>
+  <ul>
+    <li>No authentication on the edge or HQ APIs; RBAC defined but never enforced; portal scope is just the customer ID</li>
+    <li>PostgreSQL HQ mode is not implemented and the Postgres round-trip was never tested live</li>
+    <li>No live Stripe Terminal, no live payment/accounting/vendor APIs — mock provider only</li>
+    <li>No native Excel export (scheduled reports are CSV + PDF); SFTP is a local-folder stand-in; AS2 has no network/crypto</li>
+    <li>Tauri Mobile wrapper is files only (unverified, no Android SDK in the build VM); Docker image and Helm chart unrun</li>
+    <li>Benjamin Moore COLORx tint-machine integration is deferred post-v1.0 by design</li>
+  </ul>
+
+  <h2>Kubernetes (skeleton)</h2>
+  <p>A Helm chart lives in <code>deploy/helm/decor-pos/</code> (edge + API deployments, shared PVC, optional PostgreSQL). It is a skeleton — values are placeholders, services are <code>ClusterIP</code> only, and no Ingress is defined, deliberately, because v1.0 has no authentication. See <a href="https://github.com/kielforeman-collab/decor-pos/blob/main/docs/self-hosting.md">docs/self-hosting.md</a> for the install commands and the shared-PVC caveats.</p>
+
+  <footer>
+    <p>This site is published with GitHub Pages from the <code>docs/</code> folder on <code>main</code> — the same repo as the code. To re-publish after changes: push to <code>main</code>, then check <strong>Settings → Pages → Build and deployment → Source: Deploy from a branch, Branch: main, Folder: /docs</strong>. The full self-hosting guide is <a href="https://github.com/kielforeman-collab/decor-pos/blob/main/docs/self-hosting.md">docs/self-hosting.md</a>.</p>
+    <p>decor-pos v1.0 · Apache-2.0 OR MIT · <a href="https://github.com/kielforeman-collab/decor-pos">github.com/kielforeman-collab/decor-pos</a></p>
+  </footer>
+</main>
+</body>
+</html>
