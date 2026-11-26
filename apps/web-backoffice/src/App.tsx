@@ -3,12 +3,16 @@ import {
   assignDelivery,
   bulkUpdatePricingRules,
   cancelAppointment,
+  clockIn,
+  clockOut,
   completeActivity,
   createActivity,
   createAppointment,
   createDelivery,
   createPurchaseOrder,
   createSavedView,
+  createShiftTemplate,
+  createStaffShift,
   createTransfer,
   deleteActivity,
   deleteAppointment,
@@ -17,8 +21,13 @@ import {
   getArCollections,
   getArSummary,
   getBalances,
+  getEcoRemittance,
+  getEcoRemittanceCsv,
   getDelivery,
   getHealth,
+  getKpiDashboard,
+  getLaborCoverage,
+  getLaborForecast,
   getLapsedReport,
   getPackingSlip,
   getPriceApplication,
@@ -32,23 +41,29 @@ import {
   listCounts,
   listDispatch,
   listDueReminders,
+  listEmailOutbox,
   listEdiDocuments,
   listMatchReports,
   listOverdueReminders,
   listPricingRules,
   listPurchaseOrders,
   listSavedViews,
+  listShiftTemplates,
+  listStaffShifts,
+  listTimeclock,
   listTransfers,
   listTransportRecords,
   markPriceApplicationApplied,
   receivePurchaseOrder,
   receiveTransfer,
   reconcileCount,
+  runInquiry,
   runSavedView,
   runSavedViewCustomers,
   scanCount,
   sendPurchaseOrder,
   setDeliveryStatus,
+  setShiftStatus,
   setReorderPoint,
   shipTransfer,
   snoozeActivity,
@@ -64,13 +79,19 @@ import type {
   ArCustomerSummary,
   CatalogImportResponse,
   CollectionsView,
+  CoverageCheck,
   CrmActivity,
   CrmSavedView,
   DeliveryView,
+  EcoRemittanceReport,
+  EmailDelivery,
   EdiDocument,
   IntakeResponse,
   InventoryBalance,
+  InquiryRow,
   InvoiceMatchReport,
+  ForecastReport,
+  KpiDashboard,
   LapsedReport,
   PackingSlipView,
   PhysicalCount,
@@ -82,13 +103,16 @@ import type {
   SavedViewCustomer,
   SendPoResponse,
   ShelfTagResponse,
+  ShiftTemplate,
+  StaffShift,
   SuggestedPurchaseOrder,
+  TimeclockEntry,
   Transfer,
   TransportRecord,
 } from './types'
 import { fmtMoney, fmtQty } from './types'
 
-type Tab = 'inventory' | 'purchasing' | 'transfers' | 'counts' | 'tags' | 'pricing' | 'ar' | 'crm' | 'delivery'
+type Tab = 'inventory' | 'purchasing' | 'transfers' | 'counts' | 'tags' | 'pricing' | 'ar' | 'crm' | 'delivery' | 'bi' | 'scheduling'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'inventory', label: 'Inventory' },
@@ -100,6 +124,8 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'ar', label: 'AR' },
   { id: 'crm', label: 'CRM' },
   { id: 'delivery', label: 'Delivery' },
+  { id: 'bi', label: 'BI' },
+  { id: 'scheduling', label: 'Scheduling' },
 ]
 
 const CALC_METHODS = ['fixed', 'pct_off_list', 'markup_cost', 'target_gm']
@@ -249,6 +275,91 @@ export default function App() {
   const refreshDelivery = useCallback(async () => {
     setDeliveries(await listDispatch())
   }, [])
+
+  // Phase 6: BI.
+  const [kpi, setKpi] = useState<KpiDashboard | null>(null)
+  const [eco, setEco] = useState<EcoRemittanceReport | null>(null)
+  const [inquiryRows, setInquiryRows] = useState<InquiryRow[] | null>(null)
+  const [outbox, setOutbox] = useState<EmailDelivery[] | null>(null)
+  const [biStart, setBiStart] = useState('')
+  const [biEnd, setBiEnd] = useState('')
+  const [inquiryDocType, setInquiryDocType] = useState('')
+  const [inquiryProductId, setInquiryProductId] = useState('')
+
+  // Phase 6: Scheduling+.
+  const [templates, setTemplates] = useState<ShiftTemplate[]>([])
+  const [shifts, setShifts] = useState<StaffShift[]>([])
+  const [timeclock, setTimeclock] = useState<TimeclockEntry[]>([])
+  const [forecast, setForecast] = useState<ForecastReport | null>(null)
+  const [forecastNote, setForecastNote] = useState<string | null>(null)
+  const [coverage, setCoverage] = useState<CoverageCheck | null>(null)
+  const [schedDate, setSchedDate] = useState('')
+  const [templateForm, setTemplateForm] = useState({ name: '', weekday: '1', starts_at: '08:00', ends_at: '16:00', role: '', staff_id: '', required_count: '1' })
+  const [shiftForm, setShiftForm] = useState({ staff_id: '', starts_at: '', ends_at: '', template_id: '', notes: '' })
+  const [clockStaffId, setClockStaffId] = useState('')
+  const [forecastDays, setForecastDays] = useState('7')
+  const [forecastRatio, setForecastRatio] = useState('')
+
+  const refreshScheduling = useCallback(async () => {
+    const today = new Date().toISOString().slice(0, 10)
+    const day = schedDate.trim() || today
+    const [t, s, c] = await Promise.all([
+      listShiftTemplates(),
+      listStaffShifts(day),
+      listTimeclock(day),
+    ])
+    setTemplates(t)
+    setShifts(s)
+    setTimeclock(c)
+    setCoverage(await getLaborCoverage(day))
+    // The forecast needs 28 days of sales + timeclock history;
+    // a fresh store has none, so a failure here is an inline
+    // note, not a global error banner.
+    try {
+      const ratio = forecastRatio.trim() || undefined
+      setForecast(await getLaborForecast({ from: day, days: Number(forecastDays) || 7, salesPerLaborHour: ratio }))
+      setForecastNote(null)
+    } catch (e) {
+      setForecast(null)
+      setForecastNote(e instanceof Error ? e.message : String(e))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schedDate, forecastDays, forecastRatio])
+
+  const refreshBi = useCallback(async () => {
+    if (!storeId) return
+    const today = new Date().toISOString().slice(0, 10)
+    const start = biStart.trim() || today
+    const end = biEnd.trim() || today
+    const [k, e] = await Promise.all([
+      getKpiDashboard(storeId, start, end),
+      getEcoRemittance(start, end),
+    ])
+    setKpi(k)
+    setEco(e)
+    // The outbox is unconfigured until the edge is started with
+    // --email-outbox; a 404 there means "not configured", not
+    // "no deliveries", so show it as an empty list with a note.
+    try {
+      setOutbox(await listEmailOutbox())
+    } catch {
+      setOutbox(null)
+    }
+  }, [storeId, biStart, biEnd])
+
+  const downloadEcoCsv = useCallback(async () => {
+    const today = new Date().toISOString().slice(0, 10)
+    const start = biStart.trim() || today
+    const end = biEnd.trim() || today
+    const csv = await getEcoRemittanceCsv(start, end)
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `eco-remittance-${start}-to-${end}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [biStart, biEnd])
 
   const refreshEdiForPo = useCallback(async (poId: string) => {
     if (!poId) return
@@ -880,6 +991,92 @@ export default function App() {
     setBusy(true)
     try {
       setArSummary(await getArSummary(customerId.trim()))
+    } catch (e) {
+      fail(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Phase 6: Scheduling+.
+  async function doCreateTemplate() {
+    if (!templateForm.name.trim()) return
+    setBusy(true)
+    try {
+      await createShiftTemplate({
+        name: templateForm.name.trim(),
+        weekday: Number(templateForm.weekday),
+        starts_at: templateForm.starts_at,
+        ends_at: templateForm.ends_at,
+        role: templateForm.role.trim() || null,
+        staff_id: templateForm.staff_id.trim() || null,
+        required_count: Number(templateForm.required_count) || 1,
+      })
+      say('Shift template created.')
+      await refreshScheduling()
+    } catch (e) {
+      fail(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function doCreateShift() {
+    if (!shiftForm.staff_id.trim() || !shiftForm.starts_at || !shiftForm.ends_at) return
+    setBusy(true)
+    try {
+      const day = schedDate.trim() || new Date().toISOString().slice(0, 10)
+      await createStaffShift({
+        staff_id: shiftForm.staff_id.trim(),
+        shift_date: day,
+        starts_at: new Date(shiftForm.starts_at).toISOString(),
+        ends_at: new Date(shiftForm.ends_at).toISOString(),
+        template_id: shiftForm.template_id.trim() || null,
+        notes: shiftForm.notes.trim() || null,
+      })
+      say('Shift created.')
+      await refreshScheduling()
+    } catch (e) {
+      fail(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function doShiftStatus(id: string, status: string) {
+    setBusy(true)
+    try {
+      await setShiftStatus(id, status)
+      say(`Shift ${status}.`)
+      await refreshScheduling()
+    } catch (e) {
+      fail(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function doClockIn() {
+    if (!clockStaffId.trim()) return
+    setBusy(true)
+    try {
+      await clockIn(clockStaffId.trim())
+      say('Clocked in.')
+      await refreshScheduling()
+    } catch (e) {
+      fail(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function doClockOut() {
+    if (!clockStaffId.trim()) return
+    setBusy(true)
+    try {
+      await clockOut(clockStaffId.trim())
+      say('Clocked out.')
+      await refreshScheduling()
     } catch (e) {
       fail(e)
     } finally {
@@ -1806,10 +2003,305 @@ export default function App() {
             )}
           </section>
         )}
+        {tab === 'bi' && (
+          <section>
+            <h2>BI — KPI dashboard, eco remittance, ad-hoc inquiry</h2>
+            <div className="entry">
+              <input value={biStart} onChange={(e) => setBiStart(e.target.value)} placeholder="Start YYYY-MM-DD (default today)" />
+              <input value={biEnd} onChange={(e) => setBiEnd(e.target.value)} placeholder="End YYYY-MM-DD (default today)" />
+              <button type="button" onClick={() => { setBusy(true); refreshBi().catch(fail).finally(() => setBusy(false)) }} disabled={busy}>Load BI</button>
+              <button type="button" onClick={() => { setBusy(true); downloadEcoCsv().catch(fail).finally(() => setBusy(false)) }} disabled={busy}>Download eco CSV</button>
+            </div>
+            <p className="hint">KPIs come from the real edge ledgers (completed sales/returns, inventory ledger, AR ledger, stored formulas). Inventory turns value stock from the append-only ledger, not a snapshot table. Eco fees are grouped by each store&apos;s country/region jurisdiction.</p>
+            {kpi && (
+              <>
+                <h3>KPI dashboard — {kpi.start} to {kpi.end} (AR as of {kpi.as_of})</h3>
+                <div className="totals">
+                  <div><span>Sales</span><strong>{kpi.sales.sale_count} sale(s)</strong></div>
+                  <div><span>Returns</span><strong>{kpi.sales.return_count} return(s)</strong></div>
+                  <div><span>Gross sales</span><strong>{fmtMoney(kpi.sales.gross_sales)}</strong></div>
+                  <div><span>Net sales</span><strong>{fmtMoney(kpi.sales.net_sales)}</strong></div>
+                  <div><span>Grand total</span><strong>{fmtMoney(kpi.sales.grand_total)}</strong></div>
+                  <div><span>Avg ticket</span><strong>{kpi.sales.avg_ticket ? fmtMoney(kpi.sales.avg_ticket) : '—'}</strong></div>
+                  <div><span>Revenue</span><strong>{fmtMoney(kpi.margin.revenue)}</strong></div>
+                  <div><span>COGS</span><strong>{fmtMoney(kpi.margin.cogs)}</strong></div>
+                  <div><span>Gross profit</span><strong>{fmtMoney(kpi.margin.gross_profit)}</strong></div>
+                  <div><span>Margin</span><strong>{kpi.margin.margin_pct !== null ? `${kpi.margin.margin_pct}%` : '—'}</strong></div>
+                  <div><span>On-hand value</span><strong>{fmtMoney(kpi.inventory.on_hand_value)}</strong></div>
+                  <div><span>Avg inventory</span><strong>{fmtMoney(kpi.inventory.avg_inventory_value)}</strong></div>
+                  <div><span>Inventory turns</span><strong>{kpi.inventory.turns !== null ? `${kpi.inventory.turns}x` : '—'}</strong></div>
+                  <div><span>Total open AR</span><strong>{fmtMoney(kpi.total_open_ar)}</strong></div>
+                  <div><span>Formulas created</span><strong>{kpi.formulas.formulas_created}</strong></div>
+                  <div><span>Tint cost</span><strong>{fmtMoney(kpi.formulas.total_tint_cost)}</strong></div>
+                </div>
+                <table>
+                  <thead><tr><th>AR aging</th><th>Current</th><th>31–60</th><th>61–90</th><th>91–120</th><th>120+</th></tr></thead>
+                  <tbody>
+                    <tr>
+                      <td>Open charges</td>
+                      <td>{fmtMoney(kpi.ar_aging.current)}</td>
+                      <td>{fmtMoney(kpi.ar_aging.days_31_60)}</td>
+                      <td>{fmtMoney(kpi.ar_aging.days_61_90)}</td>
+                      <td>{fmtMoney(kpi.ar_aging.days_91_120)}</td>
+                      <td>{fmtMoney(kpi.ar_aging.over_120)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                {kpi.formulas.per_color.length > 0 && (
+                  <table>
+                    <thead><tr><th>Color</th><th>Name</th><th>Formulas</th></tr></thead>
+                    <tbody>
+                      {kpi.formulas.per_color.map((c) => (
+                        <tr key={c.color_code}>
+                          <td>{c.color_code}</td>
+                          <td>{c.color_name}</td>
+                          <td>{c.formulas}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </>
+            )}
+            {eco && (
+              <>
+                <h3>Eco-fee remittance — {eco.start} to {eco.end} (total {fmtMoney(eco.total)})</h3>
+                <table>
+                  <thead><tr><th>Jurisdiction</th><th>Store</th><th>Category</th><th>Transactions</th><th>Lines</th><th>Units</th><th>Eco fees</th></tr></thead>
+                  <tbody>
+                    {eco.rows.map((r) => (
+                      <tr key={`${r.country_code}-${r.region_code}-${r.eco_fee_category ?? 'none'}-${r.store_id}`}>
+                        <td>{r.country_code}-{r.region_code}</td>
+                        <td>{r.store_code}</td>
+                        <td>{r.eco_fee_category ?? 'uncategorized'}</td>
+                        <td>{r.transaction_count}</td>
+                        <td>{r.line_count}</td>
+                        <td>{fmtQty(r.units)}</td>
+                        <td>{fmtMoney(r.eco_fee_total)}</td>
+                      </tr>
+                    ))}
+                    {eco.rows.length === 0 && (
+                      <tr><td colSpan={7}>No eco fees in this period.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </>
+            )}
+            <h3>Ad-hoc inquiry</h3>
+            <div className="entry">
+              <input value={inquiryDocType} onChange={(e) => setInquiryDocType(e.target.value)} placeholder="Doc type: sale / return (optional)" />
+              <input value={inquiryProductId} onChange={(e) => setInquiryProductId(e.target.value)} placeholder="Product id (UUID, optional)" />
+              <button
+                type="button"
+                onClick={() => {
+                  if (!storeId) return
+                  setBusy(true)
+                  const today = new Date().toISOString().slice(0, 10)
+                  runInquiry({
+                    storeId,
+                    start: biStart.trim() || today,
+                    end: biEnd.trim() || today,
+                    docType: inquiryDocType.trim() || undefined,
+                    productId: inquiryProductId.trim() || undefined,
+                  })
+                    .then(setInquiryRows)
+                    .catch(fail)
+                    .finally(() => setBusy(false))
+                }}
+                disabled={busy}
+              >
+                Run inquiry
+              </button>
+            </div>
+            {inquiryRows !== null && (
+              <table>
+                <thead><tr><th>Doc</th><th>Type</th><th>Date</th><th>Lines</th><th>Subtotal</th><th>Grand total</th></tr></thead>
+                <tbody>
+                  {inquiryRows.map((r) => (
+                    <tr key={r.transaction_id}>
+                      <td>{r.doc_number}</td>
+                      <td>{r.doc_type}</td>
+                      <td>{r.created_at.slice(0, 10)}</td>
+                      <td>{r.line_count}</td>
+                      <td>{fmtMoney(r.subtotal)}</td>
+                      <td>{fmtMoney(r.grand_total)}</td>
+                    </tr>
+                  ))}
+                  {inquiryRows.length === 0 && (
+                    <tr><td colSpan={6}>No transactions match.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            )}
+            <h3>Scheduled report emails (file outbox)</h3>
+            <p className="hint">The 07:00 UTC job renders the KPI dashboard (PDF) + eco remittance (CSV) and queues them here as <code>manifest.json</code> entries. Status stays <code>queued</code> — there is no SMTP send; a mail relay picks the outbox up. The outbox appears once the edge is started with <code>--email-outbox</code>.</p>
+            {outbox !== null && (
+              <table>
+                <thead><tr><th>Report</th><th>Recipient</th><th>File</th><th>Scheduled</th><th>Status</th></tr></thead>
+                <tbody>
+                  {outbox.map((d) => (
+                    <tr key={d.id}>
+                      <td>{d.report_kind}</td>
+                      <td>{d.recipient}</td>
+                      <td>{d.file_name}</td>
+                      <td>{d.scheduled_at.slice(0, 10)}</td>
+                      <td>{d.status}</td>
+                    </tr>
+                  ))}
+                  {outbox.length === 0 && (
+                    <tr><td colSpan={5}>Outbox is empty — no scheduled emails queued yet.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            )}
+            {outbox === null && (
+              <p className="hint">No outbox directory configured for this edge.</p>
+            )}
+          </section>
+        )}
+        {tab === 'scheduling' && (
+          <section>
+            <h2>Scheduling+ — shifts, timeclock, labor forecast</h2>
+            <div className="entry">
+              <input value={schedDate} onChange={(e) => setSchedDate(e.target.value)} placeholder="Date YYYY-MM-DD (default today)" />
+              <input value={forecastDays} onChange={(e) => setForecastDays(e.target.value)} placeholder="Forecast days (default 7)" />
+              <input value={forecastRatio} onChange={(e) => setForecastRatio(e.target.value)} placeholder="Sales per labor hour override (optional)" />
+              <button type="button" onClick={() => { setBusy(true); refreshScheduling().catch(fail).finally(() => setBusy(false)) }} disabled={busy}>Refresh</button>
+            </div>
+            <p className="hint">All scheduling times are UTC in v1.0. Shift start/end are entered in this browser&apos;s local time and stored as UTC. The forecast reads the last 28 days of completed sales and closed timeclock entries; a fresh store has no history yet, so the forecast reports that instead of inventing hours.</p>
+
+            {coverage && (
+              <div className="totals">
+                <div><span>Coverage — {coverage.date}</span><strong>{coverage.status}</strong></div>
+                <div><span>Forecast hours</span><strong>{coverage.forecast_hours ?? '—'}</strong></div>
+                <div><span>Scheduled hours</span><strong>{coverage.scheduled_hours}</strong></div>
+                <div><span>Delta hours</span><strong>{coverage.delta_hours ?? '—'}</strong></div>
+              </div>
+            )}
+
+            {forecast && (
+              <>
+                <h3>Labor forecast — {forecast.days.length} day(s) at {forecast.sales_per_labor_hour} sales per labor hour{forecast.ratio_from_history ? ' (from history)' : ' (override)'}</h3>
+                <p className="hint">History: {forecast.history_days} day(s), {forecast.history_txns} sale(s), {fmtMoney({ amount: forecast.history_sales, currency: 'Usd' })} sales, {forecast.history_labor_hours} worked hours.</p>
+                <table>
+                  <thead><tr><th>Date</th><th>Forecast txns</th><th>Forecast sales</th><th>Required hours</th><th>Peak hour (UTC)</th></tr></thead>
+                  <tbody>
+                    {forecast.days.map((d) => {
+                      const peak = d.hourly.length > 0 ? d.hourly.reduce((a, b) => (Number(b.required_hours) > Number(a.required_hours) ? b : a)) : null
+                      return (
+                        <tr key={d.date}>
+                          <td>{d.date}</td>
+                          <td>{d.forecast_txns}</td>
+                          <td>{d.forecast_sales}</td>
+                          <td>{d.required_hours}</td>
+                          <td>{peak ? `${String(peak.hour).padStart(2, '0')}:00 — ${peak.required_hours}h` : '—'}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </>
+            )}
+            {forecastNote && (
+              <p className="hint">Forecast unavailable: {forecastNote}</p>
+            )}
+
+            <h3>Shifts — {shifts.length} on this date</h3>
+            <table>
+              <thead><tr><th>Staff</th><th>Start (UTC)</th><th>End (UTC)</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody>
+                {shifts.map((s) => (
+                  <tr key={s.id}>
+                    <td>{s.staff_id.slice(0, 8)}</td>
+                    <td>{s.starts_at.replace('T', ' ').slice(0, 16)}</td>
+                    <td>{s.ends_at.replace('T', ' ').slice(0, 16)}</td>
+                    <td>{s.status}</td>
+                    <td>
+                      {s.status !== 'confirmed' && (<button type="button" onClick={() => void doShiftStatus(s.id, 'confirmed')} disabled={busy}>Confirm</button>)}
+                      {' '}
+                      {s.status !== 'cancelled' && (<button type="button" onClick={() => void doShiftStatus(s.id, 'cancelled')} disabled={busy}>Cancel</button>)}
+                    </td>
+                  </tr>
+                ))}
+                {shifts.length === 0 && (
+                  <tr><td colSpan={5}>No shifts on this date yet.</td></tr>
+                )}
+              </tbody>
+            </table>
+
+            <h3>New shift</h3>
+            <div className="entry">
+              <input value={shiftForm.staff_id} onChange={(e) => setShiftForm({ ...shiftForm, staff_id: e.target.value })} placeholder="Staff UUID" />
+              <input type="datetime-local" value={shiftForm.starts_at} onChange={(e) => setShiftForm({ ...shiftForm, starts_at: e.target.value })} />
+              <input type="datetime-local" value={shiftForm.ends_at} onChange={(e) => setShiftForm({ ...shiftForm, ends_at: e.target.value })} />
+              <input value={shiftForm.template_id} onChange={(e) => setShiftForm({ ...shiftForm, template_id: e.target.value })} placeholder="Template UUID (optional)" />
+              <input value={shiftForm.notes} onChange={(e) => setShiftForm({ ...shiftForm, notes: e.target.value })} placeholder="Notes (optional)" />
+              <button type="button" onClick={() => void doCreateShift()} disabled={busy}>Create shift</button>
+            </div>
+
+            <h3>Shift templates — {templates.length}</h3>
+            <table>
+              <thead><tr><th>Name</th><th>Weekday</th><th>Hours</th><th>Role</th><th>Required</th></tr></thead>
+              <tbody>
+                {templates.map((t) => (
+                  <tr key={t.id}>
+                    <td>{t.name}</td>
+                    <td>{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][t.weekday] ?? t.weekday}</td>
+                    <td>{t.starts_at}–{t.ends_at}</td>
+                    <td>{t.role ?? '—'}</td>
+                    <td>{t.required_count}</td>
+                  </tr>
+                ))}
+                {templates.length === 0 && (
+                  <tr><td colSpan={5}>No templates yet.</td></tr>
+                )}
+              </tbody>
+            </table>
+
+            <h3>New template</h3>
+            <div className="entry">
+              <input value={templateForm.name} onChange={(e) => setTemplateForm({ ...templateForm, name: e.target.value })} placeholder="Name" />
+              <select value={templateForm.weekday} onChange={(e) => setTemplateForm({ ...templateForm, weekday: e.target.value })}>
+                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((label, i) => (
+                  <option key={label} value={String(i)}>{label}</option>
+                ))}
+              </select>
+              <input value={templateForm.starts_at} onChange={(e) => setTemplateForm({ ...templateForm, starts_at: e.target.value })} placeholder="HH:MM" />
+              <input value={templateForm.ends_at} onChange={(e) => setTemplateForm({ ...templateForm, ends_at: e.target.value })} placeholder="HH:MM" />
+              <input value={templateForm.role} onChange={(e) => setTemplateForm({ ...templateForm, role: e.target.value })} placeholder="Role (optional)" />
+              <input value={templateForm.staff_id} onChange={(e) => setTemplateForm({ ...templateForm, staff_id: e.target.value })} placeholder="Staff UUID (optional)" />
+              <input value={templateForm.required_count} onChange={(e) => setTemplateForm({ ...templateForm, required_count: e.target.value })} placeholder="Required count" />
+              <button type="button" onClick={() => void doCreateTemplate()} disabled={busy}>Create template</button>
+            </div>
+
+            <h3>Timeclock</h3>
+            <div className="entry">
+              <input value={clockStaffId} onChange={(e) => setClockStaffId(e.target.value)} placeholder="Staff UUID" />
+              <button type="button" onClick={() => void doClockIn()} disabled={busy}>Clock in</button>
+              <button type="button" onClick={() => void doClockOut()} disabled={busy}>Clock out</button>
+            </div>
+            <table>
+              <thead><tr><th>Staff</th><th>Clock in (UTC)</th><th>Clock out (UTC)</th><th>Source</th></tr></thead>
+              <tbody>
+                {timeclock.map((entry) => (
+                  <tr key={entry.id}>
+                    <td>{entry.staff_id.slice(0, 8)}</td>
+                    <td>{entry.clock_in.replace('T', ' ').slice(0, 16)}</td>
+                    <td>{entry.clock_out ? entry.clock_out.replace('T', ' ').slice(0, 16) : 'open'}</td>
+                    <td>{entry.source}</td>
+                  </tr>
+                ))}
+                {timeclock.length === 0 && (
+                  <tr><td colSpan={4}>No timeclock entries on this date yet.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </section>
+        )}
       </main>
 
       <footer>
-        <p>Back office talks to the same edge database as the counter POS — stock, POs, transfers and counts are live, not demo data. Reorder points, transfers and counts persist in the edge database (migration 0005). Phase 4 adds CRM, delivery dispatch + POD, and vendor EDI on the same edge API — no mock data anywhere.</p>
+        <p>Back office talks to the same edge database as the counter POS — stock, POs, transfers and counts are live, not demo data. Reorder points, transfers and counts persist in the edge database (migration 0005). Phase 4 adds CRM, delivery dispatch + POD, and vendor EDI on the same edge API — no mock data anywhere. Phase 6 adds a BI tab: KPI dashboards, eco-fee remittance (CSV download) and ad-hoc inquiries from the same ledgers, plus the scheduled-email outbox listing. Phase 6 also adds a Scheduling tab: shift templates, staff shifts, timeclock and the sales-driven labor forecast with its coverage check.</p>
       </footer>
     </div>
   )

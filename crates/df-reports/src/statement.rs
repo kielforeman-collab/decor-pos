@@ -120,8 +120,9 @@ pub fn format_money(money: Money) -> String {
 }
 
 /// Escape text for Typst markup: every character that would start
-/// markup, code, math or a comment gets a backslash.
-fn escape_typst(text: &str) -> String {
+/// markup, code, math or a comment gets a backslash. Shared with
+/// the KPI dashboard PDF (Phase 6).
+pub(crate) fn escape_typst(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
         match ch {

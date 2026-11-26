@@ -17,12 +17,23 @@
 //!   not tested; see the README). It runs no migrations: the
 //!   database must already exist.
 //! * `jobs run` runs the Phase 2 daily jobs (`daily-usage`,
-//!   `low-stock`, `shortage-alerts`) and the Phase 3 monthly jobs
-//!   (`monthly-statements`, `finance-charges`, or all of them) once,
+//!   `low-stock`, `shortage-alerts`), the Phase 3 monthly jobs
+//!   (`monthly-statements`, `finance-charges`) and the Phase 6
+//!   daily jobs (`scheduled-report-email`, needs `--email-outbox`
+//!   and at least one `--email-recipient`;
+//!   `labor-forecast-refresh`, the 7-day sales-driven labor
+//!   forecast), or all of them, once,
 //!   right now, and prints the recorded runs as JSON. This is the
 //!   retrievable form of the scheduled jobs — there is no daemon
 //!   worker yet (`worker` mode is still a stub); schedule it with
 //!   cron/systemd calling `jobs run` daily, or run it by hand.
+//!
+//! Phase 6 (v1.0):
+//!
+//! * `migrate import` migrates the database, imports legacy Decor
+//!   Fusion CSVs from a directory (customers, products, formulas,
+//!   AR balances, inventory) and prints the reconciliation
+//!   manifest as JSON. Exit code 1 when any row or file failed.
 //!
 //! Phase 3 (v0.4):
 //!
@@ -55,6 +66,7 @@
 //! df-server edi intake --db sqlite:edge.db --org-id <uuid> --store-id <uuid> --doc-type 855 --file ./vendor.855.x12 --vendor-id VENDOR1
 //! df-server edi match --db sqlite:edge.db --org-id <uuid> --store-id <uuid> --po-id <uuid>
 //! df-server edi catalog --db sqlite:edge.db --org-id <uuid> --store-id <uuid> --file ./catalog.csv --vendor-id VENDOR1
+//! df-server migrate import --db sqlite:edge.db --org-id <uuid> --store-id <uuid> --dir ./legacy [--out manifest.json]
 //! ```
 
 use std::net::SocketAddr;
@@ -66,7 +78,9 @@ use chrono::{Datelike, NaiveDate};
 use clap::{Parser, Subcommand};
 use df_domain::Currency;
 use df_edge::{Edge, EdgeConfig, MockTerminal};
-use df_jobs::{JobContext, JobRunner, register_phase2_jobs, register_phase3_jobs};
+use df_jobs::{
+    JobContext, JobRunner, register_phase2_jobs, register_phase3_jobs, register_phase6_jobs,
+};
 use df_sync::MemoryHq;
 use rust_decimal::Decimal;
 use uuid::Uuid;
@@ -110,11 +124,19 @@ enum Command {
         /// Currency code (`USD` or `CAD`).
         #[arg(long, default_value = "USD")]
         currency: String,
+        /// Directory scheduled report emails queue into (the
+        /// `/bi/email-outbox` endpoint reads the same directory's
+        /// `manifest.json`). No SMTP send happens.
+        #[arg(long)]
+        email_outbox: Option<PathBuf>,
     },
     /// Background worker mode.
     Worker,
-    /// Run database migrations.
-    Migrate,
+    /// Database migrations and legacy data import (Phase 6, v1.0).
+    Migrate {
+        #[command(subcommand)]
+        command: MigrateCommand,
+    },
     /// Print a report as JSON (no server, no migrations — the
     /// database must already exist).
     Reports {
@@ -128,7 +150,9 @@ enum Command {
         /// UUID of the store to report on.
         #[arg(long)]
         store_id: Uuid,
-        /// Report kind: `daily-usage`, `low-stock`, `shortage`.
+        /// Report kind: `daily-usage`, `low-stock`, `shortage`,
+        /// `kpi` (single-day KPI dashboard for `--date`) or `eco`
+        /// (eco-fee remittance for the month to `--date`).
         #[arg(long)]
         kind: String,
         /// Date to report on (`YYYY-MM-DD`; defaults to today, UTC).
@@ -165,11 +189,42 @@ enum Command {
 }
 
 #[derive(Debug, Subcommand)]
+enum MigrateCommand {
+    /// Import legacy Decor Fusion CSVs from a directory
+    /// (customers, products, formulas, AR balances, inventory)
+    /// and print the reconciliation manifest as JSON. The
+    /// database is migrated first (SQLite or PostgreSQL by URL).
+    /// Exit code 1 when any row or file failed — the manifest
+    /// still lists what happened to each row.
+    Import {
+        /// sqlx database URL, e.g. `sqlite:edge.db` or a
+        /// PostgreSQL URL.
+        #[arg(long)]
+        db: String,
+        /// Organization UUID the import scopes to.
+        #[arg(long)]
+        org_id: Uuid,
+        /// UUID of the store the import scopes to.
+        #[arg(long)]
+        store_id: Uuid,
+        /// Directory holding the legacy CSV files.
+        #[arg(long)]
+        dir: PathBuf,
+        /// Write the manifest JSON to this file instead of
+        /// printing it.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum JobsCommand {
-    /// Run the Phase 2 daily jobs and the Phase 3 monthly jobs once,
-    /// right now, and print the recorded runs as JSON. `--job` runs
-    /// one job (`daily-usage`, `low-stock`, `shortage-alerts`,
-    /// `monthly-statements`, `finance-charges`); without it all run.
+    /// Run the Phase 2 daily jobs, the Phase 3 monthly jobs and the
+    /// Phase 6 scheduled-report-email job once, right now, and print
+    /// the recorded runs as JSON. `--job` runs one job
+    /// (`daily-usage`, `low-stock`, `shortage-alerts`,
+    /// `monthly-statements`, `finance-charges`,
+    /// `scheduled-report-email`); without it all run.
     /// Exits 1 if any run failed.
     Run {
         /// sqlx database URL, e.g. `sqlite:edge.db` or a
@@ -201,6 +256,15 @@ enum JobsCommand {
         /// finance-charges job (default 1.5).
         #[arg(long)]
         finance_rate: Option<String>,
+        /// Directory the `scheduled-report-email` job writes
+        /// rendered reports and `manifest.json` into. No SMTP send
+        /// happens; the outbox is the delivery record.
+        #[arg(long)]
+        email_outbox: Option<PathBuf>,
+        /// Email address the `scheduled-report-email` job queues
+        /// reports for (repeatable).
+        #[arg(long)]
+        email_recipient: Vec<String>,
     },
 }
 
@@ -387,7 +451,10 @@ async fn open_pool(db: &str) -> df_db::AnyPool {
     match df_db::connect(db).await {
         Ok(pool) => pool,
         Err(err) => {
-            eprintln!("df-server: failed to connect to {db}: {err}");
+            eprintln!(
+                "df-server: failed to connect to {}: {err}",
+                df_db::redact_db_url(db)
+            );
             std::process::exit(1);
         }
     }
@@ -476,9 +543,35 @@ async fn run_reports(
                 std::process::exit(1);
             }
         },
+        "kpi" => {
+            let currency = store_currency(&pool, store_id, currency_flag).await;
+            match df_reports::kpi_dashboard(&pool, org_id, store_id, date, date, date, currency)
+                .await
+            {
+                Ok(report) => serde_json::to_value(report).expect("report serialises"),
+                Err(err) => {
+                    eprintln!("df-server reports: {err}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "eco" => {
+            let currency = store_currency(&pool, store_id, currency_flag).await;
+            let month_start =
+                chrono::NaiveDate::from_ymd_opt(date.year(), date.month(), 1).unwrap();
+            match df_reports::eco_remittance_report(&pool, org_id, month_start, date, currency)
+                .await
+            {
+                Ok(report) => serde_json::to_value(report).expect("report serialises"),
+                Err(err) => {
+                    eprintln!("df-server reports: {err}");
+                    std::process::exit(1);
+                }
+            }
+        }
         other => {
             eprintln!(
-                "df-server reports: unknown --kind {other:?} (daily-usage | low-stock | shortage)"
+                "df-server reports: unknown --kind {other:?} (daily-usage | low-stock | shortage | kpi | eco)"
             );
             std::process::exit(2);
         }
@@ -501,6 +594,8 @@ struct JobsRunArgs {
     currency_flag: Option<String>,
     typst_bin: Option<PathBuf>,
     finance_rate: Option<String>,
+    email_outbox: Option<PathBuf>,
+    email_recipients: Vec<String>,
 }
 
 async fn run_jobs(args: JobsRunArgs) -> ! {
@@ -513,6 +608,8 @@ async fn run_jobs(args: JobsRunArgs) -> ! {
         currency_flag,
         typst_bin,
         finance_rate,
+        email_outbox,
+        email_recipients,
     } = args;
     let report_date = match parse_date(date) {
         Ok(date) => date,
@@ -539,9 +636,12 @@ async fn run_jobs(args: JobsRunArgs) -> ! {
     ctx.report_date = Some(report_date);
     ctx.typst_bin = typst_bin;
     ctx.finance_charge_rate_pct = finance_rate;
+    ctx.email_outbox_dir = email_outbox;
+    ctx.email_recipients = email_recipients;
     let runner = JobRunner::new();
     register_phase2_jobs(&runner);
     register_phase3_jobs(&runner);
+    register_phase6_jobs(&runner);
     let runs = match job.as_deref() {
         Some(name) => match runner.run_now(&ctx, name).await {
             Ok(run) => vec![run],
@@ -868,6 +968,65 @@ fn print_json(value: serde_json::Value) -> ! {
     std::process::exit(0);
 }
 
+/// `df-server migrate import`: migrate the database, import the
+/// legacy CSVs in `dir`, and print (or write) the reconciliation
+/// manifest. Exits 1 when any row or file failed; the manifest
+/// still records every row's outcome.
+async fn run_migrate_import(
+    db: String,
+    org_id: Uuid,
+    store_id: Uuid,
+    dir: PathBuf,
+    out: Option<PathBuf>,
+) -> ! {
+    let pool = open_pool(&db).await;
+    let dialect = if db.starts_with("postgres") {
+        df_db::Dialect::Postgres
+    } else {
+        df_db::Dialect::Sqlite
+    };
+    if let Err(err) = df_db::migrate(&pool, dialect).await {
+        eprintln!("df-server migrate import: migration failed: {err}");
+        std::process::exit(1);
+    }
+    let manifest = match df_migrator::import_directory(&pool, org_id, store_id, &dir).await {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            eprintln!("df-server migrate import: {err}");
+            std::process::exit(1);
+        }
+    };
+    let json = serde_json::to_string_pretty(&manifest).expect("manifest serialises");
+    match out {
+        Some(path) => {
+            if let Err(err) = std::fs::write(&path, &json) {
+                eprintln!(
+                    "df-server migrate import: cannot write {}: {err}",
+                    path.display()
+                );
+                std::process::exit(1);
+            }
+            println!(
+                "manifest written to {}: {} read / {} imported / {} skipped / {} failed",
+                path.display(),
+                manifest.total_rows_read,
+                manifest.total_imported,
+                manifest.total_skipped,
+                manifest.total_failed
+            );
+        }
+        None => println!("{json}"),
+    }
+    if !manifest.is_clean() {
+        eprintln!(
+            "df-server migrate import: finished with {} skipped / {} failed row(s) — see the manifest for reasons",
+            manifest.total_skipped, manifest.total_failed
+        );
+        std::process::exit(1);
+    }
+    std::process::exit(0);
+}
+
 async fn run_edi_send(
     ctx: EdiCtx,
     po_id: Uuid,
@@ -963,6 +1122,7 @@ async fn run_edge(
     org_id: Option<Uuid>,
     store_name: String,
     currency: String,
+    email_outbox: Option<PathBuf>,
 ) -> ! {
     let currency: Currency = match currency.parse() {
         Ok(currency) => currency,
@@ -990,6 +1150,9 @@ async fn run_edge(
     // Standalone/mock terminal: card tenders approve locally so the
     // POS API works out of the box with no real terminal attached.
     edge.set_payment_provider(Arc::new(MockTerminal::new()));
+    if let Some(dir) = email_outbox {
+        edge.set_email_outbox_dir(dir);
+    }
     // In-process in-memory HQ sink, so `/pos/sync/run` works out of
     // the box in the dev path (lost on restart; a real HQ sink lands
     // in a later phase).
@@ -1015,9 +1178,29 @@ async fn main() {
             org_id,
             store_name,
             currency,
-        } => run_edge(db, store_id, listen, org_id, store_name, currency).await,
+            email_outbox,
+        } => {
+            run_edge(
+                db,
+                store_id,
+                listen,
+                org_id,
+                store_name,
+                currency,
+                email_outbox,
+            )
+            .await
+        }
         Command::Worker => not_implemented("worker"),
-        Command::Migrate => not_implemented("migrate"),
+        Command::Migrate { command } => match command {
+            MigrateCommand::Import {
+                db,
+                org_id,
+                store_id,
+                dir,
+                out,
+            } => run_migrate_import(db, org_id, store_id, dir, out).await,
+        },
         Command::Reports {
             db,
             org_id,
@@ -1036,6 +1219,8 @@ async fn main() {
                 currency,
                 typst_bin,
                 finance_rate,
+                email_outbox,
+                email_recipient,
             } => {
                 run_jobs(JobsRunArgs {
                     db,
@@ -1046,6 +1231,8 @@ async fn main() {
                     currency_flag: currency,
                     typst_bin,
                     finance_rate,
+                    email_outbox,
+                    email_recipients: email_recipient,
                 })
                 .await
             }

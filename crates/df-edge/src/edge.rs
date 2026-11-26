@@ -173,6 +173,11 @@ pub struct Edge {
     /// Operator-configured product min levels for the low-stock
     /// report (no min-level table exists yet — see `df-reports`).
     product_thresholds: Arc<RwLock<Vec<ProductThreshold>>>,
+    /// Directory the scheduled-report-email job (Phase 6) writes
+    /// rendered reports + `manifest.json` into, and the `/bi`
+    /// outbox endpoint reads. `None` until
+    /// [`Edge::set_email_outbox_dir`] is called.
+    email_outbox_dir: Arc<RwLock<Option<std::path::PathBuf>>>,
 }
 
 impl std::fmt::Debug for Edge {
@@ -180,7 +185,8 @@ impl std::fmt::Debug for Edge {
         f.debug_struct("Edge")
             .field("store_id", &self.config.store_id)
             .field("org_id", &self.config.org_id)
-            .field("db_url", &self.config.db_url)
+            // Redacted: a PostgreSQL URL carries the password.
+            .field("db_url", &df_db::redact_db_url(&self.config.db_url))
             .field("store_name", &self.config.store_name)
             .field("currency", &self.config.currency)
             .finish_non_exhaustive()
@@ -204,7 +210,23 @@ impl Edge {
             events,
             tinter: Arc::new(Mutex::new(VirtualTinter::new("virtual-simulator"))),
             product_thresholds: Arc::new(RwLock::new(Vec::new())),
+            email_outbox_dir: Arc::new(RwLock::new(None)),
         })
+    }
+
+    /// Set the directory scheduled report emails queue into (see
+    /// `df-jobs` Phase 6). The `/bi/email-outbox` endpoint reads
+    /// the same directory's `manifest.json`.
+    pub fn set_email_outbox_dir(&self, dir: std::path::PathBuf) {
+        *self.email_outbox_dir.write().expect("outbox dir lock") = Some(dir);
+    }
+
+    /// The configured email outbox directory, if any.
+    pub(crate) fn email_outbox_dir(&self) -> Option<std::path::PathBuf> {
+        self.email_outbox_dir
+            .read()
+            .expect("outbox dir lock")
+            .clone()
     }
 
     pub fn config(&self) -> &EdgeConfig {
@@ -1504,9 +1526,12 @@ impl Edge {
     // --- sync ---------------------------------------------------------------
 
     /// Drain pending outbox entries in UUIDv7 order as one batch,
-    /// apply them to `hq`, and mark them synced on success. On
-    /// failure every entry is marked failed (retry count bumped) and
-    /// left pending.
+    /// apply them to `hq`, and mark them synced on success. Only the
+    /// ids the sink reports in `ApplyReport::applied_ids` are marked
+    /// synced: an entry the sink skipped (a conflicting transaction
+    /// re-send) or never saw (a partial apply) stays pending, so it
+    /// is retried — never silently lost. On failure every entry is
+    /// marked failed (retry count bumped) and left pending.
     pub async fn sync_now(&self, hq: &dyn HqSink) -> Result<ApplyReport, EdgeError> {
         let entries = Outbox::pending(&self.pool, self.config.store_id, 1000).await?;
         if entries.is_empty() {
@@ -1516,7 +1541,10 @@ impl Edge {
         let ids: Vec<Uuid> = batch.entries.iter().map(|e| e.id).collect();
         match hq.apply_batch(&batch).await {
             Ok(report) => {
-                Outbox::mark_synced(&self.pool, &ids).await?;
+                // Mark ONLY the ids the sink resolved. Marking the
+                // whole batch would silently drop entries a sink
+                // skipped or never applied.
+                Outbox::mark_synced(&self.pool, &report.applied_ids).await?;
                 let pending = Outbox::pending_count(&self.pool, self.config.store_id).await?;
                 df_db::upsert_sync_state(
                     &self.pool,

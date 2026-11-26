@@ -141,25 +141,37 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ Frontend `npm run build` clean — mobile-pwa (255 kB JS), web-portal (237 kB), web-storefront (236 kB)
 - ✅ Live HTTP verification by me from a clean seeded edge: portal reorder + bill pay + replay + BOPIS order/pickup + KPIs (open_orders 2, AR 550.00)
 ### GitHub
-- ⬜ NOT pushed yet (local only; main still at `65e96f0`) — push via connector in one commit once Kiel asks
+- ✅ Pushed Nov 26 via connector in ONE commit `e4ae658` (279 files, 57 new; 2 binary PWA icons excluded — connector cannot carry binaries)
 ### Known limits
 - PG round-trip still untested; bill pay has no surcharge in v0.6; portal has no separate login (customer id is the scope — anyone with the id can view that contractor's portal); mobile KPIs use the UTC calendar day (store-local day is a follow-up); BOPIS pickup completion is not idempotent (a double-complete is refused as already-completed, but the mobile outbox replay of POD/counts/PO-receives can double-apply — only portal bill-pay is idempotent); POD stores photo ref + hash only, no photo bytes, no upload endpoint; Tauri Mobile wrapper unverified (no Android SDK in VM); statements tab is empty until a month-end run exists; API-shape notes: Money currency serializes as `"Usd"`/`"Cad"` (not `"USD"`), reorder fulfillment over HTTP is `"Pickup"`/`"Delivery"` (variant names), statements return raw decimal strings (not Money objects); Vite dev binds `::1` only — use `http://localhost:<port>`, not `127.0.0.1`.
 - Fixes folded in during verification: health-version test assert 0.5.0 → 0.6.0; `default_provider` made `pub(crate)` for the portal module; `insert_order_tx` args bundled into `OrderTxParams` (clippy too-many-arguments).
 
-## Phase 6 — BI, Scheduling+, Migrator & v1.0 — ⬜ NOT STARTED
+## Phase 6 — BI, Scheduling+, Migrator & v1.0 — ✅ DONE Nov 26, 2026
 ### Scope
-- ⬜ `df-reports` KPI dashboards + ad-hoc inquiries
-- ⬜ PaintCare/Eco remittance reports
-- ⬜ Excel/PDF scheduled emails
-- ⬜ `scheduling_plus` — shifts & sales-driven labor forecasting
-- ⬜ `df-migrator` CLI — import legacy Decor Fusion data with reconciliation checksums
-- ⬜ Chaos-testing offline sync
-- ⬜ Security/PCI review
-- ⬜ Docker/Helm self-hosting docs
-### Exit test
-- ⬜ v1.0 — all exit tests green, docs complete
+- ✅ `df-reports` KPI dashboards + ad-hoc inquiries — sales, margin (revenue − COGS), inventory turns from the append-only ledger, AR aging (same derivation as statements), formula usage (tracking only); `GET /bi/kpi`, `/bi/inquiry`, BI tab in web-backoffice
+- ✅ PaintCare/Eco remittance reports — eco-fee totals by (country, region, store, category) from real transaction lines, JSON + CSV with TOTAL row; `GET /bi/eco?format=json|csv`
+- ✅ Excel/PDF scheduled emails — `scheduled-report-email` job (Daily 07:00 UTC) renders KPI PDF + eco CSV into a file-based email outbox (`manifest.json`, status `"queued"` — never `"sent"`); no SMTP anywhere; no native `.xlsx` (no xlsx crate vendored offline — CSV + PDF only)
+- ✅ `df-scheduling` (new crate) — shift templates, staff shifts (overlap-checked), timeclock (double clock-in refused), sales-driven labor forecasting (sales per labor-hour ratio, per-day-of-week + per-hour buckets, `InsufficientHistory` rather than inventing a number), coverage check (±10% band); edge routes + Scheduling tab in web-backoffice; `labor-forecast-refresh` job (Daily 05:30 UTC)
+- ✅ `df-migrator` (new crate, lib + standalone binary) — imports legacy Decor Fusion CSVs (customers, products, formulas as tracking records, AR balances, inventory) with SHA-256 file/row checksums, per-row imported/skipped/failed with reasons, deterministic UUIDv5 re-import is a no-op; `df-server migrate import` + `df-migrator import`; fixtures under `crates/df-migrator/fixtures/`
+- ✅ Chaos-testing offline sync — `crates/df-sync/tests/chaos_sync.rs` + `crates/df-edge/tests/chaos_sync_edge.rs`: dropped/reordered/duplicated messages, two-edge same-aggregate edits, conflicting edits, outbox redrain, 40-round randomized sweep — all model-checked; found and fixed 2 real bugs (F6 partial applies silently lost — `sync_now` now marks only `applied_ids` synced; F7 one poisoned entry bricked a store's sync — conflicts now handled per-entry)
+- ✅ Security/PCI review — `docs/security-review-v1.0.md`: no PAN/CVV anywhere (migration scan + payment-type key pinning tests), no hardcoded secrets, no f32/f64 in non-test Rust, all SQL parameterized, Argon2id auth; fixed F5 (DB credentials printed in logs — `redact_db_url` at all three sites); OPEN and recorded honestly: F1 df-api has no auth, F2 edge HTTP has no auth, F3 RBAC never enforced, F4 portal scope is the customer UUID, F8 no dead-letter for conflicts, F9 no TLS/mTLS on sync, F10 no CORS/rate limiting; `cargo audit` could not run (no binary, no network) — CI must run it before any release tag
+- ✅ Docker/Helm self-hosting docs — `Dockerfile` (multi-stage rust:1.99 → slim, non-root), `docker-compose.yml` (edge :8080 + api :3000 + provisioned Postgres), Helm chart `deploy/helm/decor-pos/`, `docs/self-hosting.md`; release binaries smoke-tested live; `docker build` / `docker compose up` / `helm template` NOT run (no Docker daemon or Helm binary in VM) — stated in the docs
+- ✅ Version bumped to 1.0.0 (workspace + health-version asserts)
+### Exit tests
+- ✅ v1.0 — all prior phases' exit tests re-run green by the coordinator: offline checkout parity, tint/formula end-to-end, AR statement batch, inventory back-office, Phase 4 EDI round-trip / POD close-out / CRM lapsed, Phase 5 portal exit, Phase 6 scheduling — plus 9 df-sync chaos tests and the migrator fixture test
+- ✅ Migrator imports the sample legacy dataset with checksums matching — verified live by the coordinator: 24 rows read, 14 imported, 5 failed (all intentional bad rows with named reasons), re-import is a no-op for imported rows; inventory rows fail with "unknown store code MAIN" on an unseeded DB (documented behavior)
+- ✅ Chaos sync tests pass — dropped 4 of 12 then redelivered to exact totals (inv −7, AR 200.0000); same batch 3× is a no-op (12 duplicates); two-edge same-aggregate merge inv −5, AR 150.0000; conflicting resend at 999.0000 rejected, stored TX stays 216.1088
 ### Verification
-- ⬜ `cargo test --workspace` — count TBD
-- ⬜ clippy clean, fmt clean
+- ✅ `cargo test --workspace` — 402/402 passing (71 suites, 0 failed; Phase 5 was 328, Phase 6 added 74)
+- ✅ clippy clean (`-D warnings`), fmt clean, web-backoffice `npm run build` clean (297.79 kB JS)
+- ✅ Live checks by the coordinator: `df-server migrate import` end-to-end on real SQLite files; release `df-server`/`df-api` binaries smoke-tested (`/health` ok)
 ### GitHub
-- ⬜ Push via connector in one commit once verified; tag v1.0
+- ⬜ NOT pushed yet (local only; main still at `e4ae658`) — push via connector in one commit once Kiel asks; tag v1.0
+### Known limits
+- PG round-trip still untested (SQLite only in this VM); Postgres migrations compile-checked only.
+- No native `.xlsx` — scheduled "Excel" artifact is CSV + PDF.
+- Scheduling times are UTC in v1.0; no staff directory (staff_id is a UUID text field); overnight shift templates not supported.
+- Skipped sync-conflict entries stay pending forever — no dead-letter path (open F8).
+- `df-api` and edge HTTP have no auth (F1/F2); RBAC defined but never enforced (F3); portal scope is the customer UUID (F4).
+- Docker image layers / compose runtime / Helm templates unverified until run on a Docker host (no daemon in VM).
+- `df-server hq` / `migrate` (standalone mode) / `standalone` are unimplemented — Postgres is provisioned only in compose.

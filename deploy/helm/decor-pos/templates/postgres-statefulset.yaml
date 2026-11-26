@@ -1,0 +1,55 @@
+# PostgreSQL 16, provisioned for the future HQ mode. Nothing in v1.0
+# connects to it (`df-server hq` / `migrate` are not implemented);
+# disable with `postgres.enabled=false`. Password comes from values
+# (override with --set or a Secret in production).
+{{- if .Values.postgres.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "decor-pos.postgres.fullname" . }}
+  labels:
+    {{- include "decor-pos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  serviceName: {{ include "decor-pos.postgres.fullname" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: decor-pos
+      app.kubernetes.io/component: postgres
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: decor-pos
+        app.kubernetes.io/component: postgres
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.user | quote }}
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.postgres.password | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+          ports:
+            - containerPort: 5432
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+  {{- if .Values.postgres.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: pgdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.postgres.persistence.size }}
+  {{- end }}
+{{- end }}

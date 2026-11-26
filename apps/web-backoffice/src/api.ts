@@ -9,13 +9,22 @@ import type {
   ArCustomerSummary,
   CatalogImportResponse,
   CollectionsView,
+  CoverageCheck,
+  ForecastReport,
+  ShiftTemplate,
+  StaffShift,
+  TimeclockEntry,
   CrmActivity,
   CrmSavedView,
   DeliveryView,
+  EcoRemittanceReport,
+  EmailDelivery,
   EdiDocument,
+  InquiryRow,
   IntakeResponse,
   InventoryBalance,
   InvoiceMatchReport,
+  KpiDashboard,
   InvoiceMatchReportRow,
   LapsedReport,
   PackingSlipView,
@@ -399,4 +408,115 @@ export async function importCatalog(
   vendorId: string,
 ): Promise<CatalogImportResponse> {
   return http('/edi/catalog/import', { csv_text: csvText, vendor_id: vendorId })
+}
+
+// --- Phase 6: BI -------------------------------------------------------------
+
+export async function getKpiDashboard(
+  storeId: string,
+  start: string,
+  end: string,
+  asOf?: string,
+): Promise<KpiDashboard> {
+  const q = new URLSearchParams({ store_id: storeId, start, end })
+  if (asOf) q.set('as_of', asOf)
+  return http(`/bi/kpi?${q}`)
+}
+
+export async function getEcoRemittance(start: string, end: string): Promise<EcoRemittanceReport> {
+  const q = new URLSearchParams({ start, end })
+  return http(`/bi/eco?${q}`)
+}
+
+export async function getEcoRemittanceCsv(start: string, end: string): Promise<string> {
+  const q = new URLSearchParams({ start, end, format: 'csv' })
+  const res = await fetch(`/api/bi/eco?${q}`)
+  if (!res.ok) {
+    const json = await res.json().catch(() => null)
+    throw new Error(typeof json?.error === 'string' ? json.error : `HTTP ${res.status}`)
+  }
+  return res.text()
+}
+
+export async function runInquiry(params: {
+  storeId: string
+  start: string
+  end: string
+  customerId?: string
+  productId?: string
+  docType?: string
+}): Promise<InquiryRow[]> {
+  const q = new URLSearchParams({ store_id: params.storeId, start: params.start, end: params.end })
+  if (params.customerId) q.set('customer_id', params.customerId)
+  if (params.productId) q.set('product_id', params.productId)
+  if (params.docType) q.set('doc_type', params.docType)
+  return http(`/bi/inquiry?${q}`)
+}
+
+export async function listEmailOutbox(): Promise<EmailDelivery[]> {
+  return http('/bi/email-outbox')
+}
+
+// --- Phase 6: Scheduling+ ----------------------------------------------------
+
+export async function listShiftTemplates(): Promise<ShiftTemplate[]> {
+  return http('/scheduling/templates')
+}
+
+export async function createShiftTemplate(body: {
+  name: string
+  weekday: number
+  starts_at: string
+  ends_at: string
+  role?: string | null
+  staff_id?: string | null
+  required_count: number
+}): Promise<ShiftTemplate> {
+  return http('/scheduling/templates', body)
+}
+
+export async function listStaffShifts(date: string): Promise<StaffShift[]> {
+  return http(`/scheduling/shifts?date=${date}`)
+}
+
+export async function createStaffShift(body: {
+  staff_id: string
+  shift_date: string
+  starts_at: string
+  ends_at: string
+  template_id?: string | null
+  notes?: string | null
+}): Promise<StaffShift> {
+  return http('/scheduling/shifts', body)
+}
+
+export async function setShiftStatus(id: string, status: string): Promise<StaffShift> {
+  return http(`/scheduling/shifts/${id}/status`, { status })
+}
+
+export async function clockIn(staffId: string): Promise<TimeclockEntry> {
+  return http('/scheduling/timeclock/clock-in', { staff_id: staffId })
+}
+
+export async function clockOut(staffId: string): Promise<TimeclockEntry> {
+  return http('/scheduling/timeclock/clock-out', { staff_id: staffId })
+}
+
+export async function listTimeclock(date: string): Promise<TimeclockEntry[]> {
+  return http(`/scheduling/timeclock?date=${date}`)
+}
+
+export async function getLaborForecast(params: {
+  from: string
+  days?: number
+  salesPerLaborHour?: string
+}): Promise<ForecastReport> {
+  const q = new URLSearchParams({ from: params.from })
+  if (params.days !== undefined) q.set('days', String(params.days))
+  if (params.salesPerLaborHour) q.set('sales_per_labor_hour', params.salesPerLaborHour)
+  return http(`/scheduling/forecast?${q}`)
+}
+
+export async function getLaborCoverage(date: string): Promise<CoverageCheck> {
+  return http(`/scheduling/coverage?date=${date}`)
 }

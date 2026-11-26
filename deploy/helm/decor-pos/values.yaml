@@ -1,0 +1,74 @@
+# decor-pos Helm values (v1.0) — override with your own values file.
+# Never commit real secrets here; pass them with --set or an external
+# secrets operator.
+
+image:
+  repository: decor-pos
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# Store identity. Generate fresh UUIDv7s for a real deployment.
+store:
+  id: "01900000-0000-7000-8000-000000000001"
+  orgId: "01900000-0000-7000-8000-000000000002"
+  name: "Decor POS Store"
+  currency: USD
+
+edge:
+  replicas: 1
+  port: 8080
+  service:
+    type: ClusterIP
+    port: 8080
+  persistence:
+    enabled: true
+    size: 1Gi
+    # storageClassName: standard
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+api:
+  replicas: 1
+  port: 3000
+  service:
+    type: ClusterIP
+    port: 3000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# PostgreSQL 16, provisioned for the future HQ mode. Nothing in v1.0
+# connects to it (`df-server hq` / `migrate` are not implemented);
+# set enabled=false to skip it entirely.
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  user: decor
+  # Set a real password via --set postgres.password=... (or a Secret).
+  password: "change-me-to-a-long-random-password"
+  database: decorpos
+  persistence:
+    enabled: true
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# Stripe Terminal credentials (env-only, never logged). Leave empty
+# for the mock terminal; live calls are not implemented in v1.0.
+stripe:
+  apiKey: ""
+  terminalLocationId: ""

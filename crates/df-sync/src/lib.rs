@@ -6,9 +6,11 @@
 //!
 //! * Every outbox entry id is a UUIDv7, so batches drain in creation
 //!   order and a replayed entry is recognisable by id alone.
-//! * [`HqSink::apply_batch`] must record applied entry ids and report
-//!   replays in [`ApplyReport::duplicates`]; a replayed batch changes
-//!   nothing.
+//! * [`HqSink::apply_batch`] must record applied entry ids and list
+//!   every resolved id in [`ApplyReport::applied_ids`]; a replayed
+//!   batch changes nothing, and a conflicting transaction entry is
+//!   skipped (counted in `ApplyReport::conflicts`) without blocking
+//!   the rest of the batch.
 //! * Conflict rules live in [`resolve`] and are documented in
 //!   [`resolve::RESOLUTION_RULES`]: append-only ledgers merge by union,
 //!   completed transactions are immutable, reference data resolves

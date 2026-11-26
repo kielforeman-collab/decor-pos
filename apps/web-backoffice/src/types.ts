@@ -484,3 +484,193 @@ export interface CatalogImportResponse {
   items: CatalogItem[]
   errors: { row: number; message: string }[]
 }
+
+// --- Phase 6: BI -------------------------------------------------------------
+// Shapes mirror the edge JSON (df-reports kpi / eco / outbox).
+// Decimals serialize as strings; Money as {amount, currency}.
+
+export interface KpiSales {
+  sale_count: number
+  return_count: number
+  gross_sales: Money
+  returns: Money
+  net_sales: Money
+  tax_total: Money
+  eco_fee_total: Money
+  grand_total: Money
+  avg_ticket: Money | null
+}
+
+export interface KpiMargin {
+  revenue: Money
+  cogs: Money
+  gross_profit: Money
+  margin_pct: string | null
+}
+
+export interface KpiInventory {
+  on_hand_value: Money
+  avg_inventory_value: Money
+  turns: string | null
+}
+
+export interface FormulaColorUsage {
+  color_code: string
+  color_name: string
+  formulas: number
+}
+
+export interface FormulaUsage {
+  formulas_created: number
+  per_color: FormulaColorUsage[]
+  total_tint_cost: Money
+}
+
+export interface AgingSummary {
+  current: Money
+  days_31_60: Money
+  days_61_90: Money
+  days_91_120: Money
+  over_120: Money
+}
+
+export interface KpiDashboard {
+  org_id: string
+  store_id: string
+  start: string
+  end: string
+  as_of: string
+  currency: 'Usd' | 'Cad'
+  sales: KpiSales
+  margin: KpiMargin
+  inventory: KpiInventory
+  ar_aging: AgingSummary
+  total_open_ar: Money
+  formulas: FormulaUsage
+}
+
+export interface EcoJurisdictionRow {
+  country_code: string
+  region_code: string
+  eco_fee_category: string | null
+  store_id: string
+  store_code: string
+  transaction_count: number
+  line_count: number
+  units: string
+  eco_fee_total: Money
+}
+
+export interface EcoRemittanceReport {
+  org_id: string
+  start: string
+  end: string
+  currency: 'Usd' | 'Cad'
+  rows: EcoJurisdictionRow[]
+  total: Money
+}
+
+export interface InquiryRow {
+  transaction_id: string
+  doc_number: string
+  doc_type: string
+  status: string
+  created_at: string
+  customer_id: string | null
+  subtotal: Money
+  tax_total: Money
+  eco_fee_total: Money
+  grand_total: Money
+  line_count: number
+  product_ids: string[]
+}
+
+export interface EmailDelivery {
+  id: string
+  report_kind: string
+  recipient: string
+  subject: string
+  file_name: string
+  file_sha256: string
+  scheduled_at: string
+  created_at: string
+  status: string
+}
+
+// --- Phase 6: Scheduling+ ----------------------------------------------------
+// Shapes mirror the edge JSON (df-scheduling rows + forecast report).
+// Decimals serialize as strings; datetimes as RFC 3339 strings.
+// All scheduling times are UTC in v1.0 (see df-edge::scheduling).
+
+export interface ShiftTemplate {
+  id: string
+  org_id: string
+  store_id: string
+  name: string
+  weekday: number
+  starts_at: string
+  ends_at: string
+  role: string | null
+  staff_id: string | null
+  required_count: number
+  is_active: boolean
+}
+
+export interface StaffShift {
+  id: string
+  org_id: string
+  store_id: string
+  template_id: string | null
+  staff_id: string
+  shift_date: string
+  starts_at: string
+  ends_at: string
+  status: string
+  notes: string | null
+}
+
+export interface TimeclockEntry {
+  id: string
+  org_id: string
+  store_id: string
+  staff_id: string
+  clock_in: string
+  clock_out: string | null
+  source: string
+}
+
+export interface HourBucket {
+  hour: number
+  avg_txns: string
+  avg_sales: string
+  required_hours: string
+}
+
+export interface DayForecast {
+  date: string
+  weekday: number
+  forecast_txns: string
+  forecast_sales: string
+  required_hours: string
+  hourly: HourBucket[]
+}
+
+export interface ForecastReport {
+  store_id: string
+  generated_at: string
+  history_days: number
+  history_txns: number
+  history_sales: string
+  history_labor_hours: string
+  sales_per_labor_hour: string
+  ratio_from_history: boolean
+  days: DayForecast[]
+}
+
+export interface CoverageCheck {
+  date: string
+  forecast_hours: string | null
+  scheduled_hours: string
+  delta_hours: string | null
+  status: 'adequate' | 'under' | 'over' | 'unknown'
+}

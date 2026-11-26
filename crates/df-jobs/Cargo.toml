@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Scheduled job runner: daily usage report, low-stock check, colorant shortage alerts (Phase 2, v0.3; spec §7)"
+description = "Scheduled job runner: daily usage report, low-stock check, colorant shortage alerts, monthly statements/finance charges, scheduled report emails (Phases 2-6; spec §7)"
 
 [dependencies]
 chrono = { workspace = true }
@@ -12,6 +12,7 @@ df-ar = { workspace = true }
 df-db = { workspace = true }
 df-domain = { workspace = true }
 df-reports = { workspace = true }
+df-scheduling = { workspace = true }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

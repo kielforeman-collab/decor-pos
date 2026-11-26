@@ -1,0 +1,15 @@
+decor-pos {{ .Chart.Version }} installed.
+
+Edge (counter POS / portal / BOPIS): http://{{ include "decor-pos.edge.fullname" . }}:{{ .Values.edge.service.port }}
+API (HQ reads): http://{{ include "decor-pos.api.fullname" . }}:{{ .Values.api.service.port }}
+
+WARNING: df-api has no authentication in v1.0 and the edge HTTP API
+has none either. Both Services are ClusterIP — do not expose them
+with an Ingress or LoadBalancer until authentication lands (see
+docs/security-review-v1.0.md).
+
+{{- if .Values.postgres.enabled }}
+PostgreSQL is provisioned but unused in v1.0 (`df-server hq` is not
+implemented yet). Change its password before any real use:
+  helm upgrade {{ .Release.Name }} . --set postgres.password=<long-random>
+{{- end }}

@@ -101,3 +101,74 @@ pub trait PaymentProvider: Send + Sync {
         Box<dyn std::future::Future<Output = Result<PaymentResult, PaymentError>> + Send + 'a>,
     >;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use df_domain::Currency;
+
+    /// PCI guardrail (spec §8 guardrail 3): the payment types have no
+    /// field that could carry card data, so no serialization of a
+    /// request or result can ever leak a PAN/CVV. This pins the exact
+    /// JSON key sets — adding a card field fails this test first.
+    #[test]
+    fn payment_types_carry_no_card_data() {
+        let req = PaymentRequest {
+            amount: Money::from_str_amount("42.0000", Currency::Usd).unwrap(),
+            idempotency_key: Uuid::now_v7(),
+            tender: TenderKind::Card,
+            surcharge: Money::zero(Currency::Usd),
+        };
+        let req_json = serde_json::to_value(&req).unwrap();
+        let req_keys: std::collections::BTreeSet<&str> = req_json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            req_keys,
+            ["amount", "idempotency_key", "surcharge", "tender"]
+                .into_iter()
+                .collect()
+        );
+
+        let result = PaymentResult {
+            status: PaymentStatus::Approved,
+            authorization: Some("MOCK000001".to_string()),
+            reference: "mock_1".to_string(),
+            amount: req.amount,
+            surcharge: req.surcharge,
+            tender: TenderKind::Card,
+        };
+        let result_json = serde_json::to_value(&result).unwrap();
+        let result_keys: std::collections::BTreeSet<&str> = result_json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            result_keys,
+            [
+                "amount",
+                "authorization",
+                "reference",
+                "status",
+                "surcharge",
+                "tender"
+            ]
+            .into_iter()
+            .collect()
+        );
+
+        // Belt and braces: no key anywhere mentions card data.
+        let joined = format!("{req_json}{result_json}").to_lowercase();
+        for forbidden in ["pan", "cvv", "cvc", "card_number", "cardnumber"] {
+            assert!(
+                !joined.contains(forbidden),
+                "payment JSON contains `{forbidden}`"
+            );
+        }
+    }
+}

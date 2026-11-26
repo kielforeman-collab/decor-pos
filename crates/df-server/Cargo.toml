@@ -14,6 +14,7 @@ df-db = { workspace = true }
 df-domain = { workspace = true }
 df-edge = { workspace = true }
 df-jobs = { workspace = true }
+df-migrator = { workspace = true }
 df-reports = { workspace = true }
 df-sync = { workspace = true }
 rust_decimal = { workspace = true }

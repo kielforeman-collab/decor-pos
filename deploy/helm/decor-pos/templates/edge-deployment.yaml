@@ -1,0 +1,79 @@
+# Store edge daemon: `df-server edge` on SQLite (the working path in
+# v1.0). One replica only — the SQLite file is local to the pod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "decor-pos.edge.fullname" . }}
+  labels:
+    {{- include "decor-pos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: edge
+spec:
+  replicas: {{ .Values.edge.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: decor-pos
+      app.kubernetes.io/component: edge
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: decor-pos
+        app.kubernetes.io/component: edge
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsNonRoot: true
+        fsGroup: 10001
+      containers:
+        - name: edge
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - df-server
+            - edge
+            - --db
+            - sqlite:/data/edge.db
+            - --store-id
+            - {{ .Values.store.id | quote }}
+            - --org-id
+            - {{ .Values.store.orgId | quote }}
+            - --store-name
+            - {{ .Values.store.name | quote }}
+            - --currency
+            - {{ .Values.store.currency | quote }}
+            - --listen
+            - 0.0.0.0:{{ .Values.edge.port }}
+          env:
+            - name: STRIPE_API_KEY
+              value: {{ .Values.stripe.apiKey | quote }}
+            - name: STRIPE_TERMINAL_LOCATION_ID
+              value: {{ .Values.stripe.terminalLocationId | quote }}
+          ports:
+            - containerPort: {{ .Values.edge.port }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.edge.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.edge.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.edge.resources | nindent 12 }}
+          volumeMounts:
+            - name: edge-data
+              mountPath: /data
+      volumes:
+        {{- if .Values.edge.persistence.enabled }}
+        - name: edge-data
+          persistentVolumeClaim:
+            claimName: {{ include "decor-pos.edge.fullname" . }}
+        {{- else }}
+        - name: edge-data
+          emptyDir: {}
+        {{- end }}

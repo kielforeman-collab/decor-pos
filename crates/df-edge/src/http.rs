@@ -29,6 +29,16 @@
 //!   report (defaults to today, UTC)
 //! * `GET /pos/reports/low-stock?date=YYYY-MM-DD` — low-stock
 //!   report (defaults to today, UTC)
+//! * `GET /bi/kpi?store_id=&start=&end=&as_of=` — KPI dashboard
+//!   (sales, margin, inventory turns, AR aging, formula usage
+//!   tracked only; defaults to today)
+//! * `GET /bi/eco?start=&end=&format=json|csv` — PaintCare/eco-fee
+//!   remittance by jurisdiction (defaults to the month to date)
+//! * `GET /bi/inquiry?store_id=&start=&end=&customer_id=&product_id=&doc_type=`
+//!   — ad-hoc inquiry over completed transactions
+//! * `GET /bi/email-outbox` — queued scheduled-email deliveries
+//!   (`manifest.json` in the configured outbox directory; 404 when
+//!   no outbox directory is configured)
 //! * `POST /pos/reports/low-stock/thresholds` — set the
 //!   operator-configured product thresholds the low-stock report
 //!   uses (`Vec<ProductThreshold>`)
@@ -111,6 +121,17 @@
 //! * `POST /bopis/orders/{id}/complete-pickup` — counter pickup completion (stock to sold)
 //! * `GET /mobile/kpis?store_id=` — Outside Sales KPIs: today's sales, open quotes/orders,
 //!   total open AR, deliveries out
+//! * `POST /scheduling/templates` + `GET /scheduling/templates` — shift templates
+//! * `POST /scheduling/shifts` + `GET /scheduling/shifts?date=YYYY-MM-DD` — staff shifts
+//!   (overlap-checked per staff member; all times UTC)
+//! * `POST /scheduling/shifts/{id}/status` — `{"status": "scheduled"|"confirmed"|"cancelled"}`
+//! * `POST /scheduling/timeclock/clock-in` + `POST /scheduling/timeclock/clock-out` —
+//!   `{"staff_id": ...}` (one open entry per staff member)
+//! * `GET /scheduling/timeclock?date=YYYY-MM-DD` — timeclock entries for one UTC date
+//! * `GET /scheduling/forecast?from=YYYY-MM-DD&days=7&sales_per_labor_hour=` — sales-driven
+//!   labor forecast (28 days of history; insufficient history is a 400, not an invention)
+//! * `GET /scheduling/coverage?date=YYYY-MM-DD` — scheduled vs forecast hours
+//!   (`adequate` within ±10%, `under`/`over` outside it, `unknown` with no forecast)
 //! * `GET /ws/v1/store/{store_id}` — WebSocket; sends a `connected`
 //!   event, then one JSON event per completed sale/return.
 //!
@@ -125,8 +146,11 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::{DateTime, NaiveDate, Utc};
-use df_reports::{DailyUsageReport, LowStockReport, ProductThreshold};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
+use df_reports::{
+    AdHocInquiry, DailyUsageReport, EmailDelivery, InquiryRow, KpiDashboard, LowStockReport,
+    ProductThreshold,
+};
 use df_tinter::TinterError;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -157,16 +181,22 @@ use crate::inventory::{
 use crate::portal::{
     BopisOrderResponse, BopisOrderView, PortalCustomerView, PortalReorderResponse,
 };
+use crate::scheduling::{
+    ClockRequest, CreateShiftTemplateRequest, CreateStaffShiftRequest, SetShiftStatusRequest,
+    parse_ratio,
+};
 use crate::tinting::{ColorantsResponse, DispenseTintRequest, DispenseTintResponse};
 use crate::types::{CompletedSale, PricePreview, ReturnLineInput, SaleInput, TenderInput, ZReport};
 use df_db::InventoryBalance;
 use df_db::models::{
     Appointment, ColorCatalogEntry, CrmActivity, CrmSavedView, DeliveryPod, PortalPaymentRow,
-    PricingRuleRow, Product, ReorderPoint, StatementRow, TillSession, TintFormula, Transaction,
+    PricingRuleRow, Product, ReorderPoint, ShiftTemplate, StaffShift, StatementRow, TillSession,
+    TimeclockEntry, TintFormula, Transaction,
 };
 use df_domain::Money;
 use df_edi::EdiDocument;
 use df_portal::{BillPayIntent, BillPayResult, BopisOrderRequest, MobileKpis, ReorderRequest};
+use df_scheduling::{CoverageCheck, ForecastReport};
 use df_sync::{ApplyReport, SyncState};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -234,6 +264,11 @@ fn err_response(err: EdgeError) -> (StatusCode, Json<ErrorResponse>) {
         ) => StatusCode::INTERNAL_SERVER_ERROR,
         EdgeError::Edi(_) => StatusCode::BAD_REQUEST,
         EdgeError::Crm(_) | EdgeError::Delivery(_) => StatusCode::BAD_REQUEST,
+        EdgeError::Scheduling(df_scheduling::SchedulingError::ShiftOverlap { .. })
+        | EdgeError::Scheduling(df_scheduling::SchedulingError::AlreadyClockedIn(_, _)) => {
+            StatusCode::CONFLICT
+        }
+        EdgeError::Scheduling(_) => StatusCode::BAD_REQUEST,
         EdgeError::Portal(df_portal::PortalError::NotPortalEnabled) => StatusCode::FORBIDDEN,
         EdgeError::Portal(_) => StatusCode::BAD_REQUEST,
         EdgeError::Db(df_db::DbError::NotFound(_)) => StatusCode::NOT_FOUND,
@@ -486,6 +521,142 @@ async fn set_thresholds(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThresholdsResponse {
     pub thresholds_set: usize,
+}
+
+// --- BI (Phase 6) ------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct BiKpiQuery {
+    pub store_id: Option<Uuid>,
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub as_of: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BiEcoQuery {
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BiInquiryQuery {
+    pub store_id: Option<Uuid>,
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub customer_id: Option<Uuid>,
+    pub product_id: Option<Uuid>,
+    pub doc_type: Option<String>,
+}
+
+/// `?start=&end=` as `YYYY-MM-DD`, defaulting to `default_start`
+/// / `default_end` when omitted. A malformed date is a 400, not a
+/// silent default.
+fn bi_date(
+    label: &str,
+    text: &Option<String>,
+    default: NaiveDate,
+) -> Result<NaiveDate, (StatusCode, Json<ErrorResponse>)> {
+    match text {
+        None => Ok(default),
+        Some(text) => NaiveDate::from_str(text).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("{label} must be YYYY-MM-DD, got {text:?}"),
+                }),
+            )
+        }),
+    }
+}
+
+fn bi_range(
+    start: &Option<String>,
+    end: &Option<String>,
+    default_start: NaiveDate,
+    default_end: NaiveDate,
+) -> Result<(NaiveDate, NaiveDate), (StatusCode, Json<ErrorResponse>)> {
+    Ok((
+        bi_date("start", start, default_start)?,
+        bi_date("end", end, default_end)?,
+    ))
+}
+
+async fn bi_kpi(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<BiKpiQuery>,
+) -> Result<Json<KpiDashboard>, (StatusCode, Json<ErrorResponse>)> {
+    let today = chrono::Utc::now().date_naive();
+    let (start, end) = bi_range(&query.start, &query.end, today, today)?;
+    let as_of = match &query.as_of {
+        None => end,
+        Some(text) => NaiveDate::from_str(text).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("as_of must be YYYY-MM-DD, got {text:?}"),
+                }),
+            )
+        })?,
+    };
+    edge.kpi_dashboard(store_or_default(&edge, query.store_id), start, end, as_of)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn bi_eco(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<BiEcoQuery>,
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let today = chrono::Utc::now().date_naive();
+    let month_start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap();
+    let (start, end) = bi_range(&query.start, &query.end, month_start, today)?;
+    let report = edge
+        .eco_remittance(start, end)
+        .await
+        .map_err(err_response)?;
+    match query.format.as_deref() {
+        Some("csv") => {
+            let csv = df_reports::render_eco_csv(&report);
+            Ok(axum::response::Response::builder()
+                .header("content-type", "text/csv")
+                .body(axum::body::Body::from(csv))
+                .unwrap())
+        }
+        _ => Ok(axum::response::Response::builder()
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::to_string(&report).unwrap(),
+            ))
+            .unwrap()),
+    }
+}
+
+async fn bi_inquiry(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<BiInquiryQuery>,
+) -> Result<Json<Vec<InquiryRow>>, (StatusCode, Json<ErrorResponse>)> {
+    let today = chrono::Utc::now().date_naive();
+    let (start, end) = bi_range(&query.start, &query.end, today, today)?;
+    let inquiry = AdHocInquiry {
+        start,
+        end,
+        customer_id: query.customer_id,
+        product_id: query.product_id,
+        doc_type: query.doc_type,
+    };
+    edge.ad_hoc_inquiry(store_or_default(&edge, query.store_id), &inquiry)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn bi_email_outbox(
+    State(edge): State<Arc<Edge>>,
+) -> Result<Json<Vec<EmailDelivery>>, (StatusCode, Json<ErrorResponse>)> {
+    edge.email_outbox().await.map(Json).map_err(err_response)
 }
 
 // --- inventory / purchasing / AR (Phase 3) ---------------------------------
@@ -1436,6 +1607,135 @@ async fn mobile_kpis(
         .map_err(err_response)
 }
 
+// --- Scheduling+ (Phase 6) ---------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct ShiftDayQuery {
+    pub date: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ForecastQuery {
+    pub from: Option<String>,
+    pub days: Option<i64>,
+    pub sales_per_labor_hour: Option<String>,
+}
+
+/// `?date=YYYY-MM-DD`, defaulting to today (UTC). A malformed
+/// value is a 400, not a silent default.
+fn day_or_today(date: &Option<String>) -> Result<NaiveDate, (StatusCode, Json<ErrorResponse>)> {
+    match appointment_day(date)? {
+        Some(day) => Ok(day),
+        None => Ok(Utc::now().date_naive()),
+    }
+}
+
+async fn create_shift_template(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<CreateShiftTemplateRequest>,
+) -> HandlerResult<ShiftTemplate> {
+    edge.create_shift_template(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_shift_templates(State(edge): State<Arc<Edge>>) -> HandlerResult<Vec<ShiftTemplate>> {
+    edge.list_shift_templates()
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn create_staff_shift(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<CreateStaffShiftRequest>,
+) -> HandlerResult<StaffShift> {
+    edge.create_staff_shift(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_staff_shifts(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<ShiftDayQuery>,
+) -> HandlerResult<Vec<StaffShift>> {
+    let day = day_or_today(&query.date)?;
+    edge.list_staff_shifts(day)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn set_shift_status(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetShiftStatusRequest>,
+) -> HandlerResult<StaffShift> {
+    edge.set_shift_status(id, &body.status)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn clock_in(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<ClockRequest>,
+) -> HandlerResult<TimeclockEntry> {
+    edge.clock_in(body.staff_id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn clock_out(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<ClockRequest>,
+) -> HandlerResult<TimeclockEntry> {
+    edge.clock_out(body.staff_id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_timeclock(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<ShiftDayQuery>,
+) -> HandlerResult<Vec<TimeclockEntry>> {
+    let day = day_or_today(&query.date)?;
+    edge.list_timeclock_entries(day)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn labor_forecast(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<ForecastQuery>,
+) -> HandlerResult<ForecastReport> {
+    let from = day_or_today(&query.from)?;
+    let ratio = match &query.sales_per_labor_hour {
+        Some(text) => Some(parse_ratio(text).map_err(err_response)?),
+        None => None,
+    };
+    edge.labor_forecast(from, query.days.unwrap_or(7), ratio)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn labor_coverage(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<ShiftDayQuery>,
+) -> HandlerResult<CoverageCheck> {
+    let day = day_or_today(&query.date)?;
+    edge.labor_coverage(day)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
 pub fn router(edge: Edge) -> Router {
     let state = Arc::new(edge);
     Router::new()
@@ -1459,6 +1759,10 @@ pub fn router(edge: Edge) -> Router {
         .route("/pos/reports/daily-usage", get(daily_usage))
         .route("/pos/reports/low-stock", get(low_stock))
         .route("/pos/reports/low-stock/thresholds", post(set_thresholds))
+        .route("/bi/kpi", get(bi_kpi))
+        .route("/bi/eco", get(bi_eco))
+        .route("/bi/inquiry", get(bi_inquiry))
+        .route("/bi/email-outbox", get(bi_email_outbox))
         .route("/inventory/balances", get(get_balances))
         .route(
             "/inventory/reorder-points",
@@ -1559,6 +1863,20 @@ pub fn router(edge: Edge) -> Router {
             post(bopis_pickup_complete),
         )
         .route("/mobile/kpis", get(mobile_kpis))
+        .route(
+            "/scheduling/templates",
+            post(create_shift_template).get(list_shift_templates),
+        )
+        .route(
+            "/scheduling/shifts",
+            post(create_staff_shift).get(list_staff_shifts),
+        )
+        .route("/scheduling/shifts/{id}/status", post(set_shift_status))
+        .route("/scheduling/timeclock/clock-in", post(clock_in))
+        .route("/scheduling/timeclock/clock-out", post(clock_out))
+        .route("/scheduling/timeclock", get(list_timeclock))
+        .route("/scheduling/forecast", get(labor_forecast))
+        .route("/scheduling/coverage", get(labor_coverage))
         .route("/ws/v1/store/{store_id}", get(ws_handler))
         .with_state(state)
 }
@@ -1638,7 +1956,7 @@ mod tests {
         let (status, body) = get_json(router.clone(), "/health").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ok");
-        assert_eq!(body["version"], "0.6.0");
+        assert_eq!(body["version"], "1.0.0");
 
         let (status, body) = post_json(
             router,
@@ -1863,5 +2181,84 @@ mod tests {
         assert_eq!(body["over_short"]["amount"], "3.8912");
         assert_eq!(body["sale_count"], 1);
         assert_eq!(body["gross_sales"]["amount"], "216.1088");
+    }
+
+    #[tokio::test]
+    async fn bi_kpi_eco_inquiry_and_outbox_over_http() {
+        let edge = test_edge().await;
+        let product_id = seed_product(&edge).await;
+        edge.set_payment_provider(Arc::new(MockTerminal::new()));
+        let router = edge.router();
+        // One cash sale today: 2 x $100 = $200 subtotal, eco
+        // $1.50, tax $14.6088, grand $216.1088.
+        let (status, _) = post_json(
+            router.clone(),
+            "/pos/transactions",
+            sale_body(product_id, "Cash"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let today = chrono::Utc::now().date_naive().to_string();
+        let (status, body) = get_json(
+            router.clone(),
+            &format!("/bi/kpi?start={today}&end={today}&as_of={today}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["sales"]["sale_count"], 1);
+        assert_eq!(body["sales"]["gross_sales"]["amount"], "200.0000");
+        assert_eq!(body["sales"]["net_sales"]["amount"], "200.0000");
+        assert_eq!(body["sales"]["grand_total"]["amount"], "216.1088");
+        // Margin: revenue 200, COGS 2 x 50 = 100, profit 100, 50%.
+        assert_eq!(body["margin"]["revenue"]["amount"], "200.0000");
+        assert_eq!(body["margin"]["cogs"]["amount"], "100.0000");
+        assert_eq!(body["margin"]["gross_profit"]["amount"], "100.0000");
+        assert_eq!(body["margin"]["margin_pct"], "50");
+        // No AR activity and no formulas on this edge.
+        assert_eq!(body["total_open_ar"]["amount"], "0.0000");
+        assert_eq!(body["formulas"]["formulas_created"], 0);
+
+        // Eco remittance as CSV: US-CA, architectural_paint, 1.50.
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/bi/eco?start={today}&end={today}&format=csv"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let csv = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(csv.contains("US,CA,MAIN,architectural_paint,1,1,2,1.5000"));
+        assert!(csv.contains("TOTAL,,,,,,,1.5000"));
+
+        // Ad-hoc inquiry: the one sale, by product and by type.
+        let (status, body) = get_json(
+            router.clone(),
+            &format!("/bi/inquiry?start={today}&end={today}&product_id={product_id}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["grand_total"]["amount"], "216.1088");
+        let (status, body) = get_json(
+            router.clone(),
+            &format!("/bi/inquiry?start={today}&end={today}&doc_type=return"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.as_array().unwrap().is_empty());
+
+        // No outbox directory configured on this edge: 404, not
+        // an empty list.
+        let (status, body) = get_json(router.clone(), "/bi/email-outbox").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body["error"].as_str().unwrap().contains("no email outbox"));
     }
 }

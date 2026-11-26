@@ -132,6 +132,27 @@ pub async fn inventory_on_hand(
         .fold(Decimal::ZERO, |acc, delta| acc + delta))
 }
 
+/// Find an inventory ledger entry by its `reference_id` at a
+/// store, if one exists. The migrator (Phase 6, v1.0) uses this
+/// for idempotency: a legacy inventory row maps to a deterministic
+/// `reference_id`, so a re-import finds the posted row instead of
+/// posting the on-hand twice.
+pub async fn find_inventory_entry_by_reference(
+    pool: &AnyPool,
+    store_id: Uuid,
+    reference_id: Uuid,
+) -> Result<Option<InventoryLedgerEntry>, DbError> {
+    let row = sqlx::query("SELECT * FROM inventory_ledger WHERE store_id = ? AND reference_id = ?")
+        .bind(uuid_str(store_id))
+        .bind(uuid_str(reference_id))
+        .fetch_optional(pool)
+        .await?;
+    match row {
+        Some(row) => Ok(Some(inventory_entry_from_row(&row)?)),
+        None => Ok(None),
+    }
+}
+
 /// One product's stock position at a store, derived from the
 /// append-only `inventory_ledger` (spec §5: balances are derived,
 /// never stored). Products with no ledger rows yet report zeroes.

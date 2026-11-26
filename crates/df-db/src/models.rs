@@ -696,3 +696,52 @@ pub struct PackingSlipRow {
     pub rendered_zpl: String,
     pub created_at: DateTime<Utc>,
 }
+
+/// One row of `shift_templates` (migration `0011_phase6`): a
+/// recurring weekly shift pattern for one store. Times are
+/// wall-clock `"HH:MM"` strings; `weekday` is 0=Sunday..6=Saturday.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShiftTemplate {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub store_id: Uuid,
+    pub name: String,
+    pub weekday: i32,
+    pub starts_at: String,
+    pub ends_at: String,
+    pub role: Option<String>,
+    pub staff_id: Option<Uuid>,
+    pub required_count: i32,
+    pub is_active: bool,
+}
+
+/// One row of `staff_shifts` (migration `0011_phase6`): one
+/// concrete shift for one staff member on one date. `status` is
+/// `scheduled` | `confirmed` | `cancelled`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StaffShift {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub store_id: Uuid,
+    pub template_id: Option<Uuid>,
+    pub staff_id: Uuid,
+    pub shift_date: NaiveDate,
+    pub starts_at: DateTime<Utc>,
+    pub ends_at: DateTime<Utc>,
+    pub status: String,
+    pub notes: Option<String>,
+}
+
+/// One row of `timeclock_entries` (migration `0011_phase6`): a
+/// clock-in / clock-out pair. `clock_out` is `None` while the
+/// entry is open.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TimeclockEntry {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub store_id: Uuid,
+    pub staff_id: Uuid,
+    pub clock_in: DateTime<Utc>,
+    pub clock_out: Option<DateTime<Utc>>,
+    pub source: String,
+}

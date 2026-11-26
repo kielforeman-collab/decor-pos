@@ -1,0 +1,5 @@
+customer_account_number,manufacturer,color_code,color_name,base_sku,container_volume_ml,sheen,room_or_usage,colorants,total_tint_cost
+C-1001,Benjamin Moore,OC-17,White Dove,BM-REGAL-1G,3785,Eggshell,Master Bedroom,Y3:14;R1:2,2.4000
+C-1002,Benjamin Moore,HC-172,Revere Pewter,BM-REGAL-1G,3785,Eggshell,Exterior Siding,Y3:22;BK:6,3.1000
+C-1001,Benjamin Moore,OC-99,No Such Base,XX-UNKNOWN,3785,Flat,Hallway,Y3:10,1.0000
+C-1001,Benjamin Moore,OC-17,White Dove,BM-REGAL-1G,3785,Eggshell,Master Bedroom,Y3:14;R1:2,2.4000

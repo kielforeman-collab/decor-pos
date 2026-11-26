@@ -1,0 +1,6 @@
+account_number,amount,entry_type,due_date,reference
+C-1001,400.0000,charge,2026-10-15,INV-1001
+C-1001,300.0000,charge,2026-11-05,INV-1002
+C-1002,150.0000,payment,2026-11-10,PAY-501
+C-9999,99.0000,charge,2026-11-01,INV-9999
+C-1001,400.0000,charge,2026-10-15,INV-1001

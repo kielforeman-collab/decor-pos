@@ -1,0 +1,72 @@
+# HQ read API: `df-api` against the edge's SQLite file (shared
+# volume). Admin reads only; no auth in v1.0 — ClusterIP only, never
+# expose this Service publicly (see docs/security-review-v1.0.md).
+# The API pod mounts the same PVC as the edge pod; SQLite serializes
+# the two processes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "decor-pos.api.fullname" . }}
+  labels:
+    {{- include "decor-pos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: decor-pos
+      app.kubernetes.io/component: api
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: decor-pos
+        app.kubernetes.io/component: api
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsNonRoot: true
+        fsGroup: 10001
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - df-api
+            - --db
+            - sqlite:/data/edge.db
+            - --org-id
+            - {{ .Values.store.orgId | quote }}
+            - --store-id
+            - {{ .Values.store.id | quote }}
+            - --listen
+            - 0.0.0.0:{{ .Values.api.port }}
+          ports:
+            - containerPort: {{ .Values.api.port }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.api.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.api.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          volumeMounts:
+            - name: edge-data
+              mountPath: /data
+      volumes:
+        {{- if .Values.edge.persistence.enabled }}
+        - name: edge-data
+          persistentVolumeClaim:
+            claimName: {{ include "decor-pos.edge.fullname" . }}
+        {{- else }}
+        - name: edge-data
+          emptyDir: {}
+        {{- end }}

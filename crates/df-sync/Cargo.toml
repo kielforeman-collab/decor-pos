@@ -17,5 +17,6 @@ tokio = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+chrono = { workspace = true }
 df-db = { workspace = true }
 tokio = { workspace = true }

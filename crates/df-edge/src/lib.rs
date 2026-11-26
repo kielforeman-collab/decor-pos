@@ -32,8 +32,14 @@
 //! machine, POD, packing slips); these modules are the wiring
 //! layer (persistence + HTTP rules over the `df-db` repos), not a
 //! second copy of that domain logic.
+//!
+//! Phase 6 (v1.0) adds the Scheduling+ wiring in [`scheduling`]:
+//! shift templates, staff shifts, timeclock and the sales-driven
+//! labor forecast + coverage check, over the `df-scheduling`
+//! domain rules and the migration `0011_phase6` tables.
 
 pub mod ar;
+pub mod bi;
 pub mod crm;
 pub mod delivery;
 pub mod edge;
@@ -45,6 +51,7 @@ pub mod inventory;
 pub mod payments;
 pub mod portal;
 pub mod pricing;
+pub mod scheduling;
 pub mod tinting;
 pub mod types;
 
@@ -86,6 +93,9 @@ pub use payments::{
     SurchargeRule, TenderKind, compute_surcharge, surcharge_rule_for,
 };
 pub use portal::{BopisOrderResponse, BopisOrderView, PortalCustomerView, PortalReorderResponse};
+pub use scheduling::{
+    ClockRequest, CreateShiftTemplateRequest, CreateStaffShiftRequest, SetShiftStatusRequest,
+};
 pub use tinting::{
     ColorantLevelView, ColorantsResponse, DispenseTintRequest, DispenseTintResponse,
     tint_job_to_row, virtual_tinter_from_levels,

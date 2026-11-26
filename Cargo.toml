@@ -20,11 +20,13 @@ members = [
     "crates/df-server",
     "crates/df-crm",
     "crates/df-delivery",
+    "crates/df-scheduling",
+    "crates/df-migrator",
     "apps/pos-desktop/src-tauri",
 ]
 
 [workspace.package]
-version = "0.6.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0 OR MIT"
@@ -52,6 +54,8 @@ df-hw = { path = "crates/df-hw" }
 df-jobs = { path = "crates/df-jobs" }
 df-payments = { path = "crates/df-payments" }
 df-portal = { path = "crates/df-portal" }
+df-scheduling = { path = "crates/df-scheduling" }
+df-migrator = { path = "crates/df-migrator" }
 df-plugin-sdk = { path = "crates/df-plugin-sdk" }
 df-reports = { path = "crates/df-reports" }
 df-sync = { path = "crates/df-sync" }

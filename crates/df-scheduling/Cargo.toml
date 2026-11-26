@@ -1,0 +1,15 @@
+[package]
+name = "df-scheduling"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Scheduling+ domain for decor-pos (Phase 6, v1.0, spec §4 scheduling_plus, §7 Phase 6): shift templates, staff shifts, timeclock, sales-driven labor forecasting and coverage checks"
+
+[dependencies]
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }

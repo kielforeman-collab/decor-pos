@@ -1,4 +1,5 @@
-//! `df-api` binary — serves the Axum API on 127.0.0.1:3000.
+//! `df-api` binary — serves the Axum API (default 127.0.0.1:3000;
+//! `--listen 0.0.0.0:3000` for Docker — see `docs/self-hosting.md`).
 //!
 //! Phase 2 (v0.3): `/health` and `/api-docs/openapi.json` work, auth
 //! routes return 501, and the tinting-admin + report endpoints work
@@ -34,6 +35,13 @@ struct Cli {
     /// Default store UUID (query ?store_id= overrides it per call).
     #[arg(long)]
     store_id: Option<Uuid>,
+    /// Address to listen on. Defaults to loopback; pass
+    /// `0.0.0.0:3000` when running inside Docker (see
+    /// `docs/self-hosting.md`). NOTE: this API has no authentication
+    /// yet (auth routes return 501) — do not expose it beyond a
+    /// trusted network; see `docs/security-review-v1.0.md`.
+    #[arg(long, default_value = "127.0.0.1:3000")]
+    listen: std::net::SocketAddr,
 }
 
 #[tokio::main]
@@ -48,10 +56,13 @@ async fn main() {
         match df_db::connect(db).await {
             Ok(pool) => {
                 state.pool = Some(pool);
-                println!("df-api: database connected ({db})");
+                println!("df-api: database connected ({})", df_db::redact_db_url(db));
             }
             Err(err) => {
-                eprintln!("df-api: failed to connect to {db}: {err}");
+                eprintln!(
+                    "df-api: failed to connect to {}: {err}",
+                    df_db::redact_db_url(db)
+                );
                 std::process::exit(1);
             }
         }
@@ -59,10 +70,10 @@ async fn main() {
         println!("df-api: no --db given; admin endpoints will return 503");
     }
     let router = create_router(state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+    let listener = tokio::net::TcpListener::bind(cli.listen)
         .await
-        .expect("bind 127.0.0.1:3000");
-    println!("df-api 0.3.0 listening on http://127.0.0.1:3000");
-    println!("OpenAPI: http://127.0.0.1:3000/api-docs/openapi.json");
+        .expect("bind listen address");
+    println!("df-api 0.3.0 listening on http://{}", cli.listen);
+    println!("OpenAPI: http://{}/api-docs/openapi.json", cli.listen);
     axum::serve(listener, router).await.expect("serve df-api");
 }

@@ -1,0 +1,11 @@
+# Keep the Docker build context small and secret-free.
+.git
+target
+**/node_modules
+**/dist
+**/*.db
+**/*.sqlite
+.env
+.env.local
+deploy
+docs

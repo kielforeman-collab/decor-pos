@@ -47,6 +47,10 @@
 //! `0007_phase4_crm_delivery` (delivery events, packing slips,
 //! dispatch priority / vehicle, POD photo time).
 //!
+//! Phase 6 adds the Scheduling+ repositories in [`scheduling`]:
+//! shift templates, staff shifts and timeclock entries
+//! (migration `0011_phase6`).
+//!
 //! SQLite (edge) FK note: the edge schema deliberately omits FOREIGN
 //! KEY references to HQ reference data (stores, users, customers,
 //! jobs, products) — the edge must keep selling when that data has
@@ -68,6 +72,7 @@ pub mod models;
 pub mod portal;
 pub mod purchase_orders;
 pub mod repos;
+pub mod scheduling;
 pub mod tint;
 pub mod transactions;
 
@@ -81,6 +86,7 @@ pub use models::*;
 pub use portal::*;
 pub use purchase_orders::*;
 pub use repos::*;
+pub use scheduling::*;
 pub use sqlx::AnyPool;
 pub use tint::*;
 pub use transactions::*;
@@ -134,4 +140,48 @@ pub async fn migrate(pool: &AnyPool, dialect: Dialect) -> Result<(), DbError> {
         }
     }
     Ok(())
+}
+
+/// Redact the userinfo (username/password) from a database URL for
+/// safe logging: `postgres://user:secret@host/db` becomes
+/// `postgres://***@host/db`. SQLite URLs and URLs without userinfo
+/// are returned unchanged. Callers must use this — never log a raw
+/// `--db` URL — because a PostgreSQL URL carries the password.
+pub fn redact_db_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let after_scheme = &url[scheme_end + 3..];
+    // Userinfo, if any, ends at the last '@' before the first '/'.
+    let path_start = after_scheme.find('/').unwrap_or(after_scheme.len());
+    let Some(at) = after_scheme[..path_start].rfind('@') else {
+        return url.to_string();
+    };
+    format!("{}://***@{}", &url[..scheme_end], &after_scheme[at + 1..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redact_db_url_hides_postgres_password() {
+        assert_eq!(
+            redact_db_url("postgres://decor:secret123@db.internal:5432/decorpos"),
+            "postgres://***@db.internal:5432/decorpos"
+        );
+        // Password containing '@': the userinfo runs to the LAST '@'.
+        assert_eq!(
+            redact_db_url("postgres://decor:p@ss@db.internal/decorpos"),
+            "postgres://***@db.internal/decorpos"
+        );
+        // No userinfo: unchanged.
+        assert_eq!(
+            redact_db_url("postgres://db.internal/decorpos"),
+            "postgres://db.internal/decorpos"
+        );
+        // SQLite URLs: unchanged.
+        assert_eq!(redact_db_url("sqlite:edge.db"), "sqlite:edge.db");
+        assert_eq!(redact_db_url("sqlite::memory:"), "sqlite::memory:");
+    }
 }

@@ -1,0 +1,24 @@
+[package]
+name = "df-migrator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Legacy Decor Fusion import CLI for decor-pos (Phase 6, v1.0, spec §7 Phase 6): import customers, products, tint formulas (tracking records only), AR balances and inventory on-hand from CSV, with reconciliation checksums and a full manifest — nothing silently dropped"
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+df-db = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[[bin]]
+name = "df-migrator"
+path = "src/bin/df-migrator.rs"

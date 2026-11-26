@@ -1,0 +1,11 @@
+apiVersion: v2
+name: decor-pos
+description: Open-source Rust Paint & Decorating POS — self-hosted edge + HQ API
+type: application
+version: 1.0.0
+appVersion: "0.6.0"
+# v1.0 scope (see docs/self-hosting.md): the edge daemon and the HQ
+# read API run; `df-server hq` / `migrate` are not implemented yet,
+# so the bundled PostgreSQL is provisioned but unused. Do not expose
+# this chart's services publicly: df-api has no authentication in
+# v1.0 (auth routes return 501) and the edge HTTP API has none either.

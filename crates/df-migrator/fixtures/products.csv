@@ -1,0 +1,6 @@
+sku,manufacturer_code,name,product_type,base_uom,list_price,standard_cost,department_code
+BM-REGAL-1G,BM,Regal Select Interior Eggshell 1 gal,paint_base,gal,89.9900,54.2500,PAINT
+BM-REGAL-1Q,BM,Regal Select Interior Eggshell 1 qt,paint_base,qt,24.9900,15.1000,PAINT
+SW-EMERALD-1G,SW,Emerald Interior Acrylic Latex 1 gal,paint_base,gal,94.9900,58.7500,PAINT
+BAD-PRICE,BM,Bad Price Row,paint_base,gal,not-a-number,10.0000,PAINT
+BM-REGAL-1G,BM,Regal Select Interior Eggshell 1 gal,paint_base,gal,89.9900,54.2500,PAINT

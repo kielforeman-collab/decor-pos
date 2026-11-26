@@ -20,6 +20,7 @@ df-hw = { workspace = true }
 df-payments = { workspace = true }
 df-portal = { workspace = true }
 df-reports = { workspace = true }
+df-scheduling = { workspace = true }
 df-sync = { workspace = true }
 df-tinter = { workspace = true }
 futures-util = "0.3"

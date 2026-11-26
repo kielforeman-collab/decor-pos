@@ -56,6 +56,14 @@ pub struct JobContext {
     /// configured; the 1.5% default matches the rate the spec's
     /// finance-charge example uses.
     pub finance_charge_rate_pct: Decimal,
+    /// Directory the `scheduled-report-email` job (Phase 6) writes
+    /// rendered reports and `manifest.json` into (`None` means the
+    /// job fails with a clear message — there is no default outbox).
+    pub email_outbox_dir: Option<std::path::PathBuf>,
+    /// Recipients the `scheduled-report-email` job queues reports
+    /// for (one manifest entry per recipient per file). Empty
+    /// means the job fails with a clear message.
+    pub email_recipients: Vec<String>,
 }
 
 impl JobContext {
@@ -69,6 +77,8 @@ impl JobContext {
             product_thresholds: Vec::new(),
             typst_bin: None,
             finance_charge_rate_pct: Decimal::from_str_exact("1.5").unwrap(),
+            email_outbox_dir: None,
+            email_recipients: Vec::new(),
         }
     }
 

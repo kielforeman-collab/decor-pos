@@ -8,16 +8,26 @@
 //!   the append-only inventory ledger) and colorants at/below
 //!   threshold, with purchase-order suggestions from
 //!   [`df_edi::generate_purchase_orders`].
-//! * [`colorant_shortage_alerts`] — colorants below threshold with
-//!   on-hand, threshold and shortfall; usable standalone and as a
-//!   section of the low-stock report.
+//! * [`kpi_dashboard`] — Phase 6: one store's KPI dashboard
+//!   (sales, margin, inventory turns, AR aging, formula usage
+//!   tracked only) plus [`run_inquiry`] ad-hoc inquiries.
+//! * [`eco_remittance_report`] — Phase 6: PaintCare/eco-fee
+//!   remittance by jurisdiction (JSON + [`render_eco_csv`]).
+//! * [`deliver_to_outbox`] — Phase 6: scheduled email delivery
+//!   as a file-based outbox (rendered file + `manifest.json`);
+//!   no live SMTP send.
+//! * [`render_kpi_dashboard_pdf`] — Phase 6: the KPI dashboard
+//!   as a real Typst PDF (same binary resolution as statements).
 //!
 //! Every report has a structured type (JSON-serializable) and a
 //! plain-text rendering (`render_text` / `render_shortage_alerts_text`).
 //! All money and volumes are `rust_decimal::Decimal` — never floats.
 //!
-//! No Excel output: that is Phase 6 (spec §7). PDF statements are
-//! Phase 3 (`df_reports::statement` — Typst, see that module).
+//! No Excel output: that is Phase 6 (spec §7) — and Phase 6 has
+//! no `.xlsx` writer available offline (no xlsx crate is vendored
+//! in the cargo cache), so scheduled Excel delivery is a real CSV
+//! (which Excel opens natively) plus a Typst PDF; see
+//! [`outbox`] and the Phase 6 job in `df-jobs`.
 //!
 //! Known gap, stated plainly: the schema has **no min-level table**
 //! for products (spec §5 defines no `product_min_levels` table), so
@@ -27,14 +37,24 @@
 //! min/max table lands in Phase 3.
 
 pub mod daily;
+pub mod eco;
 pub mod error;
+pub mod kpi;
 pub mod low_stock;
+pub mod outbox;
 pub mod shortage;
 pub mod statement;
 
 pub use daily::{ColorUsage, ColorantUsage, DailyUsageReport, SalesTotals, daily_usage_report};
+pub use eco::{EcoJurisdictionRow, EcoRemittanceReport, eco_remittance_report, render_eco_csv};
 pub use error::ReportError;
+pub use kpi::{
+    AdHocInquiry, FormulaColorUsage, FormulaUsage, InquiryRow, KpiDashboard, KpiInventory,
+    KpiMargin, KpiSales, kpi_dashboard, render_kpi_dashboard_pdf, render_kpi_dashboard_typst,
+    run_inquiry,
+};
 pub use low_stock::{LowStockProduct, LowStockReport, ProductThreshold, low_stock_report};
+pub use outbox::{EmailDelivery, deliver_to_outbox, file_sha256, read_outbox_manifest};
 pub use shortage::{ColorantShortageAlert, colorant_shortage_alerts, render_shortage_alerts_text};
 pub use statement::{
     StatementHeader, build_statements, format_money, header_for, period_label, persist_statement,

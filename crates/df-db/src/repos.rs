@@ -359,6 +359,17 @@ pub async fn get_store(pool: &AnyPool, id: Uuid) -> Result<Store, DbError> {
     store_from_row(&row)
 }
 
+/// Every store of an org, ordered by code — the raw material for
+/// org-wide reports (e.g. the eco-fee remittance, which groups by
+/// each store's country/region jurisdiction).
+pub async fn list_stores_for_org(pool: &AnyPool, org_id: Uuid) -> Result<Vec<Store>, DbError> {
+    let rows = sqlx::query("SELECT * FROM stores WHERE org_id = ? ORDER BY code ASC")
+        .bind(uuid_str(org_id))
+        .fetch_all(pool)
+        .await?;
+    rows.iter().map(store_from_row).collect()
+}
+
 // --- users ----------------------------------------------------------------
 
 pub async fn insert_user(pool: &AnyPool, user: &UserRow) -> Result<(), DbError> {
@@ -579,6 +590,21 @@ pub async fn list_tint_formulas_for_customer(
     let rows =
         sqlx::query("SELECT * FROM tint_formulas WHERE customer_id = ? ORDER BY dispensed_at DESC")
             .bind(uuid_str(customer_id))
+            .fetch_all(pool)
+            .await?;
+    rows.iter().map(tint_formula_from_row).collect()
+}
+
+/// Every stored formula for a store, newest first — the raw material
+/// for formula-usage reporting (tracking only: formulas as recorded,
+/// never a dispense/machine record).
+pub async fn list_tint_formulas_for_store(
+    pool: &AnyPool,
+    store_id: Uuid,
+) -> Result<Vec<TintFormula>, DbError> {
+    let rows =
+        sqlx::query("SELECT * FROM tint_formulas WHERE store_id = ? ORDER BY dispensed_at DESC")
+            .bind(uuid_str(store_id))
             .fetch_all(pool)
             .await?;
     rows.iter().map(tint_formula_from_row).collect()

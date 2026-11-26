@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Daily usage, low-stock and colorant shortage reports computed from df-db data (Phase 2, v0.3; spec §7)"
+description = "Daily usage, low-stock, KPI dashboards, eco-fee remittance and file-based scheduled-email outbox computed from df-db data (Phases 2-6; spec §7)"
 
 [dependencies]
 chrono = { workspace = true }

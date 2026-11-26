@@ -1,0 +1,6 @@
+account_number,customer_type,company_name,first_name,last_name,email,phone,charge_enabled,credit_limit,payment_terms
+C-1001,contractor,Harbourview Painting Ltd.,,,,604-555-0101,true,5000.0000,NET30
+C-1002,contractor,Seaside Coatings Inc.,,,,604-555-0102,true,2500.0000,NET30
+C-1003,retail,,Jane,Doe,jane.doe@example.invalid,604-555-0103,false,0.0000,COD
+,contractor,Missing Account Co.,,,,604-555-0104,true,1000.0000,NET30
+C-1001,contractor,Harbourview Painting Ltd.,,,,604-555-0101,true,5000.0000,NET30

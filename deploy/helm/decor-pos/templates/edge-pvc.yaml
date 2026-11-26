@@ -1,0 +1,20 @@
+# Edge SQLite volume. The edge and API pods share this PVC (one
+# writer, one light reader — SQLite serializes them). Two pods on
+# different nodes cannot share a ReadWriteOnce PVC; for multi-node
+# clusters use a ReadWriteMany class or run edge+api on the same node.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "decor-pos.edge.fullname" . }}
+  labels:
+    {{- include "decor-pos.labels" . | nindent 4 }}
+    app.kubernetes.io/component: edge
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.edge.persistence.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.edge.persistence.size }}

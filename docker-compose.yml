@@ -1,0 +1,112 @@
+# decor-pos self-hosted stack (v1.0) — `docker compose up`
+#
+# Services:
+#   postgres — PostgreSQL 16, provisioned for the future HQ mode.
+#     `df-server hq` / `df-server migrate` are NOT implemented in
+#     v1.0, so nothing talks to Postgres yet; it is here so the
+#     database, volume and credentials are ready when HQ lands.
+#     (PostgreSQL round-trip is untested in v1.0 — see plan.md.)
+#   edge     — the store daemon (`df-server edge`, SQLite). This is
+#     the working path: counter POS, portal, BOPIS, sync outbox.
+#   api      — the HQ read API (`df-api`) against the SAME SQLite
+#     file the edge owns (shared volume). Admin reads only.
+#
+# SECURITY (read docs/security-review-v1.0.md before exposing this):
+#   * df-api has NO authentication in v1.0 (auth routes return 501)
+#     and the edge HTTP API has none either. This stack binds both
+#     to the host's ports for local use only — put it behind a VPN /
+#     reverse proxy with auth, never on the open internet.
+#   * Copy `.env.example` to `.env` and replace every value first.
+#     Never commit a real `.env`.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-decor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-decorpos}
+    # Bound to loopback only: nothing in v1.0 connects to it, and it
+    # must not be reachable from the LAN until HQ mode lands.
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-decor}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  edge:
+    build: .
+    command:
+      - df-server
+      - edge
+      - --db
+      - sqlite:/data/edge.db
+      - --store-id
+      - ${STORE_ID:?set STORE_ID in .env}
+      - --org-id
+      - ${ORG_ID:?set ORG_ID in .env}
+      - --store-name
+      - ${STORE_NAME:-Decor POS Store}
+      - --currency
+      - ${CURRENCY:-USD}
+      - --listen
+      - 0.0.0.0:8080
+    environment:
+      # Stripe Terminal credentials are env-only, never in the image.
+      # Leave unset for the mock terminal (dev/demo). Live Stripe
+      # Terminal calls are not implemented in v1.0.
+      STRIPE_API_KEY: ${STRIPE_API_KEY:-}
+      STRIPE_TERMINAL_LOCATION_ID: ${STRIPE_TERMINAL_LOCATION_ID:-}
+      # Path to a typst binary for monthly-statement PDFs (the image
+      # does not bundle typst — mount one or run `statements` on the
+      # host). Leave unset to skip PDF rendering.
+      DF_TYPST_BIN: ${DF_TYPST_BIN:-}
+    ports:
+      - "8080:8080"
+    volumes:
+      - edgedata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+  api:
+    build: .
+    command:
+      - df-api
+      - --db
+      - sqlite:/data/edge.db
+      - --org-id
+      - ${ORG_ID:?set ORG_ID in .env}
+      - --store-id
+      - ${STORE_ID:?set STORE_ID in .env}
+      - --listen
+      - 0.0.0.0:3000
+    # Same SQLite file as the edge (read/write pool, no migrations).
+    # SQLite serializes the two processes; admin reads are light.
+    ports:
+      - "3000:3000"
+    volumes:
+      - edgedata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    depends_on:
+      edge:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  edgedata:
