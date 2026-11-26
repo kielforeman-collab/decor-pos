@@ -909,8 +909,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "df-accounting"
+version = "0.5.0"
+dependencies = [
+ "chrono",
+ "df-db",
+ "df-domain",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "df-api"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "chrono",
@@ -918,6 +934,7 @@ dependencies = [
  "df-auth",
  "df-db",
  "df-domain",
+ "df-edi",
  "df-reports",
  "rust_decimal",
  "serde",
@@ -930,8 +947,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "df-ar"
+version = "0.5.0"
+dependencies = [
+ "chrono",
+ "df-domain",
+ "rust_decimal",
+ "serde",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
 name = "df-auth"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "argon2",
  "rand 0.9.5",
@@ -941,11 +970,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "df-crm"
+version = "0.5.0"
+dependencies = [
+ "chrono",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
 name = "df-db"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "df-ar",
+ "df-crm",
+ "df-delivery",
  "df-domain",
  "rust_decimal",
  "serde",
@@ -957,8 +1001,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "df-delivery"
+version = "0.5.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
 name = "df-domain"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "proptest",
@@ -970,12 +1028,17 @@ dependencies = [
 
 [[package]]
 name = "df-edge"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "chrono",
+ "df-ar",
+ "df-crm",
  "df-db",
+ "df-delivery",
  "df-domain",
+ "df-edi",
  "df-hw",
  "df-payments",
  "df-reports",
@@ -985,6 +1048,8 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite",
@@ -994,10 +1059,11 @@ dependencies = [
 
 [[package]]
 name = "df-edi"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "df-db",
+ "df-plugin-sdk",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -1009,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "df-hw"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "df-domain",
  "rust_decimal",
@@ -1018,9 +1084,10 @@ dependencies = [
 
 [[package]]
 name = "df-jobs"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
+ "df-ar",
  "df-db",
  "df-domain",
  "df-reports",
@@ -1034,7 +1101,7 @@ dependencies = [
 
 [[package]]
 name = "df-payments"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "df-domain",
@@ -1047,10 +1114,11 @@ dependencies = [
 
 [[package]]
 name = "df-plugin-sdk"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "chrono",
+ "rust_decimal",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1061,15 +1129,17 @@ dependencies = [
 
 [[package]]
 name = "df-reports"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
+ "df-ar",
  "df-db",
  "df-domain",
  "df-edi",
  "rust_decimal",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
  "uuid",
@@ -1077,16 +1147,18 @@ dependencies = [
 
 [[package]]
 name = "df-server"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "clap",
+ "df-accounting",
  "df-db",
  "df-domain",
  "df-edge",
  "df-jobs",
  "df-reports",
  "df-sync",
+ "rust_decimal",
  "serde_json",
  "tokio",
  "uuid",
@@ -1094,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "df-sync"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "df-db",
@@ -1109,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "df-tinter"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "df-domain",
@@ -3267,7 +3339,7 @@ dependencies = [
 
 [[package]]
 name = "pos-desktop"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "df-db",

@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use df_domain::Currency;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -45,6 +46,16 @@ pub struct JobContext {
     /// (see `df_reports::ProductThreshold` — there is no min-level
     /// table yet, so the operator supplies them).
     pub product_thresholds: Vec<df_reports::ProductThreshold>,
+    /// Path to the `typst` binary the monthly-statements job renders
+    /// PDFs with (`None` means `df-reports` resolves it: explicit
+    /// path → `DF_TYPST_BIN` → `typst` on `PATH` → the developer
+    /// install).
+    pub typst_bin: Option<std::path::PathBuf>,
+    /// Monthly finance-charge rate in percent (e.g. `1.5` for
+    /// 1.5%/month) used by the `finance-charges` job. Operator-
+    /// configured; the 1.5% default matches the rate the spec's
+    /// finance-charge example uses.
+    pub finance_charge_rate_pct: Decimal,
 }
 
 impl JobContext {
@@ -56,6 +67,8 @@ impl JobContext {
             currency,
             report_date: None,
             product_thresholds: Vec::new(),
+            typst_bin: None,
+            finance_charge_rate_pct: Decimal::from_str_exact("1.5").unwrap(),
         }
     }
 
@@ -70,6 +83,10 @@ impl JobContext {
 pub enum Schedule {
     /// Once a day at `hour:minute` UTC.
     Daily { hour: u8, minute: u8 },
+    /// Once a month on `day` at `hour:minute` UTC. When the month is
+    /// shorter than `day` (e.g. day 31 in February) the job runs on
+    /// the month's last day.
+    Monthly { day: u8, hour: u8, minute: u8 },
     /// Only when run explicitly (`run_now` / `run_all`).
     Manual,
 }
@@ -223,23 +240,35 @@ impl JobRunner {
 
     /// Run the jobs that are due at `now`: a `Daily` job is due when
     /// `now` is at or past today's scheduled time and the job has not
-    /// run since that time (or has never run). `Manual` jobs are
-    /// never due. Pure function of `now` + run history — no
-    /// wall-clock waiting, so tests drive it with fixed instants.
+    /// run since that time (or has never run); a `Monthly` job is due
+    /// when `now` is at or past this month's scheduled day/time and
+    /// has not run since then. `Manual` jobs are never due. Pure
+    /// function of `now` + run history — no wall-clock waiting, so
+    /// tests drive it with fixed instants.
     pub async fn run_due(&self, ctx: &JobContext, now: DateTime<Utc>) -> Vec<JobRun> {
         let mut runs = Vec::new();
         for definition in self.definitions() {
-            let Schedule::Daily { hour, minute } = definition.schedule else {
-                continue;
+            let scheduled = match definition.schedule {
+                Schedule::Daily { hour, minute } => {
+                    let Some(scheduled_today) = now
+                        .date_naive()
+                        .and_hms_opt(hour.into(), minute.into(), 0)
+                        .map(|naive| naive.and_utc())
+                    else {
+                        continue;
+                    };
+                    scheduled_today
+                }
+                Schedule::Monthly { day, hour, minute } => {
+                    let Some(scheduled_this_month) = monthly_scheduled(now, day, hour, minute)
+                    else {
+                        continue;
+                    };
+                    scheduled_this_month
+                }
+                Schedule::Manual => continue,
             };
-            let Some(scheduled_today) = now
-                .date_naive()
-                .and_hms_opt(hour.into(), minute.into(), 0)
-                .map(|naive| naive.and_utc())
-            else {
-                continue;
-            };
-            if now < scheduled_today {
+            if now < scheduled {
                 continue;
             }
             let last = self
@@ -248,7 +277,7 @@ impl JobRunner {
                 .expect("last-run lock")
                 .get(definition.name)
                 .copied();
-            if last.is_some_and(|last| last >= scheduled_today) {
+            if last.is_some_and(|last| last >= scheduled) {
                 continue;
             }
             if let Ok(run) = self.run_now(ctx, definition.name).await {
@@ -257,6 +286,29 @@ impl JobRunner {
         }
         runs
     }
+}
+
+/// The scheduled instant for a monthly job in `now`'s month:
+/// `day` at `hour:minute` UTC, clamped to the month's last day.
+fn monthly_scheduled(now: DateTime<Utc>, day: u8, hour: u8, minute: u8) -> Option<DateTime<Utc>> {
+    use chrono::Datelike;
+    let date = now.date_naive();
+    let days_in_month = {
+        let (year, month) = (date.year(), date.month());
+        let (next_year, next_month) = if month == 12 {
+            (year + 1, 1)
+        } else {
+            (year, month + 1)
+        };
+        NaiveDate::from_ymd_opt(next_year, next_month, 1)
+            .unwrap()
+            .signed_duration_since(NaiveDate::from_ymd_opt(year, month, 1).unwrap())
+            .num_days() as u8
+    };
+    let day = day.min(days_in_month);
+    date.with_day(day.into())
+        .and_then(|d| d.and_hms_opt(hour.into(), minute.into(), 0))
+        .map(|naive| naive.and_utc())
 }
 
 /// Run `run_due(Utc::now())` every `check_every`, forever, on a
@@ -379,6 +431,87 @@ mod tests {
             .and_utc();
         assert_eq!(runner.run_due(&ctx, next).await.len(), 1);
         assert_eq!(runner.runs().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn run_due_fires_monthly_job_once_per_month() {
+        let runner = JobRunner::new();
+        runner.register(
+            JobDefinition {
+                name: "monthly-job",
+                description: "monthly",
+                schedule: Schedule::Monthly {
+                    day: 1,
+                    hour: 6,
+                    minute: 0,
+                },
+            },
+            ok_job("monthly ran"),
+        );
+        let ctx = ctx().await;
+        // Nov 30 — not due yet (this month's 1st already passed and
+        // the job has never run, so it IS due: the schedule is "the
+        // 1st of this month", and Nov 30 is past it).
+        let nov30 = NaiveDate::from_ymd_opt(2026, 11, 30)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc();
+        let runs = runner.run_due(&ctx, nov30).await;
+        assert_eq!(runs.len(), 1);
+        // Later in November — already ran this month.
+        let later = NaiveDate::from_ymd_opt(2026, 11, 30)
+            .unwrap()
+            .and_hms_opt(18, 0, 0)
+            .unwrap()
+            .and_utc();
+        assert!(runner.run_due(&ctx, later).await.is_empty());
+        // Dec 1 before 06:00 — December's run is not due yet.
+        let dec1_early = NaiveDate::from_ymd_opt(2026, 12, 1)
+            .unwrap()
+            .and_hms_opt(5, 59, 0)
+            .unwrap()
+            .and_utc();
+        assert!(runner.run_due(&ctx, dec1_early).await.is_empty());
+        // Dec 1 at 06:00 — due again.
+        let dec1 = NaiveDate::from_ymd_opt(2026, 12, 1)
+            .unwrap()
+            .and_hms_opt(6, 0, 0)
+            .unwrap()
+            .and_utc();
+        assert_eq!(runner.run_due(&ctx, dec1).await.len(), 1);
+        assert_eq!(runner.runs().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn monthly_schedule_clamps_to_short_months() {
+        let runner = JobRunner::new();
+        runner.register(
+            JobDefinition {
+                name: "month-end-job",
+                description: "day 31",
+                schedule: Schedule::Monthly {
+                    day: 31,
+                    hour: 6,
+                    minute: 0,
+                },
+            },
+            ok_job("month-end ran"),
+        );
+        let ctx = ctx().await;
+        // February 2027 has 28 days: the day-31 job is due on Feb 28.
+        let feb27 = NaiveDate::from_ymd_opt(2027, 2, 27)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc();
+        assert!(runner.run_due(&ctx, feb27).await.is_empty());
+        let feb28 = NaiveDate::from_ymd_opt(2027, 2, 28)
+            .unwrap()
+            .and_hms_opt(6, 0, 0)
+            .unwrap()
+            .and_utc();
+        assert_eq!(runner.run_due(&ctx, feb28).await.len(), 1);
     }
 
     #[tokio::test]

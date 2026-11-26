@@ -16,7 +16,7 @@ use crate::codec::*;
 use crate::error::DbError;
 use crate::models::{ArLedgerEntry, Transaction, TransactionLine};
 
-fn transaction_from_row(row: &sqlx::any::AnyRow) -> Result<Transaction, DbError> {
+pub(crate) fn transaction_from_row(row: &sqlx::any::AnyRow) -> Result<Transaction, DbError> {
     Ok(Transaction {
         id: uuid_col(row, "id")?,
         org_id: uuid_col(row, "org_id")?,

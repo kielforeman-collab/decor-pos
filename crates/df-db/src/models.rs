@@ -143,10 +143,127 @@ pub struct Customer {
     pub charge_enabled: bool,
     pub credit_limit: Decimal,
     pub payment_terms: String,
+    /// Explicit terms in days (`customers.terms_days`, Phase 3).
+    /// `None` means "parse `payment_terms`" (`NET30` → 30, …).
+    pub terms_days: Option<i32>,
+    /// Monthly finance-charge rate in percent, e.g. `1.5` for
+    /// 1.5%/month (`customers.finance_rate_pct_monthly`, Phase 3).
+    /// `None` means "use the rate the assessment run was given".
+    pub finance_rate_pct_monthly: Option<Decimal>,
     pub credit_hold: bool,
     pub require_po_number: bool,
     pub require_job_name: bool,
     pub portal_enabled: bool,
+}
+
+/// One row of `customer_jobs` (spec §5.4): a job sub-ledger under
+/// one charge account. AR entries can point at a job, so a
+/// contractor's balance splits per job.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomerJob {
+    pub id: Uuid,
+    pub customer_id: Uuid,
+    pub job_code: String,
+    pub job_name: String,
+    pub site_address_json: serde_json::Value,
+    pub tax_zone_override: Option<Uuid>,
+    pub is_active: bool,
+}
+
+/// One row of `ar_allocations` (spec §5.4): part of one payment
+/// entry applied to one charge entry (FIFO — see `df-ar`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArAllocation {
+    pub id: Uuid,
+    pub payment_entry_id: Uuid,
+    pub charge_entry_id: Uuid,
+    pub allocated_amount: Decimal,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One row of `statements` (Phase 3): a frozen month-end statement
+/// for one charge account. Money is `Decimal`; `payments_total`
+/// counts payments **and credit memos** in the period (positive
+/// magnitude). `aging_json` is
+/// `{"current": "…", "31-60": "…", "61-90": "…", "91-120": "…",
+/// "120+": "…"}` with exact decimal strings. `pdf_sha256` is set
+/// by the PDF worker when it renders this statement.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StatementRow {
+    pub id: Uuid,
+    pub customer_id: Uuid,
+    pub period_start: NaiveDate,
+    pub period_end: NaiveDate,
+    pub opening_balance: Decimal,
+    pub charges_total: Decimal,
+    pub payments_total: Decimal,
+    pub finance_charge_total: Decimal,
+    pub closing_balance: Decimal,
+    pub aging_json: serde_json::Value,
+    pub pdf_sha256: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One row of `inventory_transfers` (Phase 3): stock moving between
+/// two stores. `status` is `draft` | `shipped` | `received` |
+/// `cancelled`. The inventory movement itself is recorded in
+/// `inventory_ledger` by the worker that ships/receives it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InventoryTransfer {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub from_store_id: Uuid,
+    pub to_store_id: Uuid,
+    pub status: String,
+    pub reference: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One row of `transfer_lines` (Phase 3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TransferLine {
+    pub id: Uuid,
+    pub transfer_id: Uuid,
+    pub product_id: Uuid,
+    pub qty: Decimal,
+    pub unit_cost: Decimal,
+}
+
+/// One row of `physical_counts` (Phase 3): a stock count at one
+/// store. `status` is `open` | `reconciled`; `counted_at` is set
+/// when the count is reconciled.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PhysicalCount {
+    pub id: Uuid,
+    pub store_id: Uuid,
+    pub status: String,
+    pub counted_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One row of `count_lines` (Phase 3): `variance_qty` is
+/// `counted_qty - system_qty`, computed by the caller at insert.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CountLine {
+    pub id: Uuid,
+    pub count_id: Uuid,
+    pub product_id: Uuid,
+    pub counted_qty: Decimal,
+    pub system_qty: Decimal,
+    pub variance_qty: Decimal,
+    pub unit_cost: Decimal,
+}
+
+/// One row of `reorder_points` (Phase 3): min/max stock levels for
+/// one product at one store. Unique per (store, product).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReorderPoint {
+    pub id: Uuid,
+    pub store_id: Uuid,
+    pub product_id: Uuid,
+    pub min_qty: Decimal,
+    pub max_qty: Decimal,
+    pub reorder_qty: Decimal,
 }
 
 /// A row of `pricing_rules` (spec §5.4). `calc_method` is stored as text
@@ -370,4 +487,182 @@ pub struct SyncStateRow {
     pub last_batch_id: Option<Uuid>,
     pub last_synced_at: Option<DateTime<Utc>>,
     pub pending_count: i64,
+}
+
+// --- Phase 2 (EDI) / Phase 3 (purchasing) models ---------------------------
+
+/// One row of `purchase_orders` (migration `0004_phase2_edi`).
+/// `status` is `draft` | `sent` | `acknowledged` |
+/// `partially_received` | `received` | `cancelled`. `total` is the
+/// exact ordered total (sum of `qty * unit_cost` over the lines).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PurchaseOrderRow {
+    pub id: Uuid,
+    pub po_number: String,
+    pub vendor_id: String,
+    pub store_id: Uuid,
+    pub status: String,
+    pub total: Decimal,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One row of `purchase_order_lines` (migration `0004_phase2_edi`).
+/// There is no `received_qty` column by design: received quantities
+/// are derived from the append-only `inventory_ledger`
+/// (`reason_type = 'po_receive'`, `reference_id` = PO id) — see
+/// [`crate::purchase_orders::po_received_by_product`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PurchaseOrderLineRow {
+    pub id: Uuid,
+    pub po_id: Uuid,
+    pub product_id: Uuid,
+    pub line_no: i32,
+    pub vendor_sku: String,
+    pub description: String,
+    pub qty: Decimal,
+    pub uom: String,
+    pub unit_cost: Decimal,
+}
+
+// --- Phase 4 (CRM + delivery) models ---------------------------------------
+
+/// One row of `crm_activities` (migration `0006_phase4`): a logged
+/// touch with a customer — call, email, visit, quote, note or
+/// follow-up. `activity_type` is `call` | `email` | `visit` |
+/// `quote` | `note` | `follow_up`. A reminder is an activity with a
+/// `due_at`; it is due when `completed_at` is null, `due_at` is at
+/// or before the check time, and it is not snoozed past that time
+/// (`snoozed_until` null or at/before the check time).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CrmActivity {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub store_id: Uuid,
+    pub customer_id: Option<Uuid>,
+    pub activity_type: String,
+    pub subject: String,
+    pub notes: Option<String>,
+    pub created_by: Option<Uuid>,
+    pub due_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub snoozed_until: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One row of `appointments` (migration `0006_phase4`): a booked
+/// slot with a customer. `status` is `scheduled` | `completed` |
+/// `cancelled` | `no_show`. The table CHECK enforces
+/// `ends_at > starts_at`; same-staff overlap is rejected by the
+/// edge (`df-edge::crm`), not by the schema.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Appointment {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub store_id: Uuid,
+    pub customer_id: Option<Uuid>,
+    pub staff_id: Option<Uuid>,
+    pub title: String,
+    pub starts_at: DateTime<Utc>,
+    pub ends_at: DateTime<Utc>,
+    pub status: String,
+    pub notes: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One row of `crm_saved_views` (migration `0006_phase4`): a named,
+/// stored activity filter. `filter_json` is an object with any of
+/// `activity_type` (string), `customer_id` (UUID string),
+/// `completed` (bool) and `due_before` (RFC 3339); unknown keys are
+/// ignored when the view runs. Unique per (store, name).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CrmSavedView {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub store_id: Uuid,
+    pub name: String,
+    pub filter_json: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One row of `deliveries` (migration `0006_phase4`): a delivery
+/// job for a sale (or a standalone drop when `transaction_id` is
+/// null). `status` is `draft` | `assigned` | `out_for_delivery` |
+/// `delivered` | `cancelled`. `delivered` is only reachable through
+/// a POD submission (`df-edge::delivery::submit_pod`) — the status
+/// endpoint refuses a direct jump to `delivered`. `address_json`
+/// is a free-form address object (`street`, `city`, `postal_code`,
+/// …); `scheduled_date` is the planned delivery day.
+/// `priority` (migration `0007_phase4_crm_delivery`) is the
+/// dispatch urgency — higher number = more urgent — and `vehicle`
+/// is the assigned vehicle label, e.g. `"Van 2"`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Delivery {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub store_id: Uuid,
+    pub transaction_id: Option<Uuid>,
+    pub customer_id: Option<Uuid>,
+    pub driver_id: Option<Uuid>,
+    pub status: String,
+    pub address_json: serde_json::Value,
+    pub scheduled_date: Option<NaiveDate>,
+    pub priority: i32,
+    pub vehicle: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// One row of `delivery_pods` (migration `0006_phase4`): proof of
+/// delivery for one delivery. The signature is stored as base64
+/// text plus its SHA-256 hex digest (`signature_sha256`) so a
+/// close-out can be verified without re-reading the bytes; the
+/// photo is a reference string (file path or URL) plus an optional
+/// SHA-256 — the photo bytes themselves are never stored here and
+/// no camera hardware is involved. `photo_at` (migration
+/// `0007_phase4_crm_delivery`) is when the photo was taken; when
+/// NULL the signature time (`signed_at`) stands in for it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeliveryPod {
+    pub id: Uuid,
+    pub delivery_id: Uuid,
+    pub signature_sha256: String,
+    pub signature_b64: String,
+    pub photo_ref: Option<String>,
+    pub photo_sha256: Option<String>,
+    pub received_by: String,
+    pub signed_at: DateTime<Utc>,
+    pub photo_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One row of `delivery_events` (migration
+/// `0007_phase4_crm_delivery`): the audit trail for a delivery's
+/// status changes — who moved it, from what to what, and when.
+/// Written by `df_db::transition_delivery` /
+/// `df_db::close_out_delivery` in the same transaction as the
+/// status change, so the trail can never disagree with the row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeliveryEvent {
+    pub id: Uuid,
+    pub delivery_id: Uuid,
+    pub from_status: String,
+    pub to_status: String,
+    pub actor_user_id: Uuid,
+    pub note: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One row of `packing_slips` (migration
+/// `0007_phase4_crm_delivery`): a rendered packing slip for one
+/// delivery, stored so the exact slip that was printed can be
+/// re-printed later. `rendered_text` is the 42-column plain-text
+/// slip; `rendered_zpl` is the ZPL label rendering (see
+/// `df-delivery::PackingSlip`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PackingSlipRow {
+    pub id: Uuid,
+    pub delivery_id: Uuid,
+    pub rendered_text: String,
+    pub rendered_zpl: String,
+    pub created_at: DateTime<Utc>,
 }

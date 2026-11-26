@@ -31,26 +31,53 @@
 //! color / customer history, tint-job persistence, and the atomic
 //! colorant-level decrement a dispense runs.
 //!
+//! Phase 3 adds the contractor AR repositories in [`ar`]:
+//! charge-account credit fields, customer jobs, AR allocations,
+//! statements, inventory transfers, physical counts and reorder
+//! points (migration `0005_phase3`).
+//!
+//! Phase 4 adds the CRM + delivery repositories in [`crm`]:
+//! activity log, appointments, saved views, deliveries and
+//! proof-of-delivery rows (migration `0006_phase4`), plus the
+//! domain-rule repositories in [`delivery`] (validated
+//! transitions with an audit trail, POD-gated close-out,
+//! dispatch board, packing slips) and [`crm_reports`]
+//! (reminder tickler, overlap-checked appointments,
+//! lapsed-contractor report, saved-view evaluation) on migration
+//! `0007_phase4_crm_delivery` (delivery events, packing slips,
+//! dispatch priority / vehicle, POD photo time).
+//!
 //! SQLite (edge) FK note: the edge schema deliberately omits FOREIGN
 //! KEY references to HQ reference data (stores, users, customers,
 //! jobs, products) — the edge must keep selling when that data has
 //! not synced down yet (sqlx enables SQLite FK enforcement by
 //! default, so a reference would block the sale). PostgreSQL (HQ)
 //! enforces the full FK graph from spec §5. Edge-owned chains
-//! (`transaction_lines` / `payments` → `transactions`) are still
-//! enforced in SQLite.
+//! (`transaction_lines` / `payments` → `transactions`,
+//! `transfer_lines` → `inventory_transfers`, `count_lines` →
+//! `physical_counts`) are still enforced in SQLite.
 
+pub mod ar;
 pub mod codec;
+pub mod crm;
+pub mod crm_reports;
+pub mod delivery;
 pub mod error;
 pub mod inventory;
 pub mod models;
+pub mod purchase_orders;
 pub mod repos;
 pub mod tint;
 pub mod transactions;
 
+pub use ar::*;
+pub use crm::*;
+pub use crm_reports::*;
+pub use delivery::*;
 pub use error::DbError;
 pub use inventory::*;
 pub use models::*;
+pub use purchase_orders::*;
 pub use repos::*;
 pub use sqlx::AnyPool;
 pub use tint::*;

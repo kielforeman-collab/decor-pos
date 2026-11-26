@@ -1,0 +1,21 @@
+[package]
+name = "df-accounting"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "File-based accounting exports for decor-pos: AR + inventory ledger CSV, QuickBooks IIF, and the AccountingPlugin trait (Phase 3, v0.4; spec §4 contractor_ar, §6.2)"
+
+[dependencies]
+chrono = { workspace = true }
+df-db = { workspace = true }
+df-domain = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -32,6 +32,71 @@
 //! * `POST /pos/reports/low-stock/thresholds` — set the
 //!   operator-configured product thresholds the low-stock report
 //!   uses (`Vec<ProductThreshold>`)
+//! * `GET /inventory/balances?store_id=` — stock positions
+//!   (on-hand / committed / on-order / in-transit) per product
+//! * `GET /inventory/reorder-points` + `POST /inventory/reorder-points` —
+//!   min/max reorder points (set one per call)
+//! * `POST /purchasing/replenishment/suggest` — min/max + velocity
+//!   replenishment suggestions (one preview PO per vendor)
+//! * `POST /purchasing/orders` + `GET /purchasing/orders?store_id=` —
+//!   create / list purchase orders
+//! * `POST /purchasing/orders/{id}/receive` — receive per-line
+//!   quantities (posts `po_receive` ledger entries, updates status)
+//! * `POST /inventory/transfers` + `GET /inventory/transfers` —
+//!   draft / list inter-store transfers
+//! * `POST /inventory/transfers/{id}/ship` — posts the in-transit leg
+//! * `POST /inventory/transfers/{id}/receive` — closes in-transit at
+//!   the source, gains stock at the destination
+//! * `POST /inventory/counts` + `GET /inventory/counts` — start /
+//!   list physical counts
+//! * `POST /inventory/counts/{id}/scan` — counted qty per product
+//! * `POST /inventory/counts/{id}/reconcile` — variance posts
+//!   `count_adj` ledger entries
+//! * `GET /inventory/shelf-tags?product_id=` — printable ZPL shelf tag
+//! * `GET /pricing/rules` + `POST /pricing/rules` — bulk matrix
+//!   pricing editor (min-margin guardrail enforced)
+//! * `GET /ar/customers/{id}/summary` — AR balance + credit controls
+//! * `GET /ar/aging?store_id=&as_of=` — 30/60/90/120 aging
+//! * `GET /ar/collections?store_id=&as_of=` — collections workspace
+//! * `POST /crm/activities` + `GET /crm/activities?customer_id=&activity_type=&completed=` —
+//!   CRM activity log (create / list)
+//! * `GET /crm/activities/{id}` — one activity
+//! * `POST /crm/activities/{id}/update` — partial activity update
+//! * `POST /crm/activities/{id}/delete` — delete an activity
+//! * `POST /crm/activities/{id}/complete` — mark complete
+//! * `POST /crm/activities/{id}/snooze` — [`SnoozeActivityRequest`](crate::crm::SnoozeActivityRequest)
+//! * `GET /crm/reminders/due?as_of=` — reminder tickler (RFC 3339, defaults to now)
+//! * `GET /crm/reminders/overdue?as_of=` — strictly-overdue reminders, most overdue first
+//! * `POST /crm/appointments` + `GET /crm/appointments?date=&customer_id=&staff_id=` —
+//!   appointments (create / list by day, customer or staff)
+//! * `GET /crm/appointments/{id}` — one appointment
+//! * `POST /crm/appointments/{id}/update` — partial update (reschedule guarded)
+//! * `POST /crm/appointments/{id}/cancel` — cancel
+//! * `POST /crm/appointments/{id}/delete` — delete
+//! * `POST /crm/saved-views` + `GET /crm/saved-views` — saved filters (either dialect)
+//! * `GET /crm/saved-views/{id}/run` — run a saved view over the activity log
+//! * `GET /crm/saved-views/{id}/run-customers` — run a saved view over customers
+//! * `POST /crm/saved-views/{id}/delete` — delete a saved view
+//! * `GET /crm/reports/lapsed?store_id=&as_of=&inactive_days=&include_never=` — lapsed-contractor report
+//! * `POST /deliveries` + `GET /deliveries/dispatch?status=&driver_id=&scheduled_date=` —
+//!   delivery jobs (create / dispatch board)
+//! * `GET /deliveries/{id}` — one delivery, with its POD when submitted
+//! * `POST /deliveries/{id}/assign` — assign a driver
+//! * `POST /deliveries/{id}/status` — status transition (`delivered` only via POD)
+//! * `GET /deliveries/{id}/packing-slip` — packing slip + printable text
+//! * `POST /deliveries/{id}/pod` — submit proof of delivery (base64 signature + photo ref)
+//! * `GET /deliveries/{id}/pod` — the submitted POD, if any
+//! * `POST /edi/purchase-orders/{id}/send` — build + store + stage the X12 850 via the file-drop transport stand-in
+//! * `POST /edi/intake` — intake one vendor document (856/810/855/832 X12 or CSV, all parsed)
+//! * `GET /edi/documents?po_id=` — EDI documents for a PO
+//! * `GET /edi/documents/{id}` — one EDI document
+//! * `GET /edi/acknowledgments?po_id=` — stored 855 acknowledgments for a PO
+//! * `GET /edi/three-way-match?po_id=` — ordered vs shipped vs billed (`df-edi` report, persisted when both docs are stored)
+//! * `GET /edi/match-reports?po_id=` — stored 3-way match reports for a PO
+//! * `GET /edi/price-applications/{id}` — one 832 price-apply report
+//! * `POST /edi/price-applications/{id}/mark-applied` — record the review decision (reprices nothing)
+//! * `GET /edi/transport?vendor_id=` — transport audit trail for a vendor
+//! * `POST /edi/catalog/import` — vendor catalog CSV import
 //! * `GET /ws/v1/store/{store_id}` — WebSocket; sends a `connected`
 //!   event, then one JSON event per completed sale/return.
 //!
@@ -46,7 +111,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use df_reports::{DailyUsageReport, LowStockReport, ProductThreshold};
 use df_tinter::TinterError;
 use futures_util::{SinkExt, StreamExt};
@@ -54,12 +119,36 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use uuid::Uuid;
 
+use crate::crm::{
+    CreateActivityRequest, CreateAppointmentRequest, CreateSavedViewRequest, LapsedReport,
+    SavedViewCustomer, SnoozeActivityRequest, UpdateActivityRequest, UpdateAppointmentRequest,
+};
+use crate::delivery::{
+    AssignDeliveryRequest, CreateDeliveryRequest, DeliveryView, PackingSlipView,
+    SetDeliveryStatusRequest, SubmitPodRequest,
+};
 use crate::edge::Edge;
+use crate::edi::{
+    CatalogImportResponse, IntakeRequest, IntakeResponse, InvoiceMatchReport,
+    InvoiceMatchReportRow, MarkPriceApplicationAppliedRequest, PoAcknowledgmentRow,
+    PriceCatalogApplicationRow, SendPoRequest, SendPoResponse, TransportRecord,
+};
 use crate::error::EdgeError;
+use crate::inventory::{
+    AgingView, ArCustomerSummary, BulkPricingRequest, CollectionsView, CountReconcileResponse,
+    CreatePurchaseOrderRequest, CreateTransferRequest, PhysicalCount, PurchaseOrderView,
+    ReceivePurchaseOrderRequest, ReplenishmentSuggestRequest, ScanCountRequest,
+    SetReorderPointRequest, ShelfTagResponse, StartCountRequest, SuggestedPurchaseOrder, Transfer,
+};
 use crate::tinting::{ColorantsResponse, DispenseTintRequest, DispenseTintResponse};
 use crate::types::{CompletedSale, PricePreview, ReturnLineInput, SaleInput, TenderInput, ZReport};
-use df_db::models::{ColorCatalogEntry, TillSession, TintFormula, Transaction};
+use df_db::InventoryBalance;
+use df_db::models::{
+    Appointment, ColorCatalogEntry, CrmActivity, CrmSavedView, DeliveryPod, PricingRuleRow,
+    ReorderPoint, TillSession, TintFormula, Transaction,
+};
 use df_domain::Money;
+use df_edi::EdiDocument;
 use df_sync::{ApplyReport, SyncState};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,11 +206,23 @@ fn err_response(err: EdgeError) -> (StatusCode, Json<ErrorResponse>) {
         EdgeError::NotFound(_) => StatusCode::NOT_FOUND,
         EdgeError::InvalidInput(_) => StatusCode::BAD_REQUEST,
         EdgeError::PaymentDeclined(_) => StatusCode::PAYMENT_REQUIRED,
-        EdgeError::Till(_) => StatusCode::CONFLICT,
+        EdgeError::Till(_) | EdgeError::CreditBlocked(_) => StatusCode::CONFLICT,
         EdgeError::NoPaymentProvider(_) | EdgeError::NoHq(_) => StatusCode::SERVICE_UNAVAILABLE,
         EdgeError::Sync(_) | EdgeError::Payment(_) => StatusCode::BAD_GATEWAY,
         EdgeError::Tinter(TinterError::InsufficientColorant { .. }) => StatusCode::CONFLICT,
         EdgeError::Tinter(_) => StatusCode::BAD_REQUEST,
+        EdgeError::Edi(
+            df_edi::EdiError::Sqlx(_) | df_edi::EdiError::Db(_) | df_edi::EdiError::Io(_),
+        ) => StatusCode::INTERNAL_SERVER_ERROR,
+        EdgeError::Edi(_) => StatusCode::BAD_REQUEST,
+        EdgeError::Crm(_) | EdgeError::Delivery(_) => StatusCode::BAD_REQUEST,
+        EdgeError::Db(df_db::DbError::NotFound(_)) => StatusCode::NOT_FOUND,
+        EdgeError::Db(df_db::DbError::InvalidData(_)) => StatusCode::BAD_REQUEST,
+        EdgeError::Db(df_db::DbError::PodIncomplete { .. }) => StatusCode::BAD_REQUEST,
+        EdgeError::Db(
+            df_db::DbError::IllegalDeliveryTransition { .. }
+            | df_db::DbError::AppointmentOverlap { .. },
+        ) => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (
@@ -367,6 +468,782 @@ pub struct ThresholdsResponse {
     pub thresholds_set: usize,
 }
 
+// --- inventory / purchasing / AR (Phase 3) ---------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct BalancesQuery {
+    pub store_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ShelfTagQuery {
+    pub product_id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ArAgingQuery {
+    pub store_id: Option<Uuid>,
+    pub as_of: Option<String>,
+}
+
+fn store_or_default(edge: &Edge, store_id: Option<Uuid>) -> Uuid {
+    store_id.unwrap_or(edge.config().store_id)
+}
+
+/// `?as_of=YYYY-MM-DD`, defaulting to today (UTC). A malformed date
+/// is a 400, not a silent default.
+fn aging_date(as_of: &Option<String>) -> Result<NaiveDate, (StatusCode, Json<ErrorResponse>)> {
+    match as_of {
+        None => Ok(chrono::Utc::now().date_naive()),
+        Some(text) => NaiveDate::from_str(text).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("as_of must be YYYY-MM-DD, got {text:?}"),
+                }),
+            )
+        }),
+    }
+}
+
+async fn get_balances(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<BalancesQuery>,
+) -> HandlerResult<Vec<InventoryBalance>> {
+    edge.inventory_balances(store_or_default(&edge, query.store_id))
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_reorder_points(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<BalancesQuery>,
+) -> HandlerResult<Vec<ReorderPoint>> {
+    edge.list_reorder_points(store_or_default(&edge, query.store_id))
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn set_reorder_point(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<SetReorderPointRequest>,
+) -> HandlerResult<ReorderPoint> {
+    edge.set_reorder_point(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn suggest_replenishment(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<ReplenishmentSuggestRequest>,
+) -> HandlerResult<Vec<SuggestedPurchaseOrder>> {
+    edge.suggest_replenishment(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn create_purchase_order(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<CreatePurchaseOrderRequest>,
+) -> HandlerResult<PurchaseOrderView> {
+    edge.create_purchase_order(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_purchase_orders(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<BalancesQuery>,
+) -> HandlerResult<Vec<PurchaseOrderView>> {
+    edge.list_purchase_orders(store_or_default(&edge, query.store_id))
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn receive_purchase_order(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<ReceivePurchaseOrderRequest>,
+) -> HandlerResult<PurchaseOrderView> {
+    edge.receive_purchase_order(id, body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn create_transfer(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<CreateTransferRequest>,
+) -> HandlerResult<Transfer> {
+    edge.create_transfer(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_transfers(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<BalancesQuery>,
+) -> HandlerResult<Vec<Transfer>> {
+    edge.list_transfers(store_or_default(&edge, query.store_id))
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn ship_transfer(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<Transfer> {
+    edge.ship_transfer(id).await.map(Json).map_err(err_response)
+}
+
+async fn receive_transfer(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<Transfer> {
+    edge.receive_transfer(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn start_count(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<StartCountRequest>,
+) -> HandlerResult<PhysicalCount> {
+    edge.start_count(body).await.map(Json).map_err(err_response)
+}
+
+async fn list_counts(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<BalancesQuery>,
+) -> HandlerResult<Vec<PhysicalCount>> {
+    edge.list_counts(store_or_default(&edge, query.store_id))
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn scan_count(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<ScanCountRequest>,
+) -> HandlerResult<PhysicalCount> {
+    edge.scan_count(id, body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn reconcile_count(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<CountReconcileResponse> {
+    edge.reconcile_count(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn shelf_tag(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<ShelfTagQuery>,
+) -> HandlerResult<ShelfTagResponse> {
+    edge.shelf_tag(query.product_id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_pricing_rules(State(edge): State<Arc<Edge>>) -> HandlerResult<Vec<PricingRuleRow>> {
+    edge.list_pricing_rules()
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn bulk_pricing(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<BulkPricingRequest>,
+) -> HandlerResult<Vec<PricingRuleRow>> {
+    edge.bulk_update_pricing_rules(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn ar_customer_summary(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<ArCustomerSummary> {
+    edge.ar_customer_summary(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn ar_aging(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<ArAgingQuery>,
+) -> Result<Json<AgingView>, (StatusCode, Json<ErrorResponse>)> {
+    let as_of = aging_date(&query.as_of)?;
+    edge.ar_aging(store_or_default(&edge, query.store_id), as_of)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn ar_collections(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<ArAgingQuery>,
+) -> Result<Json<CollectionsView>, (StatusCode, Json<ErrorResponse>)> {
+    let as_of = aging_date(&query.as_of)?;
+    edge.ar_collections(store_or_default(&edge, query.store_id), as_of)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+// --- CRM / delivery / EDI (Phase 4) ----------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct ActivityQuery {
+    pub customer_id: Option<Uuid>,
+    pub activity_type: Option<String>,
+    pub completed: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AppointmentQuery {
+    pub date: Option<String>,
+    pub customer_id: Option<Uuid>,
+    pub staff_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemindersQuery {
+    pub as_of: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LapsedQuery {
+    pub store_id: Option<Uuid>,
+    pub as_of: Option<String>,
+    pub inactive_days: Option<i64>,
+    pub include_never: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DispatchQuery {
+    pub status: Option<String>,
+    pub driver_id: Option<Uuid>,
+    pub scheduled_date: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PoQuery {
+    pub po_id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TransportQuery {
+    pub vendor_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CatalogImportBody {
+    pub csv_text: String,
+    pub vendor_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletedResponse {
+    pub id: Uuid,
+    pub deleted: bool,
+}
+
+/// `?as_of=` as RFC 3339, defaulting to now (UTC). A malformed
+/// value is a 400, not a silent default.
+fn reminders_as_of(
+    as_of: &Option<String>,
+) -> Result<DateTime<Utc>, (StatusCode, Json<ErrorResponse>)> {
+    match as_of {
+        None => Ok(Utc::now()),
+        Some(text) => DateTime::parse_from_rfc3339(text)
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("as_of must be RFC 3339, got {text:?}"),
+                    }),
+                )
+            }),
+    }
+}
+
+/// `?date=YYYY-MM-DD` for the appointment day filter.
+fn appointment_day(
+    date: &Option<String>,
+) -> Result<Option<NaiveDate>, (StatusCode, Json<ErrorResponse>)> {
+    match date {
+        None => Ok(None),
+        Some(text) => NaiveDate::from_str(text).map(Some).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("date must be YYYY-MM-DD, got {text:?}"),
+                }),
+            )
+        }),
+    }
+}
+
+async fn create_activity(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<CreateActivityRequest>,
+) -> HandlerResult<CrmActivity> {
+    edge.create_activity(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_activities(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<ActivityQuery>,
+) -> HandlerResult<Vec<CrmActivity>> {
+    edge.list_activities(
+        query.customer_id,
+        query.activity_type.as_deref(),
+        query.completed,
+    )
+    .await
+    .map(Json)
+    .map_err(err_response)
+}
+
+async fn get_activity(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<CrmActivity> {
+    edge.get_activity(id).await.map(Json).map_err(err_response)
+}
+
+async fn update_activity(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateActivityRequest>,
+) -> HandlerResult<CrmActivity> {
+    edge.update_activity(id, body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn delete_activity(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<DeletedResponse> {
+    edge.delete_activity(id)
+        .await
+        .map(|()| Json(DeletedResponse { id, deleted: true }))
+        .map_err(err_response)
+}
+
+async fn complete_activity(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<CrmActivity> {
+    edge.complete_activity(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn snooze_activity(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SnoozeActivityRequest>,
+) -> HandlerResult<CrmActivity> {
+    edge.snooze_activity(id, body.snoozed_until)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn due_reminders(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<RemindersQuery>,
+) -> Result<Json<Vec<CrmActivity>>, (StatusCode, Json<ErrorResponse>)> {
+    let as_of = reminders_as_of(&query.as_of)?;
+    edge.due_reminders(as_of)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn overdue_reminders(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<RemindersQuery>,
+) -> Result<Json<Vec<CrmActivity>>, (StatusCode, Json<ErrorResponse>)> {
+    let as_of = reminders_as_of(&query.as_of)?;
+    edge.overdue_reminders(as_of)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn create_appointment(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<CreateAppointmentRequest>,
+) -> HandlerResult<Appointment> {
+    edge.create_appointment(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_appointments(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<AppointmentQuery>,
+) -> Result<Json<Vec<Appointment>>, (StatusCode, Json<ErrorResponse>)> {
+    let day = appointment_day(&query.date)?;
+    edge.list_appointments(day, query.customer_id, query.staff_id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn get_appointment(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<Appointment> {
+    edge.get_appointment(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn update_appointment(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateAppointmentRequest>,
+) -> HandlerResult<Appointment> {
+    edge.update_appointment(id, body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn cancel_appointment(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<Appointment> {
+    edge.cancel_appointment(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn delete_appointment(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<DeletedResponse> {
+    edge.delete_appointment(id)
+        .await
+        .map(|()| Json(DeletedResponse { id, deleted: true }))
+        .map_err(err_response)
+}
+
+async fn create_saved_view(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<CreateSavedViewRequest>,
+) -> HandlerResult<CrmSavedView> {
+    edge.create_saved_view(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_saved_views(State(edge): State<Arc<Edge>>) -> HandlerResult<Vec<CrmSavedView>> {
+    edge.list_saved_views()
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn run_saved_view(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<Vec<CrmActivity>> {
+    edge.run_saved_view(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn run_saved_view_customers(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<Vec<SavedViewCustomer>> {
+    edge.run_saved_view_customers(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn delete_saved_view(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<DeletedResponse> {
+    edge.delete_saved_view(id)
+        .await
+        .map(|()| Json(DeletedResponse { id, deleted: true }))
+        .map_err(err_response)
+}
+
+async fn lapsed_report(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<LapsedQuery>,
+) -> Result<Json<LapsedReport>, (StatusCode, Json<ErrorResponse>)> {
+    let as_of = match &query.as_of {
+        None => Utc::now().date_naive(),
+        Some(text) => NaiveDate::from_str(text).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("as_of must be YYYY-MM-DD, got {text:?}"),
+                }),
+            )
+        })?,
+    };
+    let store_id = store_or_default(&edge, query.store_id);
+    if store_id != edge.config().store_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "this edge serves store {} — got store_id {store_id}",
+                    edge.config().store_id
+                ),
+            }),
+        ));
+    }
+    edge.lapsed_contractors(
+        as_of,
+        query.inactive_days.unwrap_or(90),
+        query.include_never.unwrap_or(true),
+    )
+    .await
+    .map(Json)
+    .map_err(err_response)
+}
+
+async fn create_delivery(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<CreateDeliveryRequest>,
+) -> HandlerResult<DeliveryView> {
+    edge.create_delivery(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_deliveries(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<DispatchQuery>,
+) -> Result<Json<Vec<DeliveryView>>, (StatusCode, Json<ErrorResponse>)> {
+    let scheduled_date = match &query.scheduled_date {
+        None => None,
+        Some(text) => Some(NaiveDate::from_str(text).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("scheduled_date must be YYYY-MM-DD, got {text:?}"),
+                }),
+            )
+        })?),
+    };
+    edge.list_deliveries(query.status.as_deref(), query.driver_id, scheduled_date)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn get_delivery(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<DeliveryView> {
+    edge.get_delivery_view(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn assign_delivery(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AssignDeliveryRequest>,
+) -> HandlerResult<DeliveryView> {
+    edge.assign_delivery(id, body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn set_delivery_status(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetDeliveryStatusRequest>,
+) -> HandlerResult<DeliveryView> {
+    edge.set_delivery_status(id, body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn get_packing_slip(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<PackingSlipView> {
+    edge.packing_slip(id).await.map(Json).map_err(err_response)
+}
+
+async fn submit_pod(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SubmitPodRequest>,
+) -> HandlerResult<DeliveryView> {
+    edge.submit_pod(id, body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn get_pod(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<Option<DeliveryPod>> {
+    edge.get_pod(id).await.map(Json).map_err(err_response)
+}
+
+async fn send_purchase_order(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SendPoRequest>,
+) -> HandlerResult<SendPoResponse> {
+    edge.send_purchase_order(id, body.out_dir)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn intake_edi(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<IntakeRequest>,
+) -> HandlerResult<IntakeResponse> {
+    edge.intake_edi(body).await.map(Json).map_err(err_response)
+}
+
+async fn list_edi_documents(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<PoQuery>,
+) -> HandlerResult<Vec<EdiDocument>> {
+    edge.list_edi_documents(query.po_id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn get_edi_document(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<EdiDocument> {
+    edge.get_edi_document(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn three_way_match(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<PoQuery>,
+) -> HandlerResult<InvoiceMatchReport> {
+    edge.three_way_match(query.po_id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_match_reports(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<PoQuery>,
+) -> HandlerResult<Vec<InvoiceMatchReportRow>> {
+    edge.list_match_reports(query.po_id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_po_acknowledgments(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<PoQuery>,
+) -> HandlerResult<Vec<PoAcknowledgmentRow>> {
+    edge.list_po_acknowledgments(query.po_id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn get_price_catalog_application(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<PriceCatalogApplicationRow> {
+    edge.get_price_catalog_application(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn mark_price_application_applied(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<MarkPriceApplicationAppliedRequest>,
+) -> HandlerResult<PriceCatalogApplicationRow> {
+    edge.mark_price_application_applied(id, &body.reviewed_by)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn list_transport_records(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<TransportQuery>,
+) -> HandlerResult<Vec<TransportRecord>> {
+    edge.list_transport_records(&query.vendor_id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn import_catalog(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<CatalogImportBody>,
+) -> HandlerResult<CatalogImportResponse> {
+    edge.import_vendor_catalog(&body.csv_text, &body.vendor_id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
 async fn ws_handler(
     State(edge): State<Arc<Edge>>,
     Path(store_id): Path<Uuid>,
@@ -442,6 +1319,91 @@ pub fn router(edge: Edge) -> Router {
         .route("/pos/reports/daily-usage", get(daily_usage))
         .route("/pos/reports/low-stock", get(low_stock))
         .route("/pos/reports/low-stock/thresholds", post(set_thresholds))
+        .route("/inventory/balances", get(get_balances))
+        .route(
+            "/inventory/reorder-points",
+            get(list_reorder_points).post(set_reorder_point),
+        )
+        .route(
+            "/inventory/transfers",
+            post(create_transfer).get(list_transfers),
+        )
+        .route("/inventory/transfers/{id}/ship", post(ship_transfer))
+        .route("/inventory/transfers/{id}/receive", post(receive_transfer))
+        .route("/inventory/counts", post(start_count).get(list_counts))
+        .route("/inventory/counts/{id}/scan", post(scan_count))
+        .route("/inventory/counts/{id}/reconcile", post(reconcile_count))
+        .route("/inventory/shelf-tags", get(shelf_tag))
+        .route(
+            "/purchasing/replenishment/suggest",
+            post(suggest_replenishment),
+        )
+        .route(
+            "/purchasing/orders",
+            post(create_purchase_order).get(list_purchase_orders),
+        )
+        .route(
+            "/purchasing/orders/{id}/receive",
+            post(receive_purchase_order),
+        )
+        .route("/pricing/rules", get(list_pricing_rules).post(bulk_pricing))
+        .route("/ar/customers/{id}/summary", get(ar_customer_summary))
+        .route("/ar/aging", get(ar_aging))
+        .route("/ar/collections", get(ar_collections))
+        .route(
+            "/crm/activities",
+            post(create_activity).get(list_activities),
+        )
+        .route("/crm/activities/{id}", get(get_activity))
+        .route("/crm/activities/{id}/update", post(update_activity))
+        .route("/crm/activities/{id}/delete", post(delete_activity))
+        .route("/crm/activities/{id}/complete", post(complete_activity))
+        .route("/crm/activities/{id}/snooze", post(snooze_activity))
+        .route("/crm/reminders/due", get(due_reminders))
+        .route("/crm/reminders/overdue", get(overdue_reminders))
+        .route(
+            "/crm/appointments",
+            post(create_appointment).get(list_appointments),
+        )
+        .route("/crm/appointments/{id}", get(get_appointment))
+        .route("/crm/appointments/{id}/update", post(update_appointment))
+        .route("/crm/appointments/{id}/cancel", post(cancel_appointment))
+        .route("/crm/appointments/{id}/delete", post(delete_appointment))
+        .route(
+            "/crm/saved-views",
+            post(create_saved_view).get(list_saved_views),
+        )
+        .route("/crm/saved-views/{id}/run", get(run_saved_view))
+        .route(
+            "/crm/saved-views/{id}/run-customers",
+            get(run_saved_view_customers),
+        )
+        .route("/crm/saved-views/{id}/delete", post(delete_saved_view))
+        .route("/crm/reports/lapsed", get(lapsed_report))
+        .route("/deliveries", post(create_delivery))
+        .route("/deliveries/dispatch", get(list_deliveries))
+        .route("/deliveries/{id}", get(get_delivery))
+        .route("/deliveries/{id}/assign", post(assign_delivery))
+        .route("/deliveries/{id}/status", post(set_delivery_status))
+        .route("/deliveries/{id}/packing-slip", get(get_packing_slip))
+        .route("/deliveries/{id}/pod", post(submit_pod).get(get_pod))
+        .route("/edi/purchase-orders/{id}/send", post(send_purchase_order))
+        .route("/edi/intake", post(intake_edi))
+        .route("/edi/documents", get(list_edi_documents))
+        .route("/edi/documents/{id}", get(get_edi_document))
+        .route("/edi/acknowledgments", get(list_po_acknowledgments))
+        .route("/edi/three-way-match", get(three_way_match))
+        .route("/edi/match-reports", get(list_match_reports))
+        .route(
+            "/edi/price-applications/{id}",
+            get(get_price_catalog_application),
+        )
+        .route(
+            "/edi/price-applications/{id}/mark-applied",
+            post(mark_price_application_applied),
+        )
+        .route("/edi/transport", get(list_transport_records))
+        .route("/edi/catalog/import", post(import_catalog))
         .route("/ws/v1/store/{store_id}", get(ws_handler))
         .with_state(state)
 }
@@ -521,7 +1483,7 @@ mod tests {
         let (status, body) = get_json(router.clone(), "/health").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ok");
-        assert_eq!(body["version"], "0.3.0");
+        assert_eq!(body["version"], "0.5.0");
 
         let (status, body) = post_json(
             router,

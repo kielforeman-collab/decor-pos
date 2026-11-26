@@ -8,6 +8,7 @@ description = "Scheduled job runner: daily usage report, low-stock check, colora
 
 [dependencies]
 chrono = { workspace = true }
+df-ar = { workspace = true }
 df-db = { workspace = true }
 df-domain = { workspace = true }
 df-reports = { workspace = true }

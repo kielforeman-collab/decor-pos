@@ -150,7 +150,9 @@ pub fn generate_purchase_orders(
         by_vendor[position].push(item);
     }
 
-    let now = Utc::now();
+    // The PO date is the passed `date`, not wall-clock time, so generated
+    // POs are deterministic (and the X12 BEG date matches the PO number).
+    let created_at = date.and_hms_opt(0, 0, 0).unwrap().and_utc();
     vendors
         .into_iter()
         .enumerate()
@@ -183,7 +185,7 @@ pub fn generate_purchase_orders(
                 store_id,
                 status: PoStatus::Draft,
                 lines,
-                created_at: now,
+                created_at,
             }
         })
         .collect()

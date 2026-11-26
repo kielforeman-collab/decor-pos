@@ -219,7 +219,7 @@ fn product_from_row(row: &AnyRow) -> Result<Product, DbError> {
     })
 }
 
-fn customer_from_row(row: &AnyRow) -> Result<Customer, DbError> {
+pub(crate) fn customer_from_row(row: &AnyRow) -> Result<Customer, DbError> {
     Ok(Customer {
         id: uuid_col(row, "id")?,
         org_id: uuid_col(row, "org_id")?,
@@ -237,6 +237,8 @@ fn customer_from_row(row: &AnyRow) -> Result<Customer, DbError> {
         charge_enabled: bool_col(row, "charge_enabled")?,
         credit_limit: dec_col(row, "credit_limit")?,
         payment_terms: text_col(row, "payment_terms")?,
+        terms_days: opt_i32_col(row, "terms_days")?,
+        finance_rate_pct_monthly: opt_dec_col(row, "finance_rate_pct_monthly")?,
         credit_hold: bool_col(row, "credit_hold")?,
         require_po_number: bool_col(row, "require_po_number")?,
         require_job_name: bool_col(row, "require_job_name")?,
@@ -266,7 +268,7 @@ fn pricing_rule_from_row(row: &AnyRow) -> Result<PricingRuleRow, DbError> {
     })
 }
 
-fn ar_entry_from_row(row: &AnyRow) -> Result<ArLedgerEntry, DbError> {
+pub(crate) fn ar_entry_from_row(row: &AnyRow) -> Result<ArLedgerEntry, DbError> {
     Ok(ArLedgerEntry {
         id: uuid_col(row, "id")?,
         org_id: uuid_col(row, "org_id")?,
@@ -443,6 +445,16 @@ pub async fn get_product(pool: &AnyPool, id: Uuid) -> Result<Product, DbError> {
     product_from_row(&row)
 }
 
+/// Every product of an org, ordered by SKU. The back-office
+/// inventory browser builds on this (balances come from the ledger).
+pub async fn list_products_for_org(pool: &AnyPool, org_id: Uuid) -> Result<Vec<Product>, DbError> {
+    let rows = sqlx::query("SELECT * FROM products WHERE org_id = ? ORDER BY sku ASC")
+        .bind(uuid_str(org_id))
+        .fetch_all(pool)
+        .await?;
+    rows.iter().map(product_from_row).collect()
+}
+
 // --- color catalog & colorants --------------------------------------------
 
 pub async fn insert_color(pool: &AnyPool, color: &ColorCatalogEntry) -> Result<(), DbError> {
@@ -576,7 +588,7 @@ pub async fn list_tint_formulas_for_customer(
 
 pub async fn insert_customer(pool: &AnyPool, customer: &Customer) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO customers (id, org_id, account_number, customer_type, company_name, first_name, last_name, email, phone, price_level_id, salesperson_id, tax_exempt_cert, tax_exempt_expires, charge_enabled, credit_limit, payment_terms, credit_hold, require_po_number, require_job_name, portal_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO customers (id, org_id, account_number, customer_type, company_name, first_name, last_name, email, phone, price_level_id, salesperson_id, tax_exempt_cert, tax_exempt_expires, charge_enabled, credit_limit, payment_terms, terms_days, finance_rate_pct_monthly, credit_hold, require_po_number, require_job_name, portal_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(uuid_str(customer.id))
     .bind(uuid_str(customer.org_id))
@@ -594,6 +606,8 @@ pub async fn insert_customer(pool: &AnyPool, customer: &Customer) -> Result<(), 
     .bind(customer.charge_enabled)
     .bind(dec_str(customer.credit_limit))
     .bind(&customer.payment_terms)
+    .bind(customer.terms_days)
+    .bind(opt_dec_str(customer.finance_rate_pct_monthly))
     .bind(customer.credit_hold)
     .bind(customer.require_po_number)
     .bind(customer.require_job_name)
@@ -615,6 +629,17 @@ pub async fn get_customer_by_account(
         .await
         .map_err(not_found(&format!("customer {account_number}")))?;
     customer_from_row(&row)
+}
+
+pub async fn list_customers_for_org(
+    pool: &AnyPool,
+    org_id: Uuid,
+) -> Result<Vec<Customer>, DbError> {
+    let rows = sqlx::query("SELECT * FROM customers WHERE org_id = ? ORDER BY account_number ASC")
+        .bind(uuid_str(org_id))
+        .fetch_all(pool)
+        .await?;
+    rows.iter().map(customer_from_row).collect()
 }
 
 // --- pricing rules ----------------------------------------------------------
@@ -654,6 +679,33 @@ pub async fn list_pricing_rules(
         .fetch_all(pool)
         .await?;
     rows.iter().map(pricing_rule_from_row).collect()
+}
+
+pub async fn get_pricing_rule(pool: &AnyPool, id: Uuid) -> Result<PricingRuleRow, DbError> {
+    let row = sqlx::query("SELECT * FROM pricing_rules WHERE id = ?")
+        .bind(uuid_str(id))
+        .fetch_one(pool)
+        .await
+        .map_err(not_found(&format!("pricing rule {id}")))?;
+    pricing_rule_from_row(&row)
+}
+
+/// Update a rule's calculation (method / value / margin floor) in
+/// place. Dimensions, priority and validity window are not editable
+/// through the bulk pricing editor — they are set at rule creation.
+/// The caller validates the new calculation (including the
+/// min-margin guardrail) before calling this.
+pub async fn update_pricing_rule(pool: &AnyPool, rule: &PricingRuleRow) -> Result<(), DbError> {
+    sqlx::query(
+        "UPDATE pricing_rules SET calc_method = ?, calc_value = ?, min_margin_floor = ? WHERE id = ?",
+    )
+    .bind(&rule.calc_method)
+    .bind(dec_str(rule.calc_value))
+    .bind(opt_dec_str(rule.min_margin_floor))
+    .bind(uuid_str(rule.id))
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 // --- AR ledger (append-only) ------------------------------------------------
@@ -701,4 +753,18 @@ pub async fn ar_balance_for_customer(
         .iter()
         .map(|e| e.amount)
         .fold(Decimal::ZERO, |acc, amount| acc + amount))
+}
+
+/// Every AR ledger entry for a store, oldest first — the raw material
+/// for the aging and collections views (bucketed in Rust with
+/// `df-domain::ar`, never by SQL `SUM` over text decimals).
+pub async fn list_ar_entries_for_store(
+    pool: &AnyPool,
+    store_id: Uuid,
+) -> Result<Vec<ArLedgerEntry>, DbError> {
+    let rows = sqlx::query("SELECT * FROM ar_ledger WHERE store_id = ? ORDER BY created_at ASC")
+        .bind(uuid_str(store_id))
+        .fetch_all(pool)
+        .await?;
+    rows.iter().map(ar_entry_from_row).collect()
 }

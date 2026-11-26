@@ -9,7 +9,7 @@
 
 use std::str::FromStr;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use sqlx::Row;
 use sqlx::any::AnyRow;
@@ -160,6 +160,29 @@ pub(crate) fn opt_dt_col(row: &AnyRow, name: &str) -> Result<Option<DateTime<Utc
 pub(crate) fn i32_col(row: &AnyRow, name: &str) -> Result<i32, DbError> {
     row.try_get(name)
         .map_err(|e| DbError::InvalidData(format!("column {name}: {e}")))
+}
+
+pub(crate) fn date_col(row: &AnyRow, name: &str) -> Result<NaiveDate, DbError> {
+    let text = text_col(row, name)?;
+    NaiveDate::parse_from_str(&text, "%Y-%m-%d")
+        .map_err(|e| DbError::InvalidData(format!("column {name} is not a date: {e}")))
+}
+
+pub(crate) fn opt_date_col(row: &AnyRow, name: &str) -> Result<Option<NaiveDate>, DbError> {
+    match opt_text_col(row, name)? {
+        None => Ok(None),
+        Some(text) => NaiveDate::parse_from_str(&text, "%Y-%m-%d")
+            .map(Some)
+            .map_err(|e| DbError::InvalidData(format!("column {name} is not a date: {e}"))),
+    }
+}
+
+pub(crate) fn opt_date_str(date: Option<NaiveDate>) -> Option<String> {
+    date.map(|d| d.to_string())
+}
+
+pub(crate) fn date_str(date: NaiveDate) -> String {
+    date.to_string()
 }
 
 pub(crate) fn i64_col(row: &AnyRow, name: &str) -> Result<i64, DbError> {

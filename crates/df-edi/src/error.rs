@@ -33,6 +33,16 @@ pub enum EdiError {
     /// JSON (de)serialization of a parsed EDI document failed.
     #[error("serialization error: {0}")]
     Json(#[from] serde_json::Error),
+
+    /// A capability that is honestly not implemented in this phase
+    /// (e.g. AS2 signing/encryption — real crypto is out of scope
+    /// for this VM build). Never used to fake a capability.
+    #[error("not supported: {0}")]
+    NotSupported(String),
+
+    /// A file-transport (drop-folder / SFTP stand-in) I/O failure.
+    #[error("transport I/O error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// Convenience result type for this crate.

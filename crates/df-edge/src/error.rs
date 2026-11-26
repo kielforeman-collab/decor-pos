@@ -24,8 +24,16 @@ pub enum EdgeError {
     Tinter(#[from] df_tinter::TinterError),
     #[error("report error: {0}")]
     Report(#[from] df_reports::ReportError),
+    #[error("EDI error: {0}")]
+    Edi(#[from] df_edi::EdiError),
+    #[error("CRM error: {0}")]
+    Crm(#[from] df_crm::CrmError),
+    #[error("delivery error: {0}")]
+    Delivery(#[from] df_delivery::DeliveryError),
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    #[error("credit blocked: {0}")]
+    CreditBlocked(String),
     #[error("not found: {0}")]
     NotFound(String),
     #[error("till error: {0}")]

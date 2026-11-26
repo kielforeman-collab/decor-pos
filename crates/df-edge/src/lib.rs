@@ -20,22 +20,65 @@
 //! Money is `rust_decimal::Decimal` throughout — never floats. Card
 //! surcharge default is 3% (see
 //! [`EdgeConfig::default_surcharge_rules`]).
+//!
+//! Phase 4 (v0.5) adds the CRM, delivery and EDI wiring in
+//! [`crm`], [`delivery`] and [`edi`]: activity log + tickler +
+//! appointments + saved views + lapsed-contractor report, dispatch
+//! board + packing slips + POD close-out, and X12 850 send /
+//! 855-856-810-832 intake / 3-way match over the real `df-edi`
+//! parsers and transports. The domain rules live in the sibling
+//! crates `df-crm` (activities, reminders, appointments, saved
+//! views, lapsed report) and `df-delivery` (dispatch state
+//! machine, POD, packing slips); these modules are the wiring
+//! layer (persistence + HTTP rules over the `df-db` repos), not a
+//! second copy of that domain logic.
 
+pub mod ar;
+pub mod crm;
+pub mod delivery;
 pub mod edge;
+pub mod edi;
 pub mod error;
 pub mod http;
 pub mod hw;
+pub mod inventory;
 pub mod payments;
 pub mod pricing;
 pub mod tinting;
 pub mod types;
 
+pub use ar::PostedArPayment;
+pub use crm::{
+    CreateActivityRequest, CreateAppointmentRequest, CreateSavedViewRequest, LapsedReport,
+    SavedViewCustomer, SnoozeActivityRequest, UpdateActivityRequest, UpdateAppointmentRequest,
+};
+pub use delivery::{
+    AssignDeliveryRequest, CreateDeliveryRequest, DeliveryView, PackingSlipLine, PackingSlipView,
+    SetDeliveryStatusRequest, SubmitPodRequest,
+};
+pub use df_ar::{CollectionsEntry, FinanceChargePosted, Statement};
 pub use df_db::models::TillSession;
+pub use df_edi::{
+    InvoiceMatchReport, InvoiceMatchReportRow, PoAcknowledgmentRow, PriceCatalogApplicationRow,
+    TransportRecord,
+};
 pub use edge::Edge;
+pub use edi::{
+    CatalogImportError, CatalogImportResponse, EDI_SENDER_ID, IntakeRequest, IntakeResponse,
+    MarkPriceApplicationAppliedRequest, SendPoRequest, SendPoResponse,
+};
 pub use error::EdgeError;
 pub use hw::{
     MockPrinter, PaymentSummary, Printer, ReceiptBuilder, ReceiptData, ReceiptLine,
     drawer_kick_bytes,
+};
+pub use inventory::{
+    AgingCustomerRow, AgingView, ArCustomerSummary, BulkPricingRequest, CollectionsRow,
+    CollectionsView, CountAdjustment, CountLineView, CountReconcileResponse, CreatePoLineRequest,
+    CreatePurchaseOrderRequest, CreateTransferRequest, PhysicalCount, PoLineView,
+    PricingRuleUpdate, PurchaseOrderView, ReceivePoLineRequest, ReceivePurchaseOrderRequest,
+    ReplenishmentSuggestRequest, ScanCountRequest, SetReorderPointRequest, ShelfTagResponse,
+    StartCountRequest, SuggestedLine, SuggestedPurchaseOrder, Transfer, TransferLineView,
 };
 pub use payments::{
     MockTerminal, PaymentError, PaymentProvider, PaymentRequest, PaymentResult, PaymentStatus,

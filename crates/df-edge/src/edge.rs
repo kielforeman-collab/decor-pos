@@ -517,6 +517,24 @@ impl Edge {
             });
         let grand_total = pre_surcharge.checked_add(pos_fee_total)?;
 
+        // Charge-account credit check (Phase 3): the charge
+        // portion is the tendered amount on ChargeAccount tenders
+        // (card surcharges never land on AR). Runs before any
+        // authorization or write, so a blocked charge leaves
+        // nothing behind. Returns the due date for the AR entry
+        // (sale date + the account's terms), or None when no
+        // charge is being made / no credit record has synced.
+        let charge_total = resolved
+            .iter()
+            .filter(|t| t.kind == TenderKind::ChargeAccount)
+            .map(|t| t.tendered)
+            .fold(Money::zero(self.currency()), |acc, m| {
+                acc.checked_add(m).unwrap_or(acc)
+            });
+        let charge_due_date = self
+            .check_charge_credit(input.customer_id, charge_total)
+            .await?;
+
         // Authorize card tenders before writing anything.
         let mut payments: Vec<PaymentResult> = Vec::with_capacity(resolved.len());
         for tender in &resolved {
@@ -668,14 +686,9 @@ impl Edge {
         }
 
         // Charge-account AR entry (the charge portion only — card
-        // surcharges never land on AR).
-        let charge_total = resolved
-            .iter()
-            .filter(|t| t.kind == TenderKind::ChargeAccount)
-            .map(|t| t.tendered)
-            .fold(Money::zero(self.currency()), |acc, m| {
-                acc.checked_add(m).unwrap_or(acc)
-            });
+        // surcharges never land on AR). `charge_total` and
+        // `charge_due_date` were resolved (and credit-checked)
+        // before authorization, above.
         if !charge_total.is_zero() {
             let customer_id = input.customer_id.expect("charge requires a customer");
             let ar_id = Uuid::now_v7();
@@ -691,7 +704,7 @@ impl Edge {
                     reference_type: "transaction".to_string(),
                     reference_id: tx_id,
                     amount: charge_total.amount(),
-                    due_date: None,
+                    due_date: charge_due_date,
                     statement_id: None,
                     created_at: now,
                 },

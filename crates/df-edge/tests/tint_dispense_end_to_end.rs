@@ -155,6 +155,8 @@ async fn seeded_edge() -> Edge {
             charge_enabled: false,
             credit_limit: dec("0"),
             payment_terms: "COD".to_string(),
+            terms_days: None,
+            finance_rate_pct_monthly: None,
             credit_hold: false,
             require_po_number: false,
             require_job_name: false,

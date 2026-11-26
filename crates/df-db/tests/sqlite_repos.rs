@@ -266,6 +266,8 @@ async fn ar_ledger_balance_is_derived_from_append_only_rows() {
         charge_enabled: true,
         credit_limit: dec("5000.0000"),
         payment_terms: "NET30".to_string(),
+        terms_days: None,
+        finance_rate_pct_monthly: None,
         credit_hold: false,
         require_po_number: false,
         require_job_name: false,

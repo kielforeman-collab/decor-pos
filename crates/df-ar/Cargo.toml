@@ -1,0 +1,15 @@
+[package]
+name = "df-ar"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Contractor AR domain for decor-pos (Phase 3, v0.4): charge accounts, credit checks, FIFO allocation, finance charges, collections queue, statement batch data"
+
+[dependencies]
+chrono = { workspace = true }
+df-domain = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }

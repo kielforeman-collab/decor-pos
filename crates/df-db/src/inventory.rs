@@ -132,6 +132,62 @@ pub async fn inventory_on_hand(
         .fold(Decimal::ZERO, |acc, delta| acc + delta))
 }
 
+/// One product's stock position at a store, derived from the
+/// append-only `inventory_ledger` (spec §5: balances are derived,
+/// never stored). Products with no ledger rows yet report zeroes.
+/// Sorted by SKU.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct InventoryBalance {
+    pub product_id: Uuid,
+    pub sku: String,
+    pub name: String,
+    pub base_uom: String,
+    pub list_price: Decimal,
+    pub standard_cost: Decimal,
+    pub on_hand: Decimal,
+    pub committed: Decimal,
+    pub on_order: Decimal,
+    pub in_transit: Decimal,
+}
+
+/// Stock positions for every product of an org at one store.
+pub async fn inventory_balances(
+    pool: &AnyPool,
+    org_id: Uuid,
+    store_id: Uuid,
+) -> Result<Vec<InventoryBalance>, DbError> {
+    let products = crate::list_products_for_org(pool, org_id).await?;
+    let entries = list_inventory_entries_for_store(pool, store_id).await?;
+    let mut balances: Vec<InventoryBalance> = products
+        .into_iter()
+        .map(|product| InventoryBalance {
+            product_id: product.id,
+            sku: product.sku,
+            name: product.name,
+            base_uom: product.base_uom,
+            list_price: product.list_price,
+            standard_cost: product.standard_cost,
+            on_hand: Decimal::ZERO,
+            committed: Decimal::ZERO,
+            on_order: Decimal::ZERO,
+            in_transit: Decimal::ZERO,
+        })
+        .collect();
+    for entry in &entries {
+        if let Some(balance) = balances
+            .iter_mut()
+            .find(|b| b.product_id == entry.product_id)
+        {
+            balance.on_hand += entry.delta_on_hand;
+            balance.committed += entry.delta_committed;
+            balance.on_order += entry.delta_on_order;
+            balance.in_transit += entry.delta_in_transit;
+        }
+    }
+    balances.sort_by(|a, b| a.sku.cmp(&b.sku));
+    Ok(balances)
+}
+
 /// All inventory ledger entries for a store, oldest first — the raw
 /// material for a low-stock report, which derives on-hand balances
 /// per product by summing `delta_on_hand` in Rust (see

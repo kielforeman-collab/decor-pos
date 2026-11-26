@@ -16,9 +16,8 @@
 //! plain-text rendering (`render_text` / `render_shortage_alerts_text`).
 //! All money and volumes are `rust_decimal::Decimal` — never floats.
 //!
-//! No PDF / Typst / Excel output: that is Phase 3/6 (spec §7 —
-//! `df-reports` gains Typst PDF statements and Excel/BI views there).
-//! These reports are JSON + plain text only.
+//! No Excel output: that is Phase 6 (spec §7). PDF statements are
+//! Phase 3 (`df_reports::statement` — Typst, see that module).
 //!
 //! Known gap, stated plainly: the schema has **no min-level table**
 //! for products (spec §5 defines no `product_min_levels` table), so
@@ -31,11 +30,17 @@ pub mod daily;
 pub mod error;
 pub mod low_stock;
 pub mod shortage;
+pub mod statement;
 
 pub use daily::{ColorUsage, ColorantUsage, DailyUsageReport, SalesTotals, daily_usage_report};
 pub use error::ReportError;
 pub use low_stock::{LowStockProduct, LowStockReport, ProductThreshold, low_stock_report};
 pub use shortage::{ColorantShortageAlert, colorant_shortage_alerts, render_shortage_alerts_text};
+pub use statement::{
+    StatementHeader, build_statements, format_money, header_for, period_label, persist_statement,
+    render_statement_pdf, render_statement_typst, resolve_typst_binary, statement_pdf_sha256,
+    to_statement_row,
+};
 
 #[cfg(test)]
 pub(crate) mod test_support {

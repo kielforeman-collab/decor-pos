@@ -4,11 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "File-based vendor EDI for decor-pos: X12 850/856/810, CSV catalog import, low-stock purchase orders (spec §1, §6.2; Phase 2 file-based form — SFTP/AS2 and full X12 are Phase 4)"
+description = "Vendor EDI for decor-pos: X12 850/855/856/810/832, three-way invoice matching, reviewed price-catalog applies, local drop-folder SFTP stand-in + AS2 message/MDN model (spec §1, §6.2; Phase 4 file-based form — no live vendor connection, no real SFTP/AS2 network transport, no S/MIME crypto)"
 
 [dependencies]
 chrono = { workspace = true }
 df-db = { workspace = true }
+df-plugin-sdk = { workspace = true }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

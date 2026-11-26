@@ -21,13 +21,16 @@
 //! check, and the colorant shortage alerts. Each produces its report
 //! via `df-reports` and returns it as the run's JSON output.
 //!
-//! Statements, finance charges, reminders and accounting sync are
-//! Phase 3 jobs (spec §7) — not here.
+//! Phase 3 monthly jobs ([`register_phase3_jobs`], on the 1st):
+//! `monthly-statements` (last month's statements + Typst PDF render)
+//! and `finance-charges` (assessment only — posting is `df-ar`'s).
 
 pub mod phase2;
+pub mod phase3;
 pub mod runner;
 
 pub use phase2::register_phase2_jobs;
+pub use phase3::{FINANCE_CHARGES_JOB, MONTHLY_STATEMENTS_JOB, register_phase3_jobs};
 pub use runner::{
     JobContext, JobDefinition, JobError, JobRun, JobRunner, Schedule, start_periodic,
 };

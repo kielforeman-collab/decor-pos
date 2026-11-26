@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/df-ar",
     "crates/df-domain",
     "crates/df-db",
     "crates/df-auth",
@@ -14,12 +15,15 @@ members = [
     "crates/df-plugin-sdk",
     "crates/df-jobs",
     "crates/df-reports",
+    "crates/df-accounting",
     "crates/df-server",
+    "crates/df-crm",
+    "crates/df-delivery",
     "apps/pos-desktop/src-tauri",
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0 OR MIT"
@@ -31,9 +35,14 @@ homepage = "https://example.invalid/decor-pos"
 anyhow = "1"
 argon2 = "0.5"
 axum = { version = "0.8", features = ["json", "macros", "ws"] }
+base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4", features = ["derive"] }
+df-ar = { path = "crates/df-ar" }
 df-auth = { path = "crates/df-auth" }
+df-crm = { path = "crates/df-crm" }
+df-delivery = { path = "crates/df-delivery" }
+df-accounting = { path = "crates/df-accounting" }
 df-db = { path = "crates/df-db" }
 df-domain = { path = "crates/df-domain" }
 df-edge = { path = "crates/df-edge" }
@@ -41,6 +50,7 @@ df-edi = { path = "crates/df-edi" }
 df-hw = { path = "crates/df-hw" }
 df-jobs = { path = "crates/df-jobs" }
 df-payments = { path = "crates/df-payments" }
+df-plugin-sdk = { path = "crates/df-plugin-sdk" }
 df-reports = { path = "crates/df-reports" }
 df-sync = { path = "crates/df-sync" }
 df-tinter = { path = "crates/df-tinter" }
@@ -49,6 +59,7 @@ rand = "0.9"
 rust_decimal = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "sqlite", "runtime-tokio", "rust_decimal", "uuid", "chrono", "migrate", "macros", "any"] }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }

@@ -1,0 +1,15 @@
+[package]
+name = "df-crm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "CRM domain for decor-pos (Phase 4, v0.5, spec §7): activity log, reminder tickler, appointments, saved search views, lapsed-contractor report"
+
+[dependencies]
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }

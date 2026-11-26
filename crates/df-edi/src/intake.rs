@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::csv::{field_by_name, parse_csv};
 use crate::error::{EdiError, Result};
-use crate::x12::{Segment, find, parse_document, parse_x12_date, require};
+use crate::x12::{
+    Segment, envelope_close, envelope_open, find, parse_document, parse_x12_date, render_document,
+    require, wrap_transaction, x12_date,
+};
 
 fn parse_decimal_field(value: &str, what: &str) -> Result<Decimal> {
     Decimal::from_str(value.trim())
@@ -55,7 +58,9 @@ pub struct Shipment {
 /// Parse an X12 856 (ship notice / manifest).
 ///
 /// Expected segments: `ST*856`, `BSN` (purpose, shipment id, date,
-/// time), then repeating `HL` / `LIN` / `SN1` groups. A line is a
+/// time), optional `REF*PO*<po number>` (the PO this shipment
+/// answers — when present it becomes [`Shipment::po_number`]),
+/// then repeating `HL` / `LIN` / `SN1` groups. A line is a
 /// `LIN` (item, `VP` + vendor SKU) followed by its `SN1` (quantity
 /// shipped). An `SN1` with no preceding `LIN`, or a `LIN` with no
 /// following `SN1`, is an error.
@@ -75,6 +80,12 @@ pub fn parse_856(text: &str) -> Result<Shipment> {
         .ok_or_else(|| EdiError::Parse("BSN02 shipment identification is missing".to_string()))?
         .to_string();
     let ship_date = parse_optional_x12_date(bsn.get(3))?;
+    let po_number = segments
+        .iter()
+        .find(|segment| segment.tag == "REF" && segment.get_trimmed(1) == Some("PO"))
+        .and_then(|segment| segment.get_trimmed(2))
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
 
     let mut lines: Vec<ShipmentLine> = Vec::new();
     let mut pending: Option<ShipmentLine> = None;
@@ -124,10 +135,56 @@ pub fn parse_856(text: &str) -> Result<Shipment> {
     }
     Ok(Shipment {
         shipment_id,
-        po_number: None,
+        po_number,
         ship_date,
         lines,
     })
+}
+
+/// Serialize a shipment as an X12 856.
+///
+/// Envelope: `ISA/GS/ST/BSN/REF*PO/HL/LIN/SN1…/SE/GE/IEA`,
+/// functional group `SH`, real control numbers and a correct `SE`
+/// count. The `REF*PO` segment carries the shipment's PO number
+/// (when known) so the receiver can tie it to the order; the ship
+/// date comes from `shipment.ship_date` (midnight when absent).
+pub fn shipment_to_x12_856(
+    shipment: &Shipment,
+    sender_id: &str,
+    receiver_id: &str,
+    control: u32,
+) -> String {
+    let date = shipment
+        .ship_date
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(2026, 11, 25).unwrap());
+    let time = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+    let mut segments = envelope_open("SH", sender_id, receiver_id, date, time, control);
+    let mut body = vec![Segment::new(
+        "BSN",
+        &[
+            "00",
+            &shipment.shipment_id,
+            &x12_date(date),
+            &crate::x12::x12_time(time),
+        ],
+    )];
+    if let Some(po_number) = &shipment.po_number {
+        body.push(Segment::new("REF", &["PO", po_number]));
+    }
+    body.push(Segment::new("HL", &["1", "", "S"]));
+    for line in &shipment.lines {
+        body.push(Segment::new(
+            "LIN",
+            &[&line.line_no.to_string(), "VP", &line.vendor_sku],
+        ));
+        body.push(Segment::new(
+            "SN1",
+            &["", &line.qty_shipped.to_string(), &line.uom],
+        ));
+    }
+    segments.extend(wrap_transaction("856", control, &body));
+    segments.extend(envelope_close(control, control));
+    render_document(&segments)
 }
 
 // --- Invoice (810) ---------------------------------------------------------
@@ -236,6 +293,54 @@ pub fn parse_810(text: &str) -> Result<Invoice> {
         lines,
         total,
     })
+}
+
+/// Serialize an invoice as an X12 810.
+///
+/// Envelope: `ISA/GS/ST/BIG/IT1…/TDS/SE/GE/IEA`, functional group
+/// `IN`, real control numbers and a correct `SE` count. `BIG01`
+/// is the invoice date, `BIG02` the invoice number, `BIG04` the PO
+/// number (when known); `BIG03` repeats the invoice date as the PO
+/// date when the PO date is not known separately. `TDS01` is the
+/// sum of the invoice lines.
+pub fn invoice_to_x12_810(
+    invoice: &Invoice,
+    sender_id: &str,
+    receiver_id: &str,
+    control: u32,
+) -> String {
+    let date = invoice
+        .invoice_date
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(2026, 11, 25).unwrap());
+    let time = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+    let mut segments = envelope_open("IN", sender_id, receiver_id, date, time, control);
+    let mut body = vec![Segment::new(
+        "BIG",
+        &[
+            &x12_date(date),
+            &invoice.invoice_number,
+            &x12_date(date),
+            invoice.po_number.as_deref().unwrap_or(""),
+        ],
+    )];
+    for line in &invoice.lines {
+        body.push(Segment::new(
+            "IT1",
+            &[
+                &line.line_no.to_string(),
+                &line.qty.to_string(),
+                &line.uom,
+                &line.unit_price.to_string(),
+                "",
+                "VP",
+                &line.vendor_sku,
+            ],
+        ));
+    }
+    body.push(Segment::new("TDS", &[&invoice.lines_total().to_string()]));
+    segments.extend(wrap_transaction("810", control, &body));
+    segments.extend(envelope_close(control, control));
+    render_document(&segments)
 }
 
 // --- CSV intake ------------------------------------------------------------
@@ -547,5 +652,54 @@ mod tests {
             )
             .is_err()
         ); // 810 row without unit_price
+    }
+
+    #[test]
+    fn x12_856_and_810_round_trip_with_po_link() {
+        let shipment = Shipment {
+            shipment_id: "SHIP-77".to_string(),
+            po_number: Some("PO-20261125-0001".to_string()),
+            ship_date: NaiveDate::from_ymd_opt(2026, 11, 25),
+            lines: vec![
+                ShipmentLine {
+                    line_no: 1,
+                    vendor_sku: "SKU-A".to_string(),
+                    qty_shipped: Decimal::from_str("10").unwrap(),
+                    uom: "EA".to_string(),
+                },
+                ShipmentLine {
+                    line_no: 2,
+                    vendor_sku: "SKU-B".to_string(),
+                    qty_shipped: Decimal::from_str("4").unwrap(),
+                    uom: "GAL".to_string(),
+                },
+            ],
+        };
+        let text_856 = shipment_to_x12_856(&shipment, "VENDOR-A", "DECORPOS", 21);
+        assert!(text_856.contains("ST*856*21~"));
+        assert!(text_856.contains("REF*PO*PO-20261125-0001~"));
+        assert!(text_856.contains("SN1**10*EA~"));
+        let back_856 = parse_856(&text_856).unwrap();
+        assert_eq!(back_856, shipment);
+
+        let invoice = Invoice {
+            invoice_number: "INV-99".to_string(),
+            po_number: Some("PO-20261125-0001".to_string()),
+            invoice_date: NaiveDate::from_ymd_opt(2026, 11, 25),
+            lines: vec![InvoiceLine {
+                line_no: 1,
+                vendor_sku: "SKU-A".to_string(),
+                qty: Decimal::from_str("10").unwrap(),
+                uom: "EA".to_string(),
+                unit_price: Decimal::from_str("24.5000").unwrap(),
+            }],
+            total: Some(Decimal::from_str("245.0000").unwrap()),
+        };
+        let text_810 = invoice_to_x12_810(&invoice, "VENDOR-A", "DECORPOS", 22);
+        assert!(text_810.contains("ST*810*22~"));
+        assert!(text_810.contains("BIG*20261125*INV-99*20261125*PO-20261125-0001~"));
+        assert!(text_810.contains("TDS*245.0000~"));
+        let back_810 = parse_810(&text_810).unwrap();
+        assert_eq!(back_810, invoice);
     }
 }

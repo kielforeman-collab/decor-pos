@@ -1,4 +1,4 @@
-//! `df-server` — unified CLI binary (`standalone`, `hq`, `edge`, `worker`, `migrate`, `reports`, `jobs`).
+//! `df-server` — unified CLI binary (`standalone`, `hq`, `edge`, `worker`, `migrate`, `reports`, `jobs`, `statements`, `accounting`, `edi`).
 //!
 //! Phase 2 (v0.3):
 //!
@@ -17,11 +17,30 @@
 //!   not tested; see the README). It runs no migrations: the
 //!   database must already exist.
 //! * `jobs run` runs the Phase 2 daily jobs (`daily-usage`,
-//!   `low-stock`, `shortage-alerts`, or all of them) once, right
-//!   now, and prints the recorded runs as JSON. This is the
+//!   `low-stock`, `shortage-alerts`) and the Phase 3 monthly jobs
+//!   (`monthly-statements`, `finance-charges`, or all of them) once,
+//!   right now, and prints the recorded runs as JSON. This is the
 //!   retrievable form of the scheduled jobs — there is no daemon
 //!   worker yet (`worker` mode is still a stub); schedule it with
 //!   cron/systemd calling `jobs run` daily, or run it by hand.
+//!
+//! Phase 3 (v0.4):
+//!
+//! * `statements run` builds a month's statements from the AR ledger
+//!   and renders each to a real Typst PDF in an output directory.
+//! * `accounting export` writes a CSV or QuickBooks IIF export of
+//!   the AR or inventory ledger to a file (file-based only — no live
+//!   QuickBooks/Xero sync; that is Phase 4+).
+//!
+//! Phase 4 (v0.5):
+//!
+//! * `edi send` / `edi intake` / `edi match` / `edi catalog` run the
+//!   edge's vendor-EDI wiring against an existing edge database
+//!   (SQLite) and print the result as JSON. No migrations run on
+//!   this path beyond what `Edge::open` already applies, and the
+//!   database file must already exist — a missing file is exit 2,
+//!   not a fresh database (SQLite would otherwise create one
+//!   silently).
 //!
 //! The other modes remain Phase 0 stubs (exit 2) until their phases
 //! land.
@@ -30,18 +49,26 @@
 //! df-server edge --db sqlite:edge.db --store-id <uuid> --listen 127.0.0.1:8080
 //! df-server reports --db sqlite:edge.db --org-id <uuid> --store-id <uuid> --kind daily-usage
 //! df-server jobs run --db sqlite:edge.db --org-id <uuid> --store-id <uuid>
+//! df-server statements run --db sqlite:edge.db --org-id <uuid> --store-id <uuid> --period 2026-11 --out ./statements-2026-11
+//! df-server accounting export --db sqlite:edge.db --org-id <uuid> --store-id <uuid> --kind csv --ledger ar --out ar.csv
+//! df-server edi send --db sqlite:edge.db --org-id <uuid> --store-id <uuid> --po-id <uuid> --out-dir ./edi-drop
+//! df-server edi intake --db sqlite:edge.db --org-id <uuid> --store-id <uuid> --doc-type 855 --file ./vendor.855.x12 --vendor-id VENDOR1
+//! df-server edi match --db sqlite:edge.db --org-id <uuid> --store-id <uuid> --po-id <uuid>
+//! df-server edi catalog --db sqlite:edge.db --org-id <uuid> --store-id <uuid> --file ./catalog.csv --vendor-id VENDOR1
 //! ```
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use clap::{Parser, Subcommand};
 use df_domain::Currency;
 use df_edge::{Edge, EdgeConfig, MockTerminal};
-use df_jobs::{JobContext, JobRunner, register_phase2_jobs};
+use df_jobs::{JobContext, JobRunner, register_phase2_jobs, register_phase3_jobs};
 use df_sync::MemoryHq;
+use rust_decimal::Decimal;
 use uuid::Uuid;
 
 #[derive(Debug, Parser)]
@@ -119,14 +146,31 @@ enum Command {
         #[command(subcommand)]
         command: JobsCommand,
     },
+    /// Monthly AR statements (Phase 3, v0.4).
+    Statements {
+        #[command(subcommand)]
+        command: StatementsCommand,
+    },
+    /// File-based accounting exports (Phase 3, v0.4).
+    Accounting {
+        #[command(subcommand)]
+        command: AccountingCommand,
+    },
+    /// Vendor EDI (Phase 4, v0.5): send a PO, intake a vendor
+    /// document, run the 3-way match, import a vendor catalog.
+    Edi {
+        #[command(subcommand)]
+        command: EdiCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 enum JobsCommand {
-    /// Run the Phase 2 daily jobs once, right now, and print the
-    /// recorded runs as JSON. `--job` runs one job
-    /// (`daily-usage`, `low-stock`, `shortage-alerts`); without it
-    /// all three run. Exits 1 if any run failed.
+    /// Run the Phase 2 daily jobs and the Phase 3 monthly jobs once,
+    /// right now, and print the recorded runs as JSON. `--job` runs
+    /// one job (`daily-usage`, `low-stock`, `shortage-alerts`,
+    /// `monthly-statements`, `finance-charges`); without it all run.
+    /// Exits 1 if any run failed.
     Run {
         /// sqlx database URL, e.g. `sqlite:edge.db` or a
         /// PostgreSQL URL.
@@ -138,15 +182,188 @@ enum JobsCommand {
         /// UUID of the store the jobs run for.
         #[arg(long)]
         store_id: Uuid,
-        /// One job to run (default: all three).
+        /// One job to run (default: all).
         #[arg(long)]
         job: Option<String>,
-        /// Date the daily jobs report on (`YYYY-MM-DD`; defaults to
-        /// today, UTC).
+        /// Date the jobs report on (`YYYY-MM-DD`; defaults to
+        /// today, UTC). Monthly jobs report on the previous month.
         #[arg(long)]
         date: Option<String>,
         /// Currency (`USD` or `CAD`). Defaults to the store row's
         /// currency; required when the database has no store row.
+        #[arg(long)]
+        currency: Option<String>,
+        /// Path to the `typst` binary for the monthly-statements job
+        /// (default: `DF_TYPST_BIN` env, then `typst` on `PATH`).
+        #[arg(long)]
+        typst_bin: Option<PathBuf>,
+        /// Monthly finance-charge rate in percent for the
+        /// finance-charges job (default 1.5).
+        #[arg(long)]
+        finance_rate: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum StatementsCommand {
+    /// Build a month's statements from the AR ledger and render each
+    /// to a real Typst PDF in the output directory. Prints a JSON
+    /// summary per statement (account, closing balance, PDF path,
+    /// SHA-256). Exits 1 if any statement fails to render.
+    Run {
+        /// sqlx database URL, e.g. `sqlite:edge.db` or a
+        /// PostgreSQL URL.
+        #[arg(long)]
+        db: String,
+        /// Organization UUID the statements scope to.
+        #[arg(long)]
+        org_id: Uuid,
+        /// UUID of the store the statements run for.
+        #[arg(long)]
+        store_id: Uuid,
+        /// Period to statement (`YYYY-MM`; defaults to last month).
+        #[arg(long)]
+        period: Option<String>,
+        /// Output directory for the PDFs (default
+        /// `./statements-<period>`).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Path to the `typst` binary (default: `DF_TYPST_BIN` env,
+        /// then `typst` on `PATH`).
+        #[arg(long)]
+        typst_bin: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AccountingCommand {
+    /// Write a file-based accounting export of a ledger to `--out`.
+    /// `--kind csv` writes CSV; `--kind iif` writes QuickBooks IIF.
+    /// File-based only — no live QuickBooks/Xero sync (Phase 4+).
+    Export {
+        /// sqlx database URL, e.g. `sqlite:edge.db` or a
+        /// PostgreSQL URL.
+        #[arg(long)]
+        db: String,
+        /// Organization UUID the export scopes to.
+        #[arg(long)]
+        org_id: Uuid,
+        /// UUID of the store the export runs for.
+        #[arg(long)]
+        store_id: Uuid,
+        /// Export kind: `csv` or `iif`.
+        #[arg(long)]
+        kind: String,
+        /// Ledger to export: `ar` or `inventory`.
+        #[arg(long)]
+        ledger: String,
+        /// Output file path.
+        #[arg(long)]
+        out: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum EdiCommand {
+    /// Send a draft PO as X12 850 and print the send receipt as
+    /// JSON. `--out-dir` stages the 850 through the local
+    /// transport stand-in (`{out-dir}/outbox/`); without it the
+    /// 850 is stored + printed but no file is staged.
+    Send {
+        /// sqlx database URL (must already exist — see the module
+        /// docs; a missing SQLite file is exit 2).
+        #[arg(long)]
+        db: String,
+        /// Organization UUID the edge serves.
+        #[arg(long)]
+        org_id: Uuid,
+        /// UUID of the store the edge serves.
+        #[arg(long)]
+        store_id: Uuid,
+        /// UUID of the draft purchase order to send.
+        #[arg(long)]
+        po_id: Uuid,
+        /// Root folder for the transport stand-in.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        /// Currency (`USD` or `CAD`). Defaults to the store row's
+        /// currency, then USD.
+        #[arg(long)]
+        currency: Option<String>,
+    },
+    /// Intake one vendor document from a file and print the intake
+    /// result as JSON (`--doc-type 856|810|855|832|csv`). An 855
+    /// stores the acknowledgment and reports the ack application;
+    /// an 832 stores a price-apply report in `pending_review`.
+    Intake {
+        /// sqlx database URL (must already exist).
+        #[arg(long)]
+        db: String,
+        /// Organization UUID the edge serves.
+        #[arg(long)]
+        org_id: Uuid,
+        /// UUID of the store the edge serves.
+        #[arg(long)]
+        store_id: Uuid,
+        /// Document type: `856`, `810`, `855`, `832` or `csv`.
+        #[arg(long)]
+        doc_type: String,
+        /// File holding the raw document text.
+        #[arg(long)]
+        file: PathBuf,
+        /// Vendor id the document came from.
+        #[arg(long)]
+        vendor_id: String,
+        /// PO to link the document to (otherwise linked by the PO
+        /// number the vendor echoes).
+        #[arg(long)]
+        po_id: Option<Uuid>,
+        /// Currency (`USD` or `CAD`). Defaults to the store row's
+        /// currency, then USD.
+        #[arg(long)]
+        currency: Option<String>,
+    },
+    /// Run the 3-way match for a PO and print the report as JSON.
+    /// When both the ASN and the invoice are stored the report is
+    /// persisted for later review.
+    Match {
+        /// sqlx database URL (must already exist).
+        #[arg(long)]
+        db: String,
+        /// Organization UUID the edge serves.
+        #[arg(long)]
+        org_id: Uuid,
+        /// UUID of the store the edge serves.
+        #[arg(long)]
+        store_id: Uuid,
+        /// UUID of the purchase order to match.
+        #[arg(long)]
+        po_id: Uuid,
+        /// Currency (`USD` or `CAD`). Defaults to the store row's
+        /// currency, then USD.
+        #[arg(long)]
+        currency: Option<String>,
+    },
+    /// Import a vendor catalog CSV file and print the import
+    /// result (valid items + per-row errors) as JSON.
+    Catalog {
+        /// sqlx database URL (must already exist).
+        #[arg(long)]
+        db: String,
+        /// Organization UUID the edge serves.
+        #[arg(long)]
+        org_id: Uuid,
+        /// UUID of the store the edge serves.
+        #[arg(long)]
+        store_id: Uuid,
+        /// CSV file to import.
+        #[arg(long)]
+        file: PathBuf,
+        /// Vendor id the catalog came from.
+        #[arg(long)]
+        vendor_id: String,
+        /// Currency (`USD` or `CAD`). Defaults to the store row's
+        /// currency, then USD.
         #[arg(long)]
         currency: Option<String>,
     },
@@ -273,14 +490,30 @@ async fn run_reports(
     std::process::exit(0);
 }
 
-async fn run_jobs(
+/// Arguments for `jobs run` (a struct so `run_jobs` stays under
+/// clippy's argument limit).
+struct JobsRunArgs {
     db: String,
     org_id: Uuid,
     store_id: Uuid,
     job: Option<String>,
     date: Option<String>,
     currency_flag: Option<String>,
-) -> ! {
+    typst_bin: Option<PathBuf>,
+    finance_rate: Option<String>,
+}
+
+async fn run_jobs(args: JobsRunArgs) -> ! {
+    let JobsRunArgs {
+        db,
+        org_id,
+        store_id,
+        job,
+        date,
+        currency_flag,
+        typst_bin,
+        finance_rate,
+    } = args;
     let report_date = match parse_date(date) {
         Ok(date) => date,
         Err(err) => {
@@ -288,12 +521,27 @@ async fn run_jobs(
             std::process::exit(2);
         }
     };
+    let finance_rate = match finance_rate {
+        Some(text) => match Decimal::from_str(&text) {
+            Ok(rate) => rate,
+            Err(_) => {
+                eprintln!(
+                    "df-server jobs run: --finance-rate must be a decimal percent, got {text:?}"
+                );
+                std::process::exit(2);
+            }
+        },
+        None => Decimal::from_str("1.5").unwrap(),
+    };
     let pool = open_pool(&db).await;
     let currency = store_currency(&pool, store_id, currency_flag).await;
     let mut ctx = JobContext::new(pool, org_id, store_id, currency);
     ctx.report_date = Some(report_date);
+    ctx.typst_bin = typst_bin;
+    ctx.finance_charge_rate_pct = finance_rate;
     let runner = JobRunner::new();
     register_phase2_jobs(&runner);
+    register_phase3_jobs(&runner);
     let runs = match job.as_deref() {
         Some(name) => match runner.run_now(&ctx, name).await {
             Ok(run) => vec![run],
@@ -312,6 +560,400 @@ async fn run_jobs(
         std::process::exit(1);
     }
     std::process::exit(0);
+}
+
+fn default_period() -> String {
+    let today = chrono::Utc::now().date_naive();
+    let (year, month) = if today.month() == 1 {
+        (today.year() - 1, 12)
+    } else {
+        (today.year(), today.month() - 1)
+    };
+    format!("{year:04}-{month:02}")
+}
+
+async fn run_statements(
+    db: String,
+    org_id: Uuid,
+    store_id: Uuid,
+    period: Option<String>,
+    out: Option<PathBuf>,
+    typst_bin: Option<PathBuf>,
+) -> ! {
+    let period = period.unwrap_or_else(default_period);
+    if NaiveDate::parse_from_str(&format!("{period}-01"), "%Y-%m-%d").is_err() {
+        eprintln!("df-server statements run: --period must be YYYY-MM, got {period:?}");
+        std::process::exit(2);
+    }
+    let pool = open_pool(&db).await;
+    let currency = store_currency(&pool, store_id, None).await;
+    let (org_name, store_name) = match (
+        df_db::get_organization(&pool, org_id).await,
+        df_db::get_store(&pool, store_id).await,
+    ) {
+        (Ok(org), Ok(store)) => (org.name, store.name),
+        (Err(err), _) | (_, Err(err)) => {
+            eprintln!("df-server statements run: cannot read org/store: {err}");
+            std::process::exit(1);
+        }
+    };
+    let statements =
+        match df_reports::build_statements(&pool, org_id, store_id, &period, currency).await {
+            Ok(statements) => statements,
+            Err(err) => {
+                eprintln!("df-server statements run: {err}");
+                std::process::exit(1);
+            }
+        };
+    let out_dir = out.unwrap_or_else(|| PathBuf::from(format!("statements-{period}")));
+    if let Err(err) = std::fs::create_dir_all(&out_dir) {
+        eprintln!(
+            "df-server statements run: cannot create {}: {err}",
+            out_dir.display()
+        );
+        std::process::exit(1);
+    }
+    let mut summaries = Vec::new();
+    let mut failed = false;
+    for statement in &statements {
+        // Freeze the statement row first (idempotent on re-run),
+        // then render the PDF and record its hash on the row.
+        let row_id = match df_reports::persist_statement(&pool, statement).await {
+            Ok(id) => id,
+            Err(err) => {
+                eprintln!(
+                    "df-server statements run: cannot persist statement {}: {err}",
+                    statement.account_number
+                );
+                failed = true;
+                continue;
+            }
+        };
+        let customer = match df_db::get_customer(&pool, statement.customer_id).await {
+            Ok(customer) => customer,
+            Err(err) => {
+                eprintln!(
+                    "df-server statements run: cannot read customer {}: {err}",
+                    statement.customer_id
+                );
+                failed = true;
+                continue;
+            }
+        };
+        let header =
+            df_reports::header_for(&customer, &org_name, &store_name, statement.period_end);
+        let file_name = format!("{}-{}.pdf", statement.account_number, period);
+        let path = out_dir.join(&file_name);
+        match df_reports::render_statement_pdf(statement, &header, typst_bin.as_deref()) {
+            Ok(pdf) => {
+                let sha256 = df_reports::statement_pdf_sha256(&pdf);
+                if let Err(err) = std::fs::write(&path, &pdf) {
+                    eprintln!(
+                        "df-server statements run: cannot write {}: {err}",
+                        path.display()
+                    );
+                    failed = true;
+                    continue;
+                }
+                if let Err(err) = df_db::set_statement_pdf_sha256(&pool, row_id, &sha256).await {
+                    eprintln!(
+                        "df-server statements run: cannot record PDF hash for {}: {err}",
+                        statement.account_number
+                    );
+                    failed = true;
+                    continue;
+                }
+                summaries.push(serde_json::json!({
+                    "account_number": statement.account_number,
+                    "customer_name": header.customer_name,
+                    "closing_balance": statement.closing_balance.amount().to_string(),
+                    "statement_row_id": row_id,
+                    "pdf_path": path.to_string_lossy(),
+                    "pdf_bytes": pdf.len(),
+                    "pdf_sha256": sha256,
+                }));
+            }
+            Err(err) => {
+                eprintln!(
+                    "df-server statements run: statement {} failed to render: {err}",
+                    statement.account_number
+                );
+                failed = true;
+            }
+        }
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "period": period,
+            "statements": summaries,
+        }))
+        .expect("summaries serialise")
+    );
+    std::process::exit(i32::from(failed));
+}
+
+async fn run_accounting_export(
+    db: String,
+    org_id: Uuid,
+    store_id: Uuid,
+    kind: String,
+    ledger: String,
+    out: PathBuf,
+) -> ! {
+    let _ = org_id;
+    let pool = open_pool(&db).await;
+    let summary = match (kind.as_str(), ledger.as_str()) {
+        ("csv", "ar") => match df_accounting::load_ar_entries_for_store(&pool, store_id).await {
+            Ok(entries) => {
+                let plugin = df_accounting::CsvAccountingPlugin;
+                match df_accounting::AccountingPlugin::export_ar_ledger(&plugin, &entries, &out) {
+                    Ok(summary) => summary,
+                    Err(err) => {
+                        eprintln!("df-server accounting export: {err}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!("df-server accounting export: {err}");
+                std::process::exit(1);
+            }
+        },
+        ("csv", "inventory") => {
+            match df_accounting::load_inventory_entries_for_store(&pool, store_id).await {
+                Ok(entries) => {
+                    let plugin = df_accounting::CsvAccountingPlugin;
+                    match df_accounting::AccountingPlugin::export_inventory_ledger(
+                        &plugin, &entries, &out,
+                    ) {
+                        Ok(summary) => summary,
+                        Err(err) => {
+                            eprintln!("df-server accounting export: {err}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!("df-server accounting export: {err}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        ("iif", "ar") => match df_accounting::load_ar_entries_for_store(&pool, store_id).await {
+            Ok(entries) => {
+                let plugin = df_accounting::IifAccountingPlugin::default();
+                match df_accounting::AccountingPlugin::export_ar_ledger(&plugin, &entries, &out) {
+                    Ok(summary) => summary,
+                    Err(err) => {
+                        eprintln!("df-server accounting export: {err}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!("df-server accounting export: {err}");
+                std::process::exit(1);
+            }
+        },
+        ("iif", "inventory") => {
+            match df_accounting::load_inventory_entries_for_store(&pool, store_id).await {
+                Ok(entries) => {
+                    let plugin = df_accounting::IifAccountingPlugin::default();
+                    match df_accounting::AccountingPlugin::export_inventory_ledger(
+                        &plugin, &entries, &out,
+                    ) {
+                        Ok(summary) => summary,
+                        Err(err) => {
+                            eprintln!("df-server accounting export: {err}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!("df-server accounting export: {err}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        _ => {
+            eprintln!(
+                "df-server accounting export: unknown --kind {kind:?} / --ledger {ledger:?} (csv|iif, ar|inventory)"
+            );
+            std::process::exit(2);
+        }
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "kind": kind,
+            "ledger": ledger,
+            "rows": summary.rows,
+            "bytes": summary.bytes,
+            "path": summary.path.to_string_lossy(),
+        }))
+        .expect("summary serialises")
+    );
+    std::process::exit(0);
+}
+
+/// The database + tenant every `edi` subcommand needs. Bundled so
+/// the `run_edi_*` helpers stay under clippy's argument limit.
+struct EdiCtx {
+    db: String,
+    org_id: Uuid,
+    store_id: Uuid,
+}
+
+/// Open the edge for an `edi` subcommand. The database file must
+/// already exist: SQLite would otherwise create an empty one
+/// silently, so a missing file is exit 2. The currency is only
+/// needed for the `EdgeConfig` (no EDI result carries money in a
+/// currency), so it resolves flag → store row → USD.
+async fn open_edge_for_edi(ctx: &EdiCtx, currency_flag: Option<String>) -> Edge {
+    if let Some(path) = ctx.db.strip_prefix("sqlite:")
+        && path != ":memory:"
+        && !PathBuf::from(path).exists()
+    {
+        eprintln!(
+            "df-server edi: database file {path} does not exist — run `df-server edge` first (or pass an existing --db)"
+        );
+        std::process::exit(2);
+    }
+    let pool = open_pool(&ctx.db).await;
+    let currency = match currency_flag {
+        Some(text) => match Currency::from_str(&text) {
+            Ok(currency) => currency,
+            Err(err) => {
+                eprintln!("df-server edi: --currency {text:?} is not USD/CAD: {err}");
+                std::process::exit(2);
+            }
+        },
+        None => match df_db::get_store(&pool, ctx.store_id).await {
+            Ok(store) => match Currency::from_str(&store.currency) {
+                Ok(currency) => currency,
+                Err(err) => {
+                    eprintln!(
+                        "df-server edi: store {} has an unsupported currency: {err}",
+                        ctx.store_id
+                    );
+                    std::process::exit(1);
+                }
+            },
+            Err(_) => Currency::Usd,
+        },
+    };
+    let config = EdgeConfig {
+        store_id: ctx.store_id,
+        org_id: ctx.org_id,
+        db_url: ctx.db.clone(),
+        store_name: "Decor POS Store".to_string(),
+        currency,
+        surcharge_rules: EdgeConfig::default_surcharge_rules(currency),
+    };
+    match Edge::open(config).await {
+        Ok(edge) => edge,
+        Err(err) => {
+            eprintln!("df-server edi: failed to open edge: {err}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_json(value: serde_json::Value) -> ! {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&value).expect("value serialises")
+    );
+    std::process::exit(0);
+}
+
+async fn run_edi_send(
+    ctx: EdiCtx,
+    po_id: Uuid,
+    out_dir: Option<PathBuf>,
+    currency: Option<String>,
+) -> ! {
+    let edge = open_edge_for_edi(&ctx, currency).await;
+    let out_dir = out_dir.map(|path| path.to_string_lossy().to_string());
+    match edge.send_purchase_order(po_id, out_dir).await {
+        Ok(response) => print_json(serde_json::to_value(response).expect("response serialises")),
+        Err(err) => {
+            eprintln!("df-server edi send: {err}");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run_edi_intake(
+    ctx: EdiCtx,
+    doc_type: String,
+    file: PathBuf,
+    vendor_id: String,
+    po_id: Option<Uuid>,
+    currency: Option<String>,
+) -> ! {
+    let raw_text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!(
+                "df-server edi intake: cannot read {}: {err}",
+                file.display()
+            );
+            std::process::exit(2);
+        }
+    };
+    let edge = open_edge_for_edi(&ctx, currency).await;
+    let request = df_edge::IntakeRequest {
+        doc_type,
+        raw_text,
+        vendor_id,
+        related_po_id: po_id,
+    };
+    match edge.intake_edi(request).await {
+        Ok(response) => print_json(serde_json::to_value(response).expect("response serialises")),
+        Err(err) => {
+            eprintln!("df-server edi intake: {err}");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run_edi_match(ctx: EdiCtx, po_id: Uuid, currency: Option<String>) -> ! {
+    let edge = open_edge_for_edi(&ctx, currency).await;
+    match edge.three_way_match(po_id).await {
+        Ok(report) => print_json(serde_json::to_value(report).expect("report serialises")),
+        Err(err) => {
+            eprintln!("df-server edi match: {err}");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run_edi_catalog(
+    ctx: EdiCtx,
+    file: PathBuf,
+    vendor_id: String,
+    currency: Option<String>,
+) -> ! {
+    let csv_text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!(
+                "df-server edi catalog: cannot read {}: {err}",
+                file.display()
+            );
+            std::process::exit(2);
+        }
+    };
+    let edge = open_edge_for_edi(&ctx, currency).await;
+    match edge.import_vendor_catalog(&csv_text, &vendor_id).await {
+        Ok(response) => print_json(serde_json::to_value(response).expect("response serialises")),
+        Err(err) => {
+            eprintln!("df-server edi catalog: {err}");
+            std::process::exit(1);
+        }
+    }
 }
 
 async fn run_edge(
@@ -392,7 +1034,125 @@ async fn main() {
                 job,
                 date,
                 currency,
-            } => run_jobs(db, org_id, store_id, job, date, currency).await,
+                typst_bin,
+                finance_rate,
+            } => {
+                run_jobs(JobsRunArgs {
+                    db,
+                    org_id,
+                    store_id,
+                    job,
+                    date,
+                    currency_flag: currency,
+                    typst_bin,
+                    finance_rate,
+                })
+                .await
+            }
+        },
+        Command::Statements { command } => match command {
+            StatementsCommand::Run {
+                db,
+                org_id,
+                store_id,
+                period,
+                out,
+                typst_bin,
+            } => run_statements(db, org_id, store_id, period, out, typst_bin).await,
+        },
+        Command::Accounting { command } => match command {
+            AccountingCommand::Export {
+                db,
+                org_id,
+                store_id,
+                kind,
+                ledger,
+                out,
+            } => run_accounting_export(db, org_id, store_id, kind, ledger, out).await,
+        },
+        Command::Edi { command } => match command {
+            EdiCommand::Send {
+                db,
+                org_id,
+                store_id,
+                po_id,
+                out_dir,
+                currency,
+            } => {
+                run_edi_send(
+                    EdiCtx {
+                        db,
+                        org_id,
+                        store_id,
+                    },
+                    po_id,
+                    out_dir,
+                    currency,
+                )
+                .await
+            }
+            EdiCommand::Intake {
+                db,
+                org_id,
+                store_id,
+                doc_type,
+                file,
+                vendor_id,
+                po_id,
+                currency,
+            } => {
+                run_edi_intake(
+                    EdiCtx {
+                        db,
+                        org_id,
+                        store_id,
+                    },
+                    doc_type,
+                    file,
+                    vendor_id,
+                    po_id,
+                    currency,
+                )
+                .await
+            }
+            EdiCommand::Match {
+                db,
+                org_id,
+                store_id,
+                po_id,
+                currency,
+            } => {
+                run_edi_match(
+                    EdiCtx {
+                        db,
+                        org_id,
+                        store_id,
+                    },
+                    po_id,
+                    currency,
+                )
+                .await
+            }
+            EdiCommand::Catalog {
+                db,
+                org_id,
+                store_id,
+                file,
+                vendor_id,
+                currency,
+            } => {
+                run_edi_catalog(
+                    EdiCtx {
+                        db,
+                        org_id,
+                        store_id,
+                    },
+                    file,
+                    vendor_id,
+                    currency,
+                )
+                .await
+            }
         },
     }
 }
