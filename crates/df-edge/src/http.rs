@@ -47,6 +47,9 @@
 //!   uses (`Vec<ProductThreshold>`)
 //! * `GET /inventory/balances?store_id=` — stock positions
 //!   (on-hand / committed / on-order / in-transit) per product
+//! * `POST /pos/inventory/import` — GUI product import: parsed
+//!   spreadsheet rows as JSON (`{store_id, rows}`), upserted by
+//!   SKU; Manager / Admin only (`PricingManage`)
 //! * `GET /inventory/reorder-points` + `POST /inventory/reorder-points` —
 //!   min/max reorder points (set one per call)
 //! * `POST /purchasing/replenishment/suggest` — min/max + velocity
@@ -193,8 +196,8 @@ use crate::edi::{
 use crate::error::EdgeError;
 use crate::inventory::{
     AgingView, ArCustomerSummary, BulkPricingRequest, CollectionsView, CountReconcileResponse,
-    CreatePurchaseOrderRequest, CreateTransferRequest, PhysicalCount, PurchaseOrderView,
-    ReceivePurchaseOrderRequest, ReplenishmentSuggestRequest, ScanCountRequest,
+    CreatePurchaseOrderRequest, CreateTransferRequest, ImportProductsRequest, PhysicalCount,
+    PurchaseOrderView, ReceivePurchaseOrderRequest, ReplenishmentSuggestRequest, ScanCountRequest,
     SetReorderPointRequest, ShelfTagResponse, StartCountRequest, SuggestedPurchaseOrder, Transfer,
 };
 use crate::portal::{
@@ -757,6 +760,16 @@ async fn set_reorder_point(
     Json(body): Json<SetReorderPointRequest>,
 ) -> HandlerResult<ReorderPoint> {
     edge.set_reorder_point(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn import_products(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<ImportProductsRequest>,
+) -> HandlerResult<df_db::ProductImportResult> {
+    edge.import_products(body)
         .await
         .map(Json)
         .map_err(err_response)
@@ -2059,6 +2072,17 @@ pub fn router(edge: Edge) -> Router {
         .route("/pricing/rules", get(list_pricing_rules).post(bulk_pricing))
         .route_layer(pricing_gate);
 
+    // GUI product import: `PricingManage` (Manager / Admin only —
+    // Warehouse holds `InventoryAdjust` but not this). The back
+    // office parses the spreadsheet in the browser and posts rows
+    // as JSON; the file itself is never uploaded. Its own gate
+    // (same rule as `pricing_gate`) because a layer value moves
+    // on first use.
+    let product_import_gate = gate(AuthRule::AnyOf(vec![Permission::PricingManage]));
+    let product_import_routes = Router::new()
+        .route("/pos/inventory/import", post(import_products))
+        .route_layer(product_import_gate);
+
     let inventory_view_routes = Router::new()
         .route("/inventory/balances", get(get_balances))
         .route("/inventory/reorder-points", get(list_reorder_points))
@@ -2211,6 +2235,7 @@ pub fn router(edge: Edge) -> Router {
         .merge(tint_read_routes)
         .merge(report_routes)
         .merge(pricing_routes)
+        .merge(product_import_routes)
         .merge(inventory_view_routes)
         .merge(inventory_adjust_routes)
         .merge(purchasing_routes)

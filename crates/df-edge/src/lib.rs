@@ -83,10 +83,11 @@ pub use hw::{
 pub use inventory::{
     AgingCustomerRow, AgingView, ArCustomerSummary, BulkPricingRequest, CollectionsRow,
     CollectionsView, CountAdjustment, CountLineView, CountReconcileResponse, CreatePoLineRequest,
-    CreatePurchaseOrderRequest, CreateTransferRequest, PhysicalCount, PoLineView,
-    PricingRuleUpdate, PurchaseOrderView, ReceivePoLineRequest, ReceivePurchaseOrderRequest,
-    ReplenishmentSuggestRequest, ScanCountRequest, SetReorderPointRequest, ShelfTagResponse,
-    StartCountRequest, SuggestedLine, SuggestedPurchaseOrder, Transfer, TransferLineView,
+    CreatePurchaseOrderRequest, CreateTransferRequest, ImportProductsRequest, PhysicalCount,
+    PoLineView, PricingRuleUpdate, PurchaseOrderView, ReceivePoLineRequest,
+    ReceivePurchaseOrderRequest, ReplenishmentSuggestRequest, ScanCountRequest,
+    SetReorderPointRequest, ShelfTagResponse, StartCountRequest, SuggestedLine,
+    SuggestedPurchaseOrder, Transfer, TransferLineView,
 };
 pub use payments::{
     MockTerminal, PaymentError, PaymentProvider, PaymentRequest, PaymentResult, PaymentStatus,

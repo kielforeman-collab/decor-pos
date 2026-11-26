@@ -485,6 +485,42 @@ export interface CatalogImportResponse {
   errors: { row: number; message: string }[]
 }
 
+// --- GUI product import -----------------------------------------------------
+// Shapes mirror the edge JSON (df_db::product_import). `row` is the
+// 1-based spreadsheet row number (header is row 1). Prices travel as
+// strings ("$39.34"); the backend parses them to Decimal. Category,
+// UPC, MSRP and MAP are accepted by the backend but NOT stored —
+// `products` has no columns for them.
+
+export interface ProductImportRow {
+  row: number
+  sku: string
+  name: string
+  category: string
+  line: string
+  color: string
+  size: string
+  upc: string
+  msrp: string
+  map: string
+  net_price: string
+  list_price: string
+  brand_code: string
+}
+
+export interface ProductImportFailure {
+  row: number
+  sku: string
+  reason: string
+}
+
+export interface ProductImportResponse {
+  created: number
+  updated: number
+  failed: number
+  failures: ProductImportFailure[]
+}
+
 // --- Phase 6: BI -------------------------------------------------------------
 // Shapes mirror the edge JSON (df-reports kpi / eco / outbox).
 // Decimals serialize as strings; Money as {amount, currency}.

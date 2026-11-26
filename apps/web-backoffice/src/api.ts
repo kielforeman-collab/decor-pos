@@ -43,6 +43,8 @@ import type {
   PoAcknowledgmentRow,
   PriceCatalogApplicationRow,
   PricingRuleRow,
+  ProductImportResponse,
+  ProductImportRow,
   PurchaseOrderView,
   ReorderPoint,
   SavedViewCustomer,
@@ -424,6 +426,16 @@ export async function importCatalog(
   vendorId: string,
 ): Promise<CatalogImportResponse> {
   return http('/edi/catalog/import', { csv_text: csvText, vendor_id: vendorId })
+}
+
+// --- GUI product import -----------------------------------------------------
+// The spreadsheet is parsed in the browser (see productImport.ts);
+// only the parsed rows are posted — the file itself is never uploaded.
+export async function importProducts(body: {
+  store_id?: string
+  rows: ProductImportRow[]
+}): Promise<ProductImportResponse> {
+  return http('/pos/inventory/import', body)
 }
 
 // --- Phase 6: BI -------------------------------------------------------------

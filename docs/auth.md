@@ -290,6 +290,7 @@ customers' AR summaries through the unscoped staff AR routes).
 | `GET /pos/tinting/colorants` | `PosCheckout` **or** `InventoryView` | |
 | `GET /pos/reports/daily-usage`, `/pos/reports/low-stock`, `/bi/kpi`, `/bi/eco`, `/bi/inquiry`, `/bi/email-outbox` | `ReportView` | |
 | `POST /pos/reports/low-stock/thresholds`, `/pricing/rules` (GET+POST) | `PricingManage` | |
+| `POST /pos/inventory/import` | `PricingManage` | GUI product import (Manager/Admin only — Warehouse holds `InventoryAdjust` but not this); rows are parsed in the browser, posted as JSON, upserted by SKU |
 | `GET /inventory/balances`, `/inventory/reorder-points`, `/inventory/transfers`, `/inventory/counts`, `/inventory/shelf-tags`, `/purchasing/orders` | `InventoryView` | |
 | `POST /inventory/reorder-points`, `/inventory/transfers*`, `/inventory/counts*` | `InventoryAdjust` | Includes transfer ship/receive, count scan/reconcile |
 | `POST /purchasing/orders` | `PoCreate` | |

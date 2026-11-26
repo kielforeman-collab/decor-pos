@@ -257,7 +257,7 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ clippy clean (`-D warnings`, workspace-wide), fmt clean — both re-run by the coordinator. `npm run build` clean in all four touched apps (pos-desktop 255.84 kB, others build clean)
 - ✅ Normalizer fix proven by the coordinator with a real esbuild-bundled node test against the actual `auth.ts` (see Scope) — flat + nested + missing-token cases, all pass
 ### GitHub
-- ⬜ NOT pushed yet (local only)
+- ✅ Pushed Nov 26 via connector in ONE commit `2d5d389` (365 files, 6 new; 2 binary PWA icons excluded — connector cannot carry binaries)
 ### Known limits
 - setup.ps1 is read-verified only (no PowerShell in this VM) — needs one real Windows run before it is trusted.
 - Scripts generate UUIDv4, not the UUIDv7 the `.env.example` comment suggests — `Uuid::parse_str` accepts any version, so v4 works, but if v7 is ever enforced the scripts need updating.
@@ -265,3 +265,26 @@ only its own section, ticking items as they are verified — not when code merel
 - No email-format validation beyond non-blank (mirrors the CLI). The GUI flow needs the pos-desktop dev server (`npm run dev`, :1420) running against an edge on :8080 — the Docker Compose stack alone does not serve the POS UI.
 - The VM's Postgres is ephemeral: a VM restart wipes /tmp (URL file) — the 16 package survived the last restart, only the cluster needed re-starting and the role/DB re-creating.
 - F8/F9/F10 stay OPEN. No COLORx code. No f32/f64 money code.
+
+## GUI product import — ✅ DONE Nov 26, 2026 (build only, NOT pushed, no version bump)
+### Scope
+- ✅ "Import products" button on the back-office Inventory tab (apps/web-backoffice, :1421): file picker accepts .xlsx and .csv; the spreadsheet is parsed IN THE BROWSER with SheetJS (`xlsx` 0.18.5, new dep) — the file itself is never uploaded, only parsed JSON rows are POSTed. Reads sheet "EXCEL" when present, else the first sheet; first row is the header.
+- ✅ Preview before anything is sent: row count, first ~5 ready rows (SKU, name, list price, net price), and every row that will be skipped with its reason (skipped list capped at 20 shown). Confirm button posts only the problem-free rows; result shows created / updated / failed plus a per-row failure table. Inventory refreshes after a successful import.
+- ✅ Backend: `POST /pos/inventory/import` on df-edge (new `Edge::import_products` in crates/df-edge/src/inventory.rs + handler/route in http.rs), gated on `PricingManage` — Manager/Admin only. Warehouse holds `InventoryAdjust` but NOT `PricingManage`, so it gets 403 (proven by test). Route + matrix row added to docs/auth.md and the http.rs route docs.
+- ✅ Upsert by `(org_id, sku)`: new SKUs created, existing SKUs repriced (name + list/standard/avg cost + manufacturer code only — department, tax class, type, UOM untouched), so re-importing the same file is safe. One bad row never fails the batch; failures carry the 1-based spreadsheet row number and a named reason. 10,000-row per-request cap; unknown store_id → 404; empty rows → 400.
+- ✅ Row mapping / validation in unit-testable `df-db::product_import` (`parse_money`, `validate_import_row`, `import_products`) + `update_imported_product` repo fn. Prices are `Decimal`, "$"/commas stripped, negatives rejected. Column mapping: SKU → sku, Product Name → name, List Price → list_price, NET Price → standard_cost (and avg_cost on create), Brand Code → manufacturer_code. NOT stored (no columns): Category, French Description, French Category Name, Line, Color, Size, Product UPC, MSRP, MAP, Brand Discount Y/N, Brand Discount, Attention flags — the preview and this doc say so; MSRP/MAP are still validated when present (garbage → bad row). Defaults for columns the file cannot supply follow the existing seed pattern: product_type "paint_base", base_uom "gal", fresh `Uuid::now_v7()` department_id / tax_class_id (no departments or tax-class tables exist — free-form UUIDs, no FK). The malformed shifted row (sheet row 1012: every cell "K7931X-001") is rejected by the price check with reason `net_price "K7931X-001" is not a valid price` (backend) / `List Price price "K7931X-001" is not a valid price` (preview).
+- ✅ Role-gating in the UI is Manager/Admin only (mirrors the BI-tab pattern); the backend enforces it — the button is hidden for other roles and the endpoint 403s them.
+### Verification
+- ✅ df-db: 7 unit tests (`product_import::tests`: money parsing, missing SKU/name, bad/missing prices, malformed shifted row, optional MSRP/MAP) + 4 SQLite integration tests (`sqlite_product_import.rs`: create-then-update on re-import, duplicate SKU in one file, bad rows don't fail the batch, malformed shifted row) — 11/11
+- ✅ df-edge: 4 HTTP integration tests (`product_import.rs` over the real router): unauthenticated → 401; Cashier + Warehouse → 403, Manager + Admin → 200; mixed batch (1 create + 1 update + 3 failures incl. row 1012) with DB repricing verified; unknown store → 404 — 4/4
+- ✅ Dry-run of the REAL frontend parser against the REAL file (esbuild-bundled `productImport.ts` run in node, read-only, nothing written to any database): 1,228 rows parsed, 1,227 ready, 1 skipped (sheet row 1012, malformed row, named reason), 0 duplicate SKUs
+- ✅ Frontend builds: `npm run build` (tsc + vite) clean in apps/web-backoffice (bundle 646.96 kB — SheetJS; chunk-size warning only, no error)
+- ✅ `cargo fmt --check` clean and `cargo clippy -p df-db -p df-edge --all-targets` clean for the touched crates (clippy run before the final fmt pass; fmt touches formatting only)
+- ✅ Full `cargo test -p df-db -p df-edge` suite: **115 passed, 0 failed** (exit 0; ~10.5 min, dominated by the slow Argon2-seeded auth tests — no failures anywhere, including all pre-existing suites)
+### GitHub
+- ⬜ NOT pushed (build only, per task — Kiel clicks the button himself when ready; push is his call). No version bump, no tag.
+### Known limits
+- Imported products carry the seed defaults (product_type "paint_base", base_uom "gal", fresh department/tax-class UUIDs) — the price list has no UOM/type/department columns. A later pass could map BM Size codes to UOMs or real departments; deliberately not invented here.
+- Category / UPC / MSRP / MAP are not stored — if Kiel wants them searchable later, `products` needs new columns (a migration, not a silent drop).
+- The 10,000-row cap and the per-row (non-transactional) upsert are deliberate: a failure mid-batch leaves earlier rows imported, reported in the result.
+- The frontend bundle grew ~430 kB (SheetJS); no code-splitting done — back-office only, acceptable.

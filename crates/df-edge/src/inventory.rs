@@ -119,6 +119,18 @@ pub struct PhysicalCount {
 
 // --- request / response types ----------------------------------------------
 
+/// GUI product import (`POST /pos/inventory/import`): the back
+/// office parses the spreadsheet in the browser and posts the rows
+/// as JSON — the file itself is never uploaded. `store_id` selects
+/// the store context (defaults to the edge's configured store);
+/// `rows` carry their 1-based spreadsheet row numbers so failures
+/// point at the exact line in the file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportProductsRequest {
+    pub store_id: Option<Uuid>,
+    pub rows: Vec<df_db::ImportProductRow>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SetReorderPointRequest {
     pub product_id: Uuid,
@@ -448,6 +460,35 @@ impl Edge {
         store_id: Uuid,
     ) -> Result<Vec<ReorderPoint>, EdgeError> {
         Ok(df_db::list_reorder_points_for_store(self.pool(), store_id).await?)
+    }
+
+    // --- product import (GUI) -------------------------------------------------
+
+    /// Upsert a vendor price list into `products` (GUI product
+    /// import, `POST /pos/inventory/import`). Rows are validated and
+    /// upserted by [`df_db::import_products`]: new SKUs are created,
+    /// existing SKUs are repriced, bad rows are reported without
+    /// failing the batch. The store must exist; products themselves
+    /// are org-scoped. A 10,000-row cap keeps one request from
+    /// importing an unbounded file.
+    pub async fn import_products(
+        &self,
+        request: ImportProductsRequest,
+    ) -> Result<df_db::ProductImportResult, EdgeError> {
+        let store_id = self.store_or_default(request.store_id);
+        df_db::get_store(self.pool(), store_id).await?;
+        if request.rows.is_empty() {
+            return Err(EdgeError::InvalidInput(
+                "rows must not be empty".to_string(),
+            ));
+        }
+        if request.rows.len() > 10_000 {
+            return Err(EdgeError::InvalidInput(format!(
+                "rows exceeds the 10,000-row import limit: {}",
+                request.rows.len()
+            )));
+        }
+        Ok(df_db::import_products(self.pool(), self.config().org_id, &request.rows).await?)
     }
 
     /// Set (or replace) the min/max reorder point for a product

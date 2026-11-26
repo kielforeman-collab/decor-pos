@@ -1,0 +1,224 @@
+//! SQLite tests for the GUI product import (`df_db::product_import`).
+//!
+//! Covers: create-then-update on re-import (no duplicates), a
+//! duplicate SKU inside one file, bad rows failing without failing
+//! the batch, and the malformed shifted row from the real Benjamin
+//! Moore price list (sheet row 1012: every cell holds `K7931X-001`).
+
+use chrono::Utc;
+use df_db::models::Organization;
+use df_db::{Dialect, ImportProductRow, connect, import_products, list_products_for_org, migrate};
+use rust_decimal::Decimal;
+use std::str::FromStr;
+use uuid::Uuid;
+
+fn dec(s: &str) -> Decimal {
+    Decimal::from_str(s).unwrap()
+}
+
+async fn test_pool() -> df_db::AnyPool {
+    let pool = connect("sqlite::memory:").await.unwrap();
+    migrate(&pool, Dialect::Sqlite).await.unwrap();
+    pool
+}
+
+async fn test_org(pool: &df_db::AnyPool) -> Uuid {
+    let org = Organization {
+        id: Uuid::now_v7(),
+        name: "Test Paint Co".to_string(),
+        default_currency: "USD".to_string(),
+        enabled_modules: serde_json::json!({"core_pos": true}),
+        settings_json: serde_json::json!({}),
+        created_at: Utc::now(),
+    };
+    let id = org.id;
+    df_db::insert_organization(pool, &org).await.unwrap();
+    id
+}
+
+fn row(sheet_row: usize, sku: &str, name: &str, net: &str, list: &str) -> ImportProductRow {
+    ImportProductRow {
+        row: sheet_row,
+        sku: sku.to_string(),
+        name: name.to_string(),
+        category: "REGAL SELECT INTERIOR".to_string(),
+        line: "0F403".to_string(),
+        color: "01".to_string(),
+        size: "001".to_string(),
+        upc: "023906119027".to_string(),
+        msrp: "$108.99".to_string(),
+        map: "$96.99".to_string(),
+        net_price: net.to_string(),
+        list_price: list.to_string(),
+        brand_code: "BMC".to_string(),
+    }
+}
+
+#[tokio::test]
+async fn import_creates_then_updates_on_reimport() {
+    let pool = test_pool().await;
+    let org_id = test_org(&pool).await;
+    let rows = vec![
+        row(
+            2,
+            "F40301-001",
+            "REGAL SELECT HB SG-WHITE",
+            "$57.74",
+            "$58.18",
+        ),
+        row(
+            3,
+            "0229B1-004",
+            "GENNEX WB CLRNT -THALO BLUE",
+            "$39.34",
+            "$39.64",
+        ),
+    ];
+    let first = import_products(&pool, org_id, &rows).await.unwrap();
+    assert_eq!(first.created, 2);
+    assert_eq!(first.updated, 0);
+    assert_eq!(first.failed, 0);
+
+    // Re-import with new prices: updates, never duplicates.
+    let repriced = vec![
+        row(
+            2,
+            "F40301-001",
+            "REGAL SELECT HB SG-WHITE",
+            "$59.00",
+            "$60.00",
+        ),
+        row(
+            3,
+            "0229B1-004",
+            "GENNEX WB CLRNT -THALO BLUE",
+            "$39.34",
+            "$39.64",
+        ),
+    ];
+    let second = import_products(&pool, org_id, &repriced).await.unwrap();
+    assert_eq!(second.created, 0);
+    assert_eq!(second.updated, 2);
+    assert_eq!(second.failed, 0);
+
+    let products = list_products_for_org(&pool, org_id).await.unwrap();
+    assert_eq!(products.len(), 2);
+    let regal = products.iter().find(|p| p.sku == "F40301-001").unwrap();
+    assert_eq!(regal.list_price, dec("60.00"));
+    assert_eq!(regal.standard_cost, dec("59.00"));
+    assert_eq!(regal.avg_cost, dec("59.00"));
+    assert_eq!(regal.manufacturer_code.as_deref(), Some("BMC"));
+    assert_eq!(regal.name, "REGAL SELECT HB SG-WHITE");
+}
+
+#[tokio::test]
+async fn import_duplicate_sku_inside_one_file_fails_second_row_only() {
+    let pool = test_pool().await;
+    let org_id = test_org(&pool).await;
+    let rows = vec![
+        row(
+            2,
+            "F40301-001",
+            "REGAL SELECT HB SG-WHITE",
+            "$57.74",
+            "$58.18",
+        ),
+        row(
+            3,
+            "F40301-001",
+            "REGAL SELECT HB SG-WHITE (again)",
+            "$57.74",
+            "$58.18",
+        ),
+        row(
+            4,
+            "0229B1-004",
+            "GENNEX WB CLRNT -THALO BLUE",
+            "$39.34",
+            "$39.64",
+        ),
+    ];
+    let result = import_products(&pool, org_id, &rows).await.unwrap();
+    assert_eq!(result.created, 2);
+    assert_eq!(result.failed, 1);
+    assert_eq!(result.failures.len(), 1);
+    assert_eq!(result.failures[0].row, 3);
+    assert_eq!(result.failures[0].sku, "F40301-001");
+    assert!(
+        result.failures[0].reason.contains("duplicate"),
+        "reason names the problem: {}",
+        result.failures[0].reason
+    );
+    assert_eq!(list_products_for_org(&pool, org_id).await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn import_bad_rows_do_not_fail_the_batch() {
+    let pool = test_pool().await;
+    let org_id = test_org(&pool).await;
+    let rows = vec![
+        row(
+            2,
+            "F40301-001",
+            "REGAL SELECT HB SG-WHITE",
+            "$57.74",
+            "$58.18",
+        ),
+        row(3, "", "Missing SKU", "$1.00", "$2.00"),
+        row(4, "SKU-NAMELESS", "", "$1.00", "$2.00"),
+        row(5, "SKU-BADPRICE", "Bad price", "not-a-price", "$2.00"),
+        row(6, "SKU-NEGATIVE", "Negative price", "$1.00", "-$2.00"),
+        row(
+            7,
+            "0229B1-004",
+            "GENNEX WB CLRNT -THALO BLUE",
+            "$39.34",
+            "$39.64",
+        ),
+    ];
+    let result = import_products(&pool, org_id, &rows).await.unwrap();
+    assert_eq!(result.created, 2);
+    assert_eq!(result.updated, 0);
+    assert_eq!(result.failed, 4);
+    assert_eq!(
+        result.failures.iter().map(|f| f.row).collect::<Vec<_>>(),
+        vec![3, 4, 5, 6]
+    );
+    assert_eq!(list_products_for_org(&pool, org_id).await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn import_malformed_shifted_row_is_rejected() {
+    let pool = test_pool().await;
+    let org_id = test_org(&pool).await;
+    // Sheet row 1012 of the real price list: every cell holds the
+    // same SKU-like string — a shifted row, not a product.
+    let mut bad = row(1012, "K7931X-001", "K7931X-001", "K7931X-001", "K7931X-001");
+    bad.category = "K7931X-001".to_string();
+    bad.size = "K7931X-001".to_string();
+    bad.upc = "K7931X-001".to_string();
+    bad.msrp = "K7931X-001".to_string();
+    bad.map = "K7931X-001".to_string();
+    bad.brand_code = "K7931X-001".to_string();
+    let rows = vec![
+        row(
+            2,
+            "F40301-001",
+            "REGAL SELECT HB SG-WHITE",
+            "$57.74",
+            "$58.18",
+        ),
+        bad,
+    ];
+    let result = import_products(&pool, org_id, &rows).await.unwrap();
+    assert_eq!(result.created, 1);
+    assert_eq!(result.failed, 1);
+    assert_eq!(result.failures[0].row, 1012);
+    assert_eq!(result.failures[0].sku, "K7931X-001");
+    assert!(
+        result.failures[0].reason.contains("price"),
+        "reason names the price problem: {}",
+        result.failures[0].reason
+    );
+    assert_eq!(list_products_for_org(&pool, org_id).await.unwrap().len(), 1);
+}

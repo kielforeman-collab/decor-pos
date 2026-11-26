@@ -460,6 +460,34 @@ pub async fn insert_product(pool: &AnyPool, product: &Product) -> Result<(), DbE
     Ok(())
 }
 
+/// Update the import-controlled fields of an existing product:
+/// name, manufacturer code and prices. Department, tax class,
+/// product type and UOM are left as they were — a re-import
+/// reprices, it does not reclassify.
+pub async fn update_imported_product(
+    pool: &AnyPool,
+    org_id: Uuid,
+    sku: &str,
+    name: &str,
+    manufacturer_code: Option<&str>,
+    list_price: Decimal,
+    standard_cost: Decimal,
+) -> Result<(), DbError> {
+    sqlx::query(
+        "UPDATE products SET name = $1, manufacturer_code = $2, list_price = $3, standard_cost = $4, avg_cost = $5 WHERE org_id = $6 AND sku = $7",
+    )
+    .bind(name)
+    .bind(manufacturer_code)
+    .bind(dec_str(list_price))
+    .bind(dec_str(standard_cost))
+    .bind(dec_str(standard_cost))
+    .bind(uuid_str(org_id))
+    .bind(sku)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn get_product_by_sku(
     pool: &AnyPool,
     org_id: Uuid,

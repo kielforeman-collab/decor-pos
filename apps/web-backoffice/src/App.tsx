@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   assignDelivery,
   bulkUpdatePricingRules,
@@ -34,6 +34,7 @@ import {
   getReorderPoints,
   getShelfTag,
   importCatalog,
+  importProducts,
   intakeEdi,
   listAcknowledgments,
   listActivities,
@@ -73,6 +74,7 @@ import {
   threeWayMatch,
 } from './api'
 import { DEMO_CATALOG } from './catalog'
+import { parseImportFile, type ImportPreview } from './productImport'
 import type {
   AgingView,
   Appointment,
@@ -98,6 +100,7 @@ import type {
   PoAcknowledgmentRow,
   PriceCatalogApplicationRow,
   PricingRuleRow,
+  ProductImportResponse,
   PurchaseOrderView,
   ReorderPoint,
   SavedViewCustomer,
@@ -210,6 +213,12 @@ export default function App() {
   const [intakeResult, setIntakeResult] = useState<IntakeResponse | null>(null)
   const [sendResult, setSendResult] = useState<SendPoResponse | null>(null)
   const [catalogResult, setCatalogResult] = useState<CatalogImportResponse | null>(null)
+
+  // GUI product import (Inventory tab).
+  const [importFileName, setImportFileName] = useState('')
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
+  const [importResult, setImportResult] = useState<ProductImportResponse | null>(null)
+  const importInputRef = useRef<HTMLInputElement | null>(null)
 
   // Forms.
   const [pointForm, setPointForm] = useState({ product_id: '', min_qty: '10', max_qty: '20', reorder_qty: '12' })
@@ -466,6 +475,46 @@ export default function App() {
     try {
       await setReorderPoint({ ...pointForm, store_id: storeId })
       say(`Reorder point saved for ${productName(pointForm.product_id)}.`)
+      await refreshInventory()
+    } catch (e) {
+      fail(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // GUI product import: parse the picked spreadsheet in the browser
+  // and preview it. Nothing is sent until Confirm.
+  async function handleImportFilePicked(file: File) {
+    setImportResult(null)
+    setImportPreview(null)
+    try {
+      const preview = await parseImportFile(file)
+      setImportFileName(file.name)
+      setImportPreview(preview)
+      if (preview.error) {
+        fail(new Error(preview.error))
+        return
+      }
+      const skipped = preview.rows.filter((r) => r.problem).length
+      say(`${file.name}: ${preview.rows.length} row(s) parsed, ${preview.rows.length - skipped} ready to import, ${skipped} will be skipped. Review below, then confirm.`)
+    } catch (e) {
+      fail(e)
+    }
+  }
+
+  async function doConfirmImport() {
+    if (!importPreview) return
+    const rows = importPreview.rows.filter((r) => !r.problem).map((r) => r.data)
+    if (rows.length === 0) {
+      fail(new Error('No valid rows to import.'))
+      return
+    }
+    setBusy(true)
+    try {
+      const res = await importProducts({ store_id: storeId || undefined, rows })
+      setImportResult(res)
+      say(`Import done: ${res.created} created, ${res.updated} updated, ${res.failed} failed.`)
       await refreshInventory()
     } catch (e) {
       fail(e)
@@ -1175,6 +1224,11 @@ export default function App() {
     ? tab
     : (visibleTabs[0]?.id ?? null)
 
+  // GUI product import is Manager / Admin only (UI-only — the
+  // backend enforces it with the PricingManage gate).
+  const canImportProducts =
+    session !== null && ['manager', 'admin'].includes(session.user.role.toLowerCase())
+
   return (
     <div className="app">
       <header>
@@ -1220,6 +1274,109 @@ export default function App() {
           <section>
             <h2>Inventory — {balances.length} product(s)</h2>
             <button type="button" onClick={() => void refreshInventory().catch(fail)}>Refresh</button>
+
+            <h3>Import products</h3>
+            {canImportProducts ? (
+              <>
+                <div className="entry">
+                  <button type="button" onClick={() => importInputRef.current?.click()} disabled={busy}>
+                    Import products…
+                  </button>
+                  <input
+                    ref={importInputRef}
+                    type="file"
+                    accept=".xlsx,.csv"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0]
+                      if (f) void handleImportFilePicked(f)
+                      e.target.value = ''
+                    }}
+                  />
+                  {importFileName && <span>{importFileName}</span>}
+                </div>
+                <p className="hint">
+                  Reads a Benjamin Moore price list (.xlsx or .csv) in the browser — the file itself is never
+                  uploaded. Products match by SKU: new SKUs are created, existing SKUs get new prices. Category,
+                  UPC, MSRP and MAP are not stored (no columns for them).
+                </p>
+                {importPreview && !importPreview.error && (
+                  <>
+                    <p>
+                      {importPreview.rows.length} row(s) parsed —{' '}
+                      {importPreview.rows.filter((r) => !r.problem).length} ready,{' '}
+                      {importPreview.rows.filter((r) => r.problem).length} will be skipped.
+                    </p>
+                    <table>
+                      <thead><tr><th>SKU</th><th>Product</th><th>List price</th><th>Net price</th></tr></thead>
+                      <tbody>
+                        {importPreview.rows.filter((r) => !r.problem).slice(0, 5).map((r) => (
+                          <tr key={r.data.row}>
+                            <td>{r.data.sku}</td>
+                            <td>{r.data.name}</td>
+                            <td>{r.data.list_price}</td>
+                            <td>{r.data.net_price}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {importPreview.rows.some((r) => r.problem) && (
+                      <>
+                        <h4>Rows that will be skipped</h4>
+                        <table>
+                          <thead><tr><th>Row</th><th>SKU</th><th>Reason</th></tr></thead>
+                          <tbody>
+                            {importPreview.rows.filter((r) => r.problem).slice(0, 20).map((r) => (
+                              <tr key={r.data.row}>
+                                <td>{r.data.row}</td>
+                                <td>{r.data.sku || '—'}</td>
+                                <td>{r.problem}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {importPreview.rows.filter((r) => r.problem).length > 20 && (
+                          <p className="hint">
+                            …and {importPreview.rows.filter((r) => r.problem).length - 20} more skipped row(s).
+                          </p>
+                        )}
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void doConfirmImport()}
+                      disabled={busy || importPreview.rows.every((r) => r.problem)}
+                    >
+                      Confirm import ({importPreview.rows.filter((r) => !r.problem).length} rows)
+                    </button>
+                  </>
+                )}
+                {importResult && (
+                  <>
+                    <p>
+                      Import done: {importResult.created} created, {importResult.updated} updated,{' '}
+                      {importResult.failed} failed.
+                    </p>
+                    {importResult.failures.length > 0 && (
+                      <table>
+                        <thead><tr><th>Row</th><th>SKU</th><th>Reason</th></tr></thead>
+                        <tbody>
+                          {importResult.failures.map((f) => (
+                            <tr key={f.row}>
+                              <td>{f.row}</td>
+                              <td>{f.sku || '—'}</td>
+                              <td>{f.reason}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </>
+                )}
+              </>
+            ) : (
+              <p className="hint">Product import needs a Manager or Admin login.</p>
+            )}
             <table>
               <thead>
                 <tr><th>SKU</th><th>Product</th><th>On hand</th><th>Committed</th><th>On order</th><th>In transit</th><th>Min / Max</th></tr>
