@@ -144,7 +144,11 @@ export function normalizeSession(json: unknown): AuthSession {
     (t): t is string => typeof t === 'string' && t.length > 0,
   )
   if (!token) throw new Error('Login response did not include a session token.')
-  const rawUser = (obj.user ?? obj.staff ?? obj.account ?? {}) as Record<string, unknown>
+  // The real backend (df-auth-http LoginResponse) is FLAT — {token, user_id,
+  // email, display_name, role, customer_id, expires_at} — with no nested
+  // `user` object. Fall back to the top-level object itself so the flat
+  // shape parses; the nested shapes stay accepted as before.
+  const rawUser = (obj.user ?? obj.staff ?? obj.account ?? obj) as Record<string, unknown>
   const id = [rawUser.id, rawUser.user_id].find(
     (v): v is string => typeof v === 'string' && v.length > 0,
   )

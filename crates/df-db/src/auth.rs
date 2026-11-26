@@ -35,15 +35,16 @@ use df_auth::login::{
     verify_pin_login, verify_portal_login,
 };
 use df_auth::{
-    AuthError, AuthUser, OverrideApproval, OverrideCredential, Role, Session, new_session,
-    role_from_id, role_id, session_ttl, validate_session_token as validate_session_pure,
+    AuthError, AuthUser, OverrideApproval, OverrideCredential, Role, Session, hash_password,
+    new_session, role_from_id, role_id, session_ttl,
+    validate_session_token as validate_session_pure,
 };
 use sqlx::any::AnyRow;
-use sqlx::{AnyPool, Row};
+use sqlx::{AnyPool, Executor, Row};
 use uuid::Uuid;
 
 use crate::error::DbError;
-use crate::models::UserRow;
+use crate::models::{Organization, UserRow};
 
 impl From<DbError> for AuthError {
     fn from(err: DbError) -> Self {
@@ -210,9 +211,210 @@ pub async fn list_users_for_org(pool: &AnyPool, org_id: Uuid) -> Result<Vec<User
     rows.iter().map(crate::repos::user_from_row).collect()
 }
 
-/// How many users of an org hold this role. The admin bootstrap
-/// (`df-server users create-admin`) refuses a second first admin
-/// unless forced; it counts with this.
+/// How many users exist in total, across all orgs. The first-run
+/// setup gate reads this: setup is needed exactly when the table
+/// is empty (not per-org — a fresh install has no users at all).
+pub async fn count_users(pool: &AnyPool) -> Result<i64, DbError> {
+    let row = sqlx::query("SELECT COUNT(*) AS n FROM users")
+        .fetch_one(pool)
+        .await?;
+    row.try_get("n")
+        .map_err(|e| DbError::InvalidData(format!("column n: {e}")))
+}
+
+/// Failure of a first-run setup attempt ([`setup_first_admin`]).
+/// The HTTP layer maps these 1:1 — `AlreadySetup` → 409,
+/// `InvalidInput` → 400, `Database` → 500 without the DB text.
+#[derive(Debug)]
+pub enum SetupError {
+    /// A user already exists: setup ran before. Nothing was
+    /// created by this attempt.
+    AlreadySetup,
+    /// Blank email / password, or a password
+    /// [`df_auth::hash_password`] rejects (under 8 characters).
+    InvalidInput(String),
+    /// A database failure (including a unique-violation that is
+    /// not the already-setup race — see `is_unique_violation`).
+    Database(DbError),
+}
+
+impl From<DbError> for SetupError {
+    fn from(err: DbError) -> Self {
+        SetupError::Database(err)
+    }
+}
+
+impl std::fmt::Display for SetupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SetupError::AlreadySetup => {
+                write!(f, "setup already complete — a user already exists")
+            }
+            SetupError::InvalidInput(message) => write!(f, "{message}"),
+            SetupError::Database(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for SetupError {}
+
+/// Whether a [`DbError`] is a unique-constraint violation
+/// (`users.email` is `UNIQUE` on both dialects). Used to tell the
+/// same-email setup race apart from other database failures: two
+/// concurrent setups with the same email cannot both insert.
+fn is_unique_violation(err: &DbError) -> bool {
+    match err {
+        DbError::Sqlx(sqlx::Error::Database(db_err)) => {
+            let message = db_err.message();
+            message.contains("UNIQUE constraint failed") || message.contains("duplicate key")
+        }
+        _ => false,
+    }
+}
+
+/// Count the users visible inside a transaction (same statement as
+/// [`count_users`], over the transaction's executor).
+async fn count_users_exec<'e, E>(executor: E) -> Result<i64, DbError>
+where
+    E: Executor<'e, Database = sqlx::Any>,
+{
+    let row = sqlx::query("SELECT COUNT(*) AS n FROM users")
+        .fetch_one(executor)
+        .await?;
+    row.try_get("n")
+        .map_err(|e| DbError::InvalidData(format!("column n: {e}")))
+}
+
+/// First-run setup: create the first Admin user and log them
+/// straight in (GUI first-run setup, spec §6.1 auth).
+///
+/// * The created user is **always** [`Role::Admin`] — there is no
+///   role parameter anywhere in this path.
+/// * `display_name` defaults to the email local part (before
+///   `@`; the whole email when there is none) when missing or
+///   blank.
+/// * The password is hashed with Argon2id ([`hash_password`])
+///   before any database write; plaintext is never stored or
+///   logged.
+/// * `org_id` is the caller's configured org (the edge's
+///   `EdgeConfig.org_id`, the HQ's `ApiState.org_id`). The org
+///   row is created inside the same transaction when it does not
+///   exist yet (same defaults as `df-server users create-admin`'s
+///   `ensure_org`: name `"Decor POS"`, currency `"USD"`) — a
+///   fresh install has no org row, and `users.org_id` is a
+///   foreign key on PostgreSQL.
+///
+/// # Race safety
+///
+/// The empty-check and the inserts run in **one transaction**:
+/// count → (already-setup → roll back) → ensure org → insert
+/// user → re-count → (more than one user → roll back) → insert
+/// session → commit. The second count closes the window where a
+/// concurrent setup committed between this attempt's first count
+/// and its insert; the `UNIQUE` constraint on `users.email` is
+/// the backstop for two setups racing with the same email (the
+/// loser's insert fails and maps to `AlreadySetup`). On SQLite
+/// the single-writer lock serializes concurrent setup attempts
+/// outright, so the second attempt's first count already sees
+/// the committed user. Residual limit: on PostgreSQL, two
+/// concurrent setups with *different* emails could both commit
+/// if the second commits in the sliver between its second count
+/// and its commit — closing that needs a table lock or
+/// serializable isolation, out of scope for a one-time operator
+/// action (see the report).
+pub async fn setup_first_admin(
+    pool: &AnyPool,
+    org_id: Uuid,
+    email: &str,
+    display_name: Option<&str>,
+    password: &str,
+) -> Result<LoginOutcome, SetupError> {
+    let email = email.trim();
+    if email.is_empty() {
+        return Err(SetupError::InvalidInput("email is required".to_string()));
+    }
+    if password.trim().is_empty() {
+        return Err(SetupError::InvalidInput("password is required".to_string()));
+    }
+    let display_name = match display_name.map(str::trim) {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => email
+            .split_once('@')
+            .map(|(local, _)| local.to_string())
+            .unwrap_or_else(|| email.to_string()),
+    };
+    // Hash before opening the transaction: Argon2id is slow, and
+    // no database lock should be held while it runs.
+    let password_hash =
+        hash_password(password).map_err(|err| SetupError::InvalidInput(err.to_string()))?;
+
+    let mut tx = pool.begin().await.map_err(DbError::Sqlx)?;
+    if count_users_exec(&mut *tx).await? > 0 {
+        return Err(SetupError::AlreadySetup);
+    }
+    // The org row may not exist on a fresh install (neither
+    // `df-server edge` nor `df-server hq` creates it); the FK on
+    // `users.org_id` requires it on PostgreSQL.
+    let org_exists = sqlx::query("SELECT id FROM organizations WHERE id = $1")
+        .bind(uuid_str(org_id))
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(DbError::Sqlx)?;
+    if org_exists.is_none() {
+        crate::insert_organization_exec(
+            &mut *tx,
+            &Organization {
+                id: org_id,
+                name: "Decor POS".to_string(),
+                default_currency: "USD".to_string(),
+                enabled_modules: serde_json::json!({}),
+                settings_json: serde_json::json!({}),
+                created_at: Utc::now(),
+            },
+        )
+        .await?;
+    }
+    let user = UserRow {
+        id: df_domain::new_id(),
+        org_id,
+        email: email.to_string(),
+        display_name,
+        password_hash: Some(password_hash),
+        oidc_subject: None,
+        counter_pin_hash: None,
+        badge_token_hash: None,
+        role_id: role_id(Role::Admin),
+        portal_customer_id: None,
+        active: true,
+    };
+    if let Err(err) = crate::insert_user_exec(&mut *tx, &user).await {
+        if is_unique_violation(&err) {
+            return Err(SetupError::AlreadySetup);
+        }
+        return Err(SetupError::Database(err));
+    }
+    // Re-count after the insert: a concurrent setup that
+    // committed between our first count and this insert shows up
+    // here, and we roll back instead of leaving two admins.
+    if count_users_exec(&mut *tx).await? > 1 {
+        return Err(SetupError::AlreadySetup);
+    }
+    let now = Utc::now();
+    let (token, session) = new_session(
+        user.id,
+        Role::Admin,
+        None,
+        session_ttl(Role::Admin, false),
+        now,
+    );
+    insert_session_exec(&mut *tx, &session).await?;
+    tx.commit().await.map_err(DbError::Sqlx)?;
+    Ok(LoginOutcome {
+        user,
+        session,
+        token,
+    })
+}
 pub async fn count_users_with_role(
     pool: &AnyPool,
     org_id: Uuid,
@@ -302,9 +504,13 @@ pub async fn set_user_active(pool: &AnyPool, user_id: Uuid, active: bool) -> Res
 
 // --- sessions --------------------------------------------------------------
 
-/// Persist a session row issued by [`df_auth::new_session`] (or by
-/// [`create_session` below). Stores the token hash only.
-pub async fn insert_session(pool: &AnyPool, session: &Session) -> Result<(), DbError> {
+/// Persist a session row over any executor, so a caller holding
+/// a transaction (e.g. first-run setup) can join the insert to
+/// it. [`insert_session`] is the pool shorthand.
+pub async fn insert_session_exec<'e, E>(executor: E, session: &Session) -> Result<(), DbError>
+where
+    E: Executor<'e, Database = sqlx::Any>,
+{
     sqlx::query(
         "INSERT INTO sessions (id, user_id, token_hash, role, customer_id, created_at, expires_at, revoked_at, last_used_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
@@ -317,9 +523,15 @@ pub async fn insert_session(pool: &AnyPool, session: &Session) -> Result<(), DbE
     .bind(dt_str(session.expires_at))
     .bind(session.revoked_at.map(dt_str))
     .bind(dt_str(session.last_used_at))
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
+}
+
+/// Persist a session row issued by [`df_auth::new_session`] (or by
+/// [`create_session` below). Stores the token hash only.
+pub async fn insert_session(pool: &AnyPool, session: &Session) -> Result<(), DbError> {
+    insert_session_exec(pool, session).await
 }
 
 /// Load a session by the SHA-256 hex of its token. Callers hash the

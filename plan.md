@@ -226,7 +226,8 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ `cargo test -p df-server --test postgres_hq_round_trip` re-run by the coordinator — **4/4 pass live** (5.9s); skips cleanly with a printed reason when no live Postgres is reachable
 - ✅ clippy clean (`-D warnings`, workspace-wide), fmt clean — both re-run by the coordinator. No frontend touched, no `npm run build` needed
 ### GitHub
-- ⬜ NOT pushed yet (local only)
+- ✅ Pushed Nov 26 via connector in ONE commit `a7fc201` (361 files, 11 new; 2 binary PWA icons excluded — connector cannot carry binaries)
+- ✅ Tagged v1.2 Nov 26 via browser release page (commit `a7fc201`, marked Latest): https://github.com/kielforeman-collab/decor-pos/releases/tag/v1.2
 ### Known limits
 - Postgres columns are TEXT, not native UUID/NUMERIC/TIMESTAMPTZ — deliberate Phase 8 trade (see Scope); native types are a future data-layer phase. Spec §5's native-type language is not yet met.
 - HTTP ingest auth uses a staff Manager/Admin session token (8h TTL, re-login on expiry) — no long-lived service token yet.
@@ -235,3 +236,32 @@ only its own section, ticking items as they are verified — not when code merel
 - The VM's Postgres is ephemeral by design: a VM restart wipes `/tmp` (including the URL/password files) and the installed server — re-provision with the apt steps in docs/self-hosting.md. Kiel's Linux box (100.94.29.18) already has Postgres 18.3 + decor-pos at v1.1 as a fallback host.
 - PG round-trip test uses per-test fresh DBs (`decorpos_hq_rt_a/b/c/d`); `df-db pg_repos` shares the `decorpos_hq` DB and its rows accumulate (fresh UUIDv7 ids per run, no cleanup).
 - F8/F9/F10 stay OPEN (dead-letter, TLS/mTLS, CORS/rate limiting). No COLORx code. No f32/f64 money code.
+
+## GUI first-run setup (v1.2.1) — ✅ DONE Nov 26, 2026
+### Scope
+- ✅ First-admin setup in the GUI — both surfaces (HQ was a small reuse): public `GET /pos/auth/setup-status` + `POST /pos/auth/setup` on the edge, `GET /api/v1/auth/setup-status` + `POST /api/v1/auth/setup` on HQ. Setup creates the first Admin ONLY when the users table is empty (409 otherwise, nothing created); always Admin, no role parameter accepted (unknown `role` field → 422); Argon2id via existing df-auth/df-db; returns the same flat `LoginResponse` as login (fresh `dfp_` token). Shared service `df-db::setup_first_admin` (one transaction: count → ensure org row → insert user → re-count → insert session → commit); org_id from the edge/HQ configured org, org row created in-transaction when missing (PG FK needs it); `count_users` helper + executor variants in df-db/df-auth-http. pos-desktop login screen calls setup-status on load: `needs_setup` true → "Create your admin account" form (email, display name, password + confirm) instead of login, success logs the new admin straight in (same localStorage keys); false or status-call failure → the existing login form unchanged, login never blocked
+- ✅ Coordinator fix during verification — the Phase 7 frontend `normalizeSession` (all four apps) could NOT parse the real backend response: the backend `LoginResponse` is FLAT (`{token, user_id, email, ...}`), the normalizer only read a nested `user` object, so `login()` and the new `setupAdmin()` would have thrown "Login response did not include a user id" on a successful response. Fixed in the normalizer (the one place auth.ts names for shape fixes): fall back to the top-level object when no nested user exists. Proven with a real esbuild-bundled node test importing the actual `auth.ts`: flat shape parses (token, user_id, email, display_name, role Admin, customer_id null), nested shape still accepted, missing token still throws. Same one-line fix applied to web-backoffice, web-portal, mobile-pwa (identical defect in all four)
+- ✅ One-command `.env` setup: `setup.ps1` (Windows) + `setup.sh` (repo root, chmod +x) — create `.env` from `.env.example` ONLY if missing, fresh UUIDs for STORE_ID/ORG_ID, random 32-hex-char POSTGRES_PASSWORD from a crypto RNG; never overwrite (refusal message, exit 1); password printed ONCE with a "SAVE THIS PASSWORD NOW" note
+- ✅ Docs: docs/self-hosting.md Docker admin step is now the GUI flow (open the POS at :1420, "Create your admin account" form); CLI `df-server users create-admin` stays as the alternative; setup.ps1/setup.sh in the Windows instructions
+- ✅ Version bump to 1.2.1 for real — workspace Cargo.toml, df-api health version, df-edge health (via `CARGO_PKG_VERSION`), all version-asserting tests + docs examples; `grep -rn '"1.2.0"'` clean; `df-server --version` prints `1.2.1`
+### Exit tests
+- ✅ (a) Fresh DB: setup-status → needs_setup true; POST setup → 201 + `dfp_` token + role Admin + display_name defaulted to email local part; login with the new credentials → 200; setup-status after → needs_setup false (edge + HQ test files, 5 tests each)
+- ✅ (b) Second POST setup (different email) → 409, user count unchanged at 1; concurrent setups → exactly one 201 + one 409, count 1
+- ✅ (c) Blank email / blank password / password < 8 chars → 400, user count 0; `role` field in the body → 422, count 0
+- ✅ (d) pos-desktop login screen shows the setup form when needs_setup is true and the normal login form otherwise — verified by the coordinator by tracing the code path (App.tsx:552 renders Login only; Login useEffect calls getSetupStatus once; null → "Checking first-run status…", true → setup form, false/failure → login form); no component test (pos-desktop has no test setup, none added)
+- ✅ (e) setup.sh executed by the coordinator in a scratch dir: run 1 exit 0, .env with fresh UUIDs + 32-hex password; run 2 exit 1, refusal message, .env byte-identical. setup.ps1 read-verified only (no PowerShell in this VM) — its guard/exit-1/RNG/UTF-8-no-BOM logic checked by reading; needs one real Windows run before it is trusted
+- ✅ (f) All prior phases' exit tests still green: full workspace suite 468/0 (see Verification); PG round-trip test re-run LIVE by the coordinator against a re-provisioned Postgres 16 (the VM restarted again and wiped /tmp; package survived, cluster re-started, role + round-trip DB re-created) — 4/4 in 5.57s
+### Verification
+- ✅ `cargo test --workspace --no-fail-fast` re-run by the coordinator — **468 passed, 0 failed** (Phase 8 baseline: 458; +10 new setup tests, 5 edge + 5 HQ). Full suite ran BEFORE the 1.2.1 version bump; the bump touched version strings only and every version-asserting test re-ran green after it (df-api lib 11/11, df-edge lib 12/12, hq_mode 1/1, phase7 api auth 3/3)
+- ✅ `cargo test -p df-server --test postgres_hq_round_trip` re-run LIVE by the coordinator — **4/4 pass** (5.57s)
+- ✅ clippy clean (`-D warnings`, workspace-wide), fmt clean — both re-run by the coordinator. `npm run build` clean in all four touched apps (pos-desktop 255.84 kB, others build clean)
+- ✅ Normalizer fix proven by the coordinator with a real esbuild-bundled node test against the actual `auth.ts` (see Scope) — flat + nested + missing-token cases, all pass
+### GitHub
+- ⬜ NOT pushed yet (local only)
+### Known limits
+- setup.ps1 is read-verified only (no PowerShell in this VM) — needs one real Windows run before it is trusted.
+- Scripts generate UUIDv4, not the UUIDv7 the `.env.example` comment suggests — `Uuid::parse_str` accepts any version, so v4 works, but if v7 is ever enforced the scripts need updating.
+- Residual race window on PostgreSQL only: two concurrent setups with different emails could both commit in the sliver between the second's post-insert re-count and its commit (needs a table lock or serializable isolation); on SQLite (the edge's real DB) the single-writer lock closes it, and the concurrent test passes. HQ setup is a one-time operator action, left as a documented limit.
+- No email-format validation beyond non-blank (mirrors the CLI). The GUI flow needs the pos-desktop dev server (`npm run dev`, :1420) running against an edge on :8080 — the Docker Compose stack alone does not serve the POS UI.
+- The VM's Postgres is ephemeral: a VM restart wipes /tmp (URL file) — the 16 package survived the last restart, only the cluster needed re-starting and the role/DB re-creating.
+- F8/F9/F10 stay OPEN. No COLORx code. No f32/f64 money code.

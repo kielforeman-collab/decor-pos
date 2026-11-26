@@ -49,7 +49,7 @@ use chrono::NaiveDate;
 use df_auth::{OverrideCredential, Permission};
 use df_auth_http::{
     AuthRule, AuthSession, ErrorBody, Gate, LoginResponse, LogoutResponse, OverrideVerifyResponse,
-    login_error,
+    SetupRequest, SetupStatusResponse, login_error, setup_admin_response, setup_status_response,
 };
 use df_db::AnyPool;
 use df_db::InventoryBalance;
@@ -79,7 +79,7 @@ pub struct ApiState {
 impl Default for ApiState {
     fn default() -> Self {
         Self {
-            version: "1.2.0",
+            version: "1.2.1",
             pool: None,
             org_id: None,
             store_id: None,
@@ -435,6 +435,54 @@ pub async fn login(
     .await
     .map(|outcome| Json(LoginResponse::from_outcome(&outcome)))
     .map_err(login_error)
+}
+
+/// The configured org for a first-run setup handler, or a 503 in
+/// the auth error shape. Unlike login (which reads the org off the
+/// user row), setup creates the first user, so it needs the
+/// instance's configured org up front.
+fn api_org_id(state: &ApiState) -> Result<Uuid, (StatusCode, Json<ErrorBody>)> {
+    state.org_id.ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorBody {
+                error: "no org configured for this API instance — restart df-api with --db <url> --org-id <uuid>".to_string(),
+            }),
+        )
+    })
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/setup-status",
+    responses(
+        (status = 200, description = "Whether first-run setup is still needed", body = SetupStatusResponse),
+        (status = 503, description = "No database configured", body = ErrorBody)
+    )
+)]
+pub async fn setup_status(State(state): State<ApiState>) -> AuthResult<SetupStatusResponse> {
+    let pool = api_pool(&state)?;
+    setup_status_response(&pool).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/setup",
+    request_body = SetupRequest,
+    responses(
+        (status = 201, description = "First admin created — token + role + expiry", body = LoginResponse),
+        (status = 400, description = "Blank email / password, or a password under 8 characters", body = ErrorBody),
+        (status = 409, description = "Setup already complete — a user already exists", body = ErrorBody),
+        (status = 503, description = "No database / org configured", body = ErrorBody)
+    )
+)]
+pub async fn setup(
+    State(state): State<ApiState>,
+    Json(body): Json<SetupRequest>,
+) -> Result<(StatusCode, Json<LoginResponse>), (StatusCode, Json<ErrorBody>)> {
+    let pool = api_pool(&state)?;
+    let org_id = api_org_id(&state)?;
+    setup_admin_response(&pool, org_id, body).await
 }
 
 #[utoipa::path(
@@ -1057,6 +1105,8 @@ pub async fn edi_documents(
     paths(
         health,
         login,
+        setup_status,
+        setup,
         counter_switch,
         logout,
         passkey_verify,
@@ -1077,6 +1127,8 @@ pub async fn edi_documents(
         LoginRequest,
         LoginResponse,
         LogoutResponse,
+        SetupRequest,
+        SetupStatusResponse,
         CounterSwitchRequest,
         PasskeyVerifyRequest,
         OverrideVerifyRequest,
@@ -1105,7 +1157,10 @@ pub async fn openapi_json() -> Json<serde_json::Value> {
 ///
 /// Phase 7 (v1.1): every route except `GET /health`,
 /// `GET /api-docs/openapi.json` and the `/api/v1/auth/*` login
-/// endpoints requires a `Bearer dfp_...` session token (see
+/// endpoints (plus the first-run setup endpoints
+/// `GET /api/v1/auth/setup-status` and `POST /api/v1/auth/setup`,
+/// public because no user exists yet to hold a session) requires a
+/// `Bearer dfp_...` session token (see
 /// `df_auth_http::gate` + `docs/auth.md` for the role → route
 /// matrix). The gate answers 401 for a missing / invalid / expired
 /// / revoked token and 403 for a valid token with the wrong role.
@@ -1124,11 +1179,15 @@ pub fn create_router(state: ApiState) -> Router {
 
     // Public by design: health, the OpenAPI document (shapes only —
     // no data rows), and the login endpoints (how a session is
-    // obtained). Passkey/OIDC stay 501 stubs.
+    // obtained) plus the first-run setup endpoints (how the first
+    // admin is created, before any user exists). Passkey/OIDC stay
+    // 501 stubs.
     let public = Router::new()
         .route("/health", get(health))
         .route("/api-docs/openapi.json", get(openapi_json))
         .route("/api/v1/auth/login", post(login))
+        .route("/api/v1/auth/setup-status", get(setup_status))
+        .route("/api/v1/auth/setup", post(setup))
         .route("/api/v1/auth/counter-switch", post(counter_switch))
         .route("/api/v1/auth/passkey/verify", post(passkey_verify))
         .route("/api/v1/auth/oidc/callback", get(oidc_callback))
@@ -1314,7 +1373,7 @@ mod tests {
         let users = df_auth_http::test_support::seed_test_users(&pool, org_id).await;
         (
             ApiState {
-                version: "1.2.0",
+                version: "1.2.1",
                 pool: Some(pool),
                 org_id: Some(org_id),
                 store_id: Some(store_id),
@@ -1385,7 +1444,7 @@ mod tests {
             .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["status"], "ok");
-        assert_eq!(value["version"], "1.2.0");
+        assert_eq!(value["version"], "1.2.1");
     }
 
     #[tokio::test]

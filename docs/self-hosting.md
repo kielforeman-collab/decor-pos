@@ -5,7 +5,9 @@ One-command stack, single-binary mode, and Kubernetes. Read
 Phase 7 auth gate: since v1.1 every `df-api` / `df-server hq` route
 except `/health`, `/api-docs/openapi.json` and the auth login
 endpoints requires a `Bearer dfp_...` session token (no default
-password exists; create the first admin with
+password exists; create the first admin in the POS GUI on first run
+— open the POS at `http://localhost:1420` and fill in the
+"Create your admin account" form — or, as the alternative,
 `df-server users create-admin`). This stack is for a trusted local
 network or a VPN, never the open internet without a reverse proxy
 in front.
@@ -26,14 +28,41 @@ Requirements: Docker Engine + Compose v2, 2 GB RAM, ports 8080 and
 3000 free.
 
 ```sh
-cp .env.example .env
-# Edit .env: replace STORE_ID / ORG_ID (fresh UUIDv7s) and
-# POSTGRES_PASSWORD. Never commit a real .env.
+# Windows PowerShell (run from the repo root):
+.\setup.ps1
+# Linux / macOS:
+./setup.sh
+# Both generate .env from .env.example with fresh STORE_ID / ORG_ID
+# UUIDs and a random POSTGRES_PASSWORD, and print the password once —
+# save it. They refuse to overwrite an existing .env. Copying
+# .env.example by hand and editing the UUIDs yourself also works.
+# Never commit a real .env.
 docker compose up --build -d
 curl -s http://localhost:8080/health   # edge
 curl -s http://localhost:3000/health   # api
 curl -s http://localhost:3000/api-docs/openapi.json | head -c 400
 ```
+
+### Create the first admin (GUI, first run)
+
+With the stack up, start the counter POS and open it in a browser:
+
+```sh
+cd apps/pos-desktop
+npm install   # first time only
+npm run dev   # serves the POS on http://localhost:1420
+```
+
+Open `http://localhost:1420`. On a fresh install (no users yet) the
+sign-in screen is replaced by a **"Create your admin account"**
+form — email, display name, password — and the new admin is signed
+straight in, no second step. Once any user exists the normal
+sign-in screen appears instead.
+
+Alternative (CLI, e.g. headless or for HQ): create the admin with
+`df-server users create-admin` — see the HQ section below for the
+exact command. `create-admin` refuses when an admin already exists
+for the org (unless `--force` is passed and confirmed).
 
 Stop with `docker compose down` (volumes kept) or
 `docker compose down -v` (deletes the SQLite database and Postgres
@@ -125,7 +154,7 @@ export DF_USERS_PASSWORD='correct horse battery staple'
 # 3. Start HQ. --db wins over DATABASE_URL when both are set.
 ./target/release/df-server hq --db "$DATABASE_URL" \
   --org-id <uuid> --listen 127.0.0.1:3000
-curl -s http://127.0.0.1:3000/health   # {"status":"ok","version":"1.2.0"}
+curl -s http://127.0.0.1:3000/health   # {"status":"ok","version":"1.2.1"}
 ```
 
 `df-server hq` logs the redacted database URL, how many migrations
@@ -204,7 +233,7 @@ What was actually run in the v1.0 VM, and what was not:
   changes. Covered by `crates/df-server/tests/migrate_schema.rs`
   (also covers the `DATABASE_URL` fallback).
 - ✅ `df-server hq` verified against SQLite: starts, migrates,
-  answers `/health` with `{"status":"ok","version":"1.2.0"}`,
+  answers `/health` with `{"status":"ok","version":"1.2.1"}`,
   returns 401 on an admin route without a token (the Phase 7 gate
   is live on HQ), and 200 with a real admin session
   (`POST /api/v1/auth/login` → `Bearer dfp_...`). Covered by
@@ -213,7 +242,7 @@ What was actually run in the v1.0 VM, and what was not:
   see "Local PostgreSQL (dev)" below): `df-server migrate schema`
   applies 12 migrations `[1,2,3,4,5,6,7,9,10,11,12,13]` (0008 does
   not exist), second run `already_up_to_date`; `df-server hq`
-  answers `/health` 200 `{"status":"ok","version":"1.2.0"}` and
+  answers `/health` 200 `{"status":"ok","version":"1.2.1"}` and
   401s protected routes without a token; edge (SQLite) cash sale
   2 gal (grand 173.2088) + charge sale 1 gal (grand 86.6044) pushed
   via HTTP ingest `POST /api/v1/sync/ingest` (`applied=5

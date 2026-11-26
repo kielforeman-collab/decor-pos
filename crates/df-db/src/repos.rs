@@ -34,7 +34,7 @@ use std::str::FromStr;
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use sqlx::any::AnyRow;
-use sqlx::{AnyPool, Row};
+use sqlx::{AnyPool, Executor, Row};
 use uuid::Uuid;
 
 use crate::codec::{bool_col, color_from_row, colorant_from_row, tint_formula_from_row};
@@ -300,7 +300,13 @@ fn not_found(what: &str) -> impl Fn(sqlx::Error) -> DbError + '_ {
 
 // --- organizations --------------------------------------------------------
 
-pub async fn insert_organization(pool: &AnyPool, org: &Organization) -> Result<(), DbError> {
+/// Insert an organization over any executor, so a caller holding
+/// a transaction (e.g. first-run setup) can join the insert to it.
+/// [`insert_organization`] is the pool shorthand.
+pub async fn insert_organization_exec<'e, E>(executor: E, org: &Organization) -> Result<(), DbError>
+where
+    E: Executor<'e, Database = sqlx::Any>,
+{
     sqlx::query(
         "INSERT INTO organizations (id, name, default_currency, enabled_modules, settings_json, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
     )
@@ -310,9 +316,13 @@ pub async fn insert_organization(pool: &AnyPool, org: &Organization) -> Result<(
     .bind(org.enabled_modules.to_string())
     .bind(org.settings_json.to_string())
     .bind(dt_str(org.created_at))
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
+}
+
+pub async fn insert_organization(pool: &AnyPool, org: &Organization) -> Result<(), DbError> {
+    insert_organization_exec(pool, org).await
 }
 
 pub async fn get_organization(pool: &AnyPool, id: Uuid) -> Result<Organization, DbError> {
@@ -378,7 +388,13 @@ pub async fn list_stores_for_org(pool: &AnyPool, org_id: Uuid) -> Result<Vec<Sto
 
 // --- users ----------------------------------------------------------------
 
-pub async fn insert_user(pool: &AnyPool, user: &UserRow) -> Result<(), DbError> {
+/// Insert a user over any executor, so a caller holding a
+/// transaction (e.g. first-run setup) can join the insert to it.
+/// [`insert_user`] is the pool shorthand.
+pub async fn insert_user_exec<'e, E>(executor: E, user: &UserRow) -> Result<(), DbError>
+where
+    E: Executor<'e, Database = sqlx::Any>,
+{
     sqlx::query(
         "INSERT INTO users (id, org_id, email, display_name, password_hash, oidc_subject, counter_pin_hash, badge_token_hash, role_id, portal_customer_id, active) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
@@ -393,9 +409,13 @@ pub async fn insert_user(pool: &AnyPool, user: &UserRow) -> Result<(), DbError> 
     .bind(uuid_str(user.role_id))
     .bind(opt_uuid_str(user.portal_customer_id))
     .bind(user.active)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
+}
+
+pub async fn insert_user(pool: &AnyPool, user: &UserRow) -> Result<(), DbError> {
+    insert_user_exec(pool, user).await
 }
 
 pub async fn get_user_by_email(pool: &AnyPool, email: &str) -> Result<UserRow, DbError> {

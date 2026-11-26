@@ -144,7 +144,11 @@ export function normalizeSession(json: unknown): AuthSession {
     (t): t is string => typeof t === 'string' && t.length > 0,
   )
   if (!token) throw new Error('Login response did not include a session token.')
-  const rawUser = (obj.user ?? obj.staff ?? obj.account ?? {}) as Record<string, unknown>
+  // The real backend (df-auth-http LoginResponse) is FLAT — {token, user_id,
+  // email, display_name, role, customer_id, expires_at} — with no nested
+  // `user` object. Fall back to the top-level object itself so the flat
+  // shape parses; the nested shapes stay accepted as before.
+  const rawUser = (obj.user ?? obj.staff ?? obj.account ?? obj) as Record<string, unknown>
   const id = [rawUser.id, rawUser.user_id].find(
     (v): v is string => typeof v === 'string' && v.length > 0,
   )
@@ -179,6 +183,56 @@ export function normalizeSession(json: unknown): AuthSession {
 
 export async function login(email: string, password: string): Promise<AuthSession> {
   const session = normalizeSession(await authPost('/pos/auth/login', { email, password }))
+  saveSession(session)
+  return session
+}
+
+// --- first-run setup -------------------------------------------------------
+// Contract (backend worker owns the endpoints; this client is built
+// against the agreed contract):
+//   GET  /pos/auth/setup-status  → { needs_setup: true/false }
+//     (true only when the users table is empty)
+//   POST /pos/auth/setup  { email, display_name, password }
+//     → the same LoginResponse shape as login; the created user is an
+//     Admin. Second call when users exist → 409. Empty
+//     email/password → 400. No role parameter is accepted.
+// Both are reached through the Vite `/api` proxy like the other auth
+// calls above.
+
+/**
+ * True when this is a fresh install with no users yet. Any failure
+ * (server down, unexpected shape) returns false — the caller falls
+ * back to the normal login form and login is never blocked by this
+ * check.
+ */
+export async function getSetupStatus(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/pos/auth/setup-status')
+    if (!res.ok) return false
+    const json: unknown = await res.json().catch(() => null)
+    return (json as { needs_setup?: unknown } | null)?.needs_setup === true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Create the first (admin) account and sign straight in: the returned
+ * session is saved exactly like `login()` does (same localStorage
+ * keys), so there is no second sign-in step.
+ */
+export async function setupAdmin(
+  email: string,
+  displayName: string,
+  password: string,
+): Promise<AuthSession> {
+  const session = normalizeSession(
+    await authPost('/pos/auth/setup', {
+      email,
+      display_name: displayName,
+      password,
+    }),
+  )
   saveSession(session)
   return session
 }

@@ -1,21 +1,23 @@
-# decor-pos self-hosted stack (v1.0) — `docker compose up`
+# decor-pos self-hosted stack (v1.2) — `docker compose up`
 #
 # Services:
-#   postgres — PostgreSQL 16, provisioned for the future HQ mode.
-#     `df-server hq` / `df-server migrate` are NOT implemented in
-#     v1.0, so nothing talks to Postgres yet; it is here so the
-#     database, volume and credentials are ready when HQ lands.
-#     (PostgreSQL round-trip is untested in v1.0 — see plan.md.)
+#   postgres — PostgreSQL 16, the HQ database in v1.2. `df-server hq`
+#     connects to it (see docs/self-hosting.md for the HQ command);
+#     this stack does not run an `hq` service yet — the edge + api
+#     below are the working path.
 #   edge     — the store daemon (`df-server edge`, SQLite). This is
 #     the working path: counter POS, portal, BOPIS, sync outbox.
 #   api      — the HQ read API (`df-api`) against the SAME SQLite
 #     file the edge owns (shared volume). Admin reads only.
 #
-# SECURITY (read docs/security-review-v1.0.md before exposing this):
-#   * df-api has NO authentication in v1.0 (auth routes return 501)
-#     and the edge HTTP API has none either. This stack binds both
-#     to the host's ports for local use only — put it behind a VPN /
-#     reverse proxy with auth, never on the open internet.
+# SECURITY (read docs/security-review-v1.0.md and docs/auth.md before
+# exposing this): since v1.1 every route except /health, the OpenAPI
+# doc and the login endpoints needs a Bearer session token — there is
+# no default password; create the first admin with
+# `df-server users create-admin` (see docs/self-hosting.md). This
+# stack binds both services to the host's ports for local use only —
+# put it behind a VPN / reverse proxy with auth, never on the open
+# internet.
 #   * Copy `.env.example` to `.env` and replace every value first.
 #     Never commit a real `.env`.
 
@@ -26,8 +28,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-decor}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-decorpos}
-    # Bound to loopback only: nothing in v1.0 connects to it, and it
-    # must not be reachable from the LAN until HQ mode lands.
+    # Bound to loopback only: nothing in this stack connects to it
+    # yet (the `hq` service is not in this file); keep it off the
+    # LAN until you run `df-server hq` against it.
     ports:
       - "127.0.0.1:5432:5432"
     volumes:

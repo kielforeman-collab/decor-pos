@@ -142,9 +142,12 @@
 //! methods; all the rules live there.
 //!
 //! Phase 7 (v1.1): every route except `GET /health`, the
-//! `/pos/auth/*` login endpoints, and the public BOPIS storefront
+//! `/pos/auth/*` login endpoints, the first-run setup endpoints
+//! (`GET /pos/auth/setup-status`, `POST /pos/auth/setup` — public
+//! because no user exists yet to hold a session), and the public
+//! BOPIS storefront
 //! routes (`GET /catalog/products`, `POST /bopis/orders`,
-//! `GET /bopis/orders/{id}`) requires a `Bearer dfp_...` session
+//! `GET /bopis/orders/{id}`) requires a `Bearer <redacted>` session
 //! token (see `df_auth_http::gate` + `docs/auth.md` for the role →
 //! route matrix). The gate answers 401 for a missing / invalid /
 //! expired / revoked token and 403 for a valid token with the wrong
@@ -205,7 +208,8 @@ use crate::tinting::{ColorantsResponse, DispenseTintRequest, DispenseTintRespons
 use crate::types::{CompletedSale, PricePreview, ReturnLineInput, SaleInput, TenderInput, ZReport};
 use df_auth::{OverrideCredential, Permission};
 use df_auth_http::{
-    AuthRule, AuthSession, Gate, LoginResponse, LogoutResponse, OverrideVerifyResponse, login_error,
+    AuthRule, AuthSession, Gate, LoginResponse, LogoutResponse, OverrideVerifyResponse,
+    SetupRequest, SetupStatusResponse, login_error, setup_admin_response, setup_status_response,
 };
 use df_db::InventoryBalance;
 use df_db::models::{
@@ -1844,6 +1848,26 @@ async fn edge_login(
     .map_err(login_error)
 }
 
+/// First-run setup status: `{"needs_setup": true}` exactly while
+/// the users table is empty. Public — the GUI asks this before
+/// any user exists, so there is no session to gate on.
+async fn edge_setup_status(State(edge): State<Arc<Edge>>) -> AuthResult<SetupStatusResponse> {
+    setup_status_response(edge.pool()).await
+}
+
+/// First-run setup: create the first Admin and return a
+/// [`LoginResponse`] for them (201), so the GUI logs the new admin
+/// straight in. The admin belongs to the edge's configured org
+/// (`EdgeConfig.org_id`) — no org is invented and none is taken
+/// from the request. A second setup is 409 and creates nothing.
+/// Public — like login, this is how the first session is obtained.
+async fn edge_setup(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<SetupRequest>,
+) -> Result<(StatusCode, Json<LoginResponse>), (StatusCode, Json<df_auth_http::ErrorBody>)> {
+    setup_admin_response(edge.pool(), edge.config().org_id, body).await
+}
+
 async fn edge_counter_switch(
     State(edge): State<Arc<Edge>>,
     Json(body): Json<EdgeCounterSwitchRequest>,
@@ -1969,11 +1993,15 @@ pub fn router(edge: Edge) -> Router {
     let scheduling_manage_gate = gate(AuthRule::AnyOf(vec![Permission::SchedulingManage]));
 
     // Public by design: health, the login endpoints (how a session
-    // is obtained), the public BOPIS storefront catalog + order
-    // placement/status. Everything else below is gated.
+    // is obtained), the first-run setup endpoints (how the first
+    // admin is created, before any user exists), the public BOPIS
+    // storefront catalog + order placement/status. Everything else
+    // below is gated.
     let public = Router::new()
         .route("/health", get(health))
         .route("/pos/auth/login", post(edge_login))
+        .route("/pos/auth/setup-status", get(edge_setup_status))
+        .route("/pos/auth/setup", post(edge_setup))
         .route("/pos/auth/counter-switch", post(edge_counter_switch))
         .route("/pos/auth/portal-login", post(edge_portal_login))
         .route("/pos/auth/override-verify", post(edge_override_verify))
@@ -2298,7 +2326,7 @@ mod tests {
         let (status, body) = get_json(router.clone(), "/health", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ok");
-        assert_eq!(body["version"], "1.2.0");
+        assert_eq!(body["version"], "1.2.1");
 
         let (status, body) = post_json(
             router,

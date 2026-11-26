@@ -328,6 +328,101 @@ pub fn login_error(err: AuthError) -> (StatusCode, Json<ErrorBody>) {
     }
 }
 
+/// Map a first-run setup [`df_db::SetupError`] to an HTTP status
+/// and message. Already-setup is **409** (and creates nothing),
+/// bad input is **400**, and a database failure is a **500**
+/// without the DB text (it can name tables).
+pub fn setup_error(err: df_db::SetupError) -> (StatusCode, Json<ErrorBody>) {
+    match err {
+        df_db::SetupError::AlreadySetup => (
+            StatusCode::CONFLICT,
+            Json(ErrorBody {
+                error: "setup already complete — a user already exists".to_string(),
+            }),
+        ),
+        df_db::SetupError::InvalidInput(message) => {
+            (StatusCode::BAD_REQUEST, Json(ErrorBody { error: message }))
+        }
+        df_db::SetupError::Database(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: "setup failed".to_string(),
+            }),
+        ),
+    }
+}
+
+/// `GET /auth/setup-status`: whether first-run setup is still
+/// needed — exactly when the users table is empty. Shared by the
+/// edge (`GET /pos/auth/setup-status`) and HQ (`GET
+/// /api/v1/auth/setup-status`) handlers; the caller only supplies
+/// the pool.
+pub async fn setup_status_response(
+    pool: &AnyPool,
+) -> Result<Json<SetupStatusResponse>, (StatusCode, Json<ErrorBody>)> {
+    match df_db::count_users(pool).await {
+        Ok(count) => Ok(Json(SetupStatusResponse {
+            needs_setup: count == 0,
+        })),
+        Err(_) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: "setup status check failed".to_string(),
+            }),
+        )),
+    }
+}
+
+/// `POST /auth/setup`: create the first Admin and return a
+/// [`LoginResponse`] for them, so the GUI logs the new admin
+/// straight in without a second call. Shared by the edge (`POST
+/// /pos/auth/setup`) and HQ (`POST /api/v1/auth/setup`) handlers;
+/// the caller only supplies the pool and its configured org id.
+/// Success is **201**; a second setup is **409** and creates
+/// nothing (see [`df_db::setup_first_admin`]).
+pub async fn setup_admin_response(
+    pool: &AnyPool,
+    org_id: Uuid,
+    body: SetupRequest,
+) -> Result<(StatusCode, Json<LoginResponse>), (StatusCode, Json<ErrorBody>)> {
+    df_db::setup_first_admin(
+        pool,
+        org_id,
+        &body.email,
+        body.display_name.as_deref(),
+        &body.password,
+    )
+    .await
+    .map(|outcome| {
+        (
+            StatusCode::CREATED,
+            Json(LoginResponse::from_outcome(&outcome)),
+        )
+    })
+    .map_err(setup_error)
+}
+
+/// `POST /auth/setup` request: the first admin's credentials.
+/// There is deliberately **no role field** — the created user is
+/// always Admin — and unknown fields are rejected, so a `role`
+/// parameter cannot slip through silently. `display_name` is
+/// optional: when missing or blank it defaults to the email local
+/// part (see [`df_db::setup_first_admin`]).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetupRequest {
+    pub email: String,
+    pub display_name: Option<String>,
+    pub password: String,
+}
+
+/// `GET /auth/setup-status` response: `needs_setup` is true
+/// exactly when the users table is empty.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SetupStatusResponse {
+    pub needs_setup: bool,
+}
+
 /// The current UTC time, for `expires_at` comparisons in tests.
 /// (A one-line re-export so callers do not need a chrono import.)
 pub fn now_utc() -> DateTime<Utc> {

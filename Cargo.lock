@@ -944,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "df-accounting"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "df-db",
@@ -960,7 +960,7 @@ dependencies = [
 
 [[package]]
 name = "df-api"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "axum",
  "chrono",
@@ -984,7 +984,7 @@ dependencies = [
 
 [[package]]
 name = "df-ar"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "df-domain",
@@ -996,7 +996,7 @@ dependencies = [
 
 [[package]]
 name = "df-auth"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -1010,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "df-auth-http"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "axum",
  "chrono",
@@ -1026,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "df-crm"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "rust_decimal",
@@ -1038,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "df-db"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1058,7 +1058,7 @@ dependencies = [
 
 [[package]]
 name = "df-delivery"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1072,7 +1072,7 @@ dependencies = [
 
 [[package]]
 name = "df-domain"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "proptest",
@@ -1084,7 +1084,7 @@ dependencies = [
 
 [[package]]
 name = "df-edge"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1119,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "df-edi"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "df-db",
@@ -1135,7 +1135,7 @@ dependencies = [
 
 [[package]]
 name = "df-hw"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "df-domain",
  "rust_decimal",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "df-jobs"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "df-ar",
@@ -1162,7 +1162,7 @@ dependencies = [
 
 [[package]]
 name = "df-migrator"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1179,7 +1179,7 @@ dependencies = [
 
 [[package]]
 name = "df-payments"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "df-domain",
@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "df-plugin-sdk"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "axum",
  "chrono",
@@ -1208,7 +1208,7 @@ dependencies = [
 
 [[package]]
 name = "df-portal"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "df-domain",
@@ -1220,7 +1220,7 @@ dependencies = [
 
 [[package]]
 name = "df-reports"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "df-ar",
@@ -1238,7 +1238,7 @@ dependencies = [
 
 [[package]]
 name = "df-scheduling"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "rust_decimal",
@@ -1250,7 +1250,7 @@ dependencies = [
 
 [[package]]
 name = "df-server"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "axum",
  "chrono",
@@ -1274,7 +1274,7 @@ dependencies = [
 
 [[package]]
 name = "df-sync"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "df-db",
@@ -1290,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "df-tinter"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "df-domain",
@@ -3525,7 +3525,7 @@ dependencies = [
 
 [[package]]
 name = "pos-desktop"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "df-db",
