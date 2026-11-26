@@ -16,9 +16,12 @@
 //! * `POST /pos/quotes` — [`SaleInput`](crate::types::SaleInput) (returns `{transaction_id}`)
 //! * `POST /pos/layaways` — `{sale, deposit}` (returns `{transaction_id}`)
 //! * `GET /pos/sync/state`
-//! * `POST /pos/sync/run` — syncs against the in-process [`MemoryHq`]
-//!   when one was configured with [`Edge::set_hq`](crate::edge::Edge::set_hq),
-//!   else `503` with a clear message.
+//! * `POST /pos/sync/run` — syncs against the remote HQ when one is
+//!   configured (`DF_HQ_URL` / `DF_HQ_TOKEN`, or
+//!   [`Edge::set_remote_hq`](crate::edge::Edge::set_remote_hq)),
+//!   else against the in-process [`MemoryHq`] configured with
+//!   [`Edge::set_hq`](crate::edge::Edge::set_hq), else `503` with a
+//!   clear message.
 //! * `GET /pos/tinting/formulas?query=&customer_id=&job_id=` —
 //!   search stored formulas by color name/code, or a customer's
 //!   colour history (newest first; `job_id` scopes to one job)
@@ -2295,7 +2298,7 @@ mod tests {
         let (status, body) = get_json(router.clone(), "/health", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ok");
-        assert_eq!(body["version"], "1.1.0");
+        assert_eq!(body["version"], "1.2.0");
 
         let (status, body) = post_json(
             router,

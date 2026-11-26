@@ -126,7 +126,7 @@ fn reorder_point_from_row(row: &sqlx::any::AnyRow) -> Result<ReorderPoint, DbErr
 /// One customer by id. Needed by the edge credit check; the
 /// Phase 0 repo only had lookup by account number.
 pub async fn get_customer(pool: &AnyPool, id: Uuid) -> Result<Customer, DbError> {
-    let row = sqlx::query("SELECT * FROM customers WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM customers WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -138,7 +138,7 @@ pub async fn get_customer(pool: &AnyPool, id: Uuid) -> Result<Customer, DbError>
 /// The statement batch and the finance-charge run iterate this.
 pub async fn list_charge_customers(pool: &AnyPool, org_id: Uuid) -> Result<Vec<Customer>, DbError> {
     let rows = sqlx::query(
-        "SELECT * FROM customers WHERE org_id = ? AND charge_enabled = TRUE ORDER BY account_number ASC",
+        "SELECT * FROM customers WHERE org_id = $1 AND charge_enabled = TRUE ORDER BY account_number ASC",
     )
     .bind(uuid_str(org_id))
     .fetch_all(pool)
@@ -159,7 +159,7 @@ pub async fn update_customer_credit(
     credit_hold: bool,
 ) -> Result<(), DbError> {
     sqlx::query(
-        "UPDATE customers SET credit_limit = ?, terms_days = ?, finance_rate_pct_monthly = ?, credit_hold = ? WHERE id = ?",
+        "UPDATE customers SET credit_limit = $1, terms_days = $2, finance_rate_pct_monthly = $3, credit_hold = $4 WHERE id = $5",
     )
     .bind(dec_str(credit_limit))
     .bind(terms_days)
@@ -178,7 +178,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO customer_jobs (id, customer_id, job_code, job_name, site_address_json, tax_zone_override, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO customer_jobs (id, customer_id, job_code, job_name, site_address_json, tax_zone_override, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(uuid_str(job.id))
     .bind(uuid_str(job.customer_id))
@@ -193,7 +193,7 @@ where
 }
 
 pub async fn get_customer_job(pool: &AnyPool, id: Uuid) -> Result<CustomerJob, DbError> {
-    let row = sqlx::query("SELECT * FROM customer_jobs WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM customer_jobs WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -206,7 +206,7 @@ pub async fn list_jobs_for_customer(
     customer_id: Uuid,
 ) -> Result<Vec<CustomerJob>, DbError> {
     let rows =
-        sqlx::query("SELECT * FROM customer_jobs WHERE customer_id = ? ORDER BY job_code ASC")
+        sqlx::query("SELECT * FROM customer_jobs WHERE customer_id = $1 ORDER BY job_code ASC")
             .bind(uuid_str(customer_id))
             .fetch_all(pool)
             .await?;
@@ -254,7 +254,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     let row = sqlx::query(
-        "SELECT * FROM ar_ledger WHERE customer_id = ? AND entry_type = ? AND reference_type = ? AND reference_id = ?",
+        "SELECT * FROM ar_ledger WHERE customer_id = $1 AND entry_type = $2 AND reference_type = $3 AND reference_id = $4",
     )
     .bind(uuid_str(customer_id))
     .bind(entry_type)
@@ -262,6 +262,25 @@ where
     .bind(uuid_str(reference_id))
     .fetch_optional(executor)
     .await?;
+    match row {
+        None => Ok(None),
+        Some(row) => Ok(Some(crate::repos::ar_entry_from_row(&row)?)),
+    }
+}
+
+/// One AR ledger entry by id, executor-generic (sync sink replay check:
+/// the ingest endpoint skips a ledger entry whose id already exists).
+pub async fn get_ar_entry_exec<'e, E>(
+    executor: E,
+    id: Uuid,
+) -> Result<Option<ArLedgerEntry>, DbError>
+where
+    E: Executor<'e, Database = sqlx::Any>,
+{
+    let row = sqlx::query("SELECT * FROM ar_ledger WHERE id = $1")
+        .bind(uuid_str(id))
+        .fetch_optional(executor)
+        .await?;
     match row {
         None => Ok(None),
         Some(row) => Ok(Some(crate::repos::ar_entry_from_row(&row)?)),
@@ -276,7 +295,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO ar_allocations (id, payment_entry_id, charge_entry_id, allocated_amount, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO ar_allocations (id, payment_entry_id, charge_entry_id, allocated_amount, created_at) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(uuid_str(allocation.id))
     .bind(uuid_str(allocation.payment_entry_id))
@@ -296,7 +315,7 @@ pub async fn list_allocations_for_customer(
     customer_id: Uuid,
 ) -> Result<Vec<ArAllocation>, DbError> {
     let rows = sqlx::query(
-        "SELECT a.* FROM ar_allocations a JOIN ar_ledger c ON c.id = a.charge_entry_id WHERE c.customer_id = ? ORDER BY a.created_at ASC",
+        "SELECT a.* FROM ar_allocations a JOIN ar_ledger c ON c.id = a.charge_entry_id WHERE c.customer_id = $1 ORDER BY a.created_at ASC",
     )
     .bind(uuid_str(customer_id))
     .fetch_all(pool)
@@ -309,7 +328,7 @@ pub async fn list_allocations_for_payment(
     payment_entry_id: Uuid,
 ) -> Result<Vec<ArAllocation>, DbError> {
     let rows = sqlx::query(
-        "SELECT * FROM ar_allocations WHERE payment_entry_id = ? ORDER BY created_at ASC",
+        "SELECT * FROM ar_allocations WHERE payment_entry_id = $1 ORDER BY created_at ASC",
     )
     .bind(uuid_str(payment_entry_id))
     .fetch_all(pool)
@@ -324,7 +343,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO statements (id, customer_id, period_start, period_end, opening_balance, charges_total, payments_total, finance_charge_total, closing_balance, aging_json, pdf_sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO statements (id, customer_id, period_start, period_end, opening_balance, charges_total, payments_total, finance_charge_total, closing_balance, aging_json, pdf_sha256, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(uuid_str(row.id))
     .bind(uuid_str(row.customer_id))
@@ -352,7 +371,7 @@ pub async fn get_statement(
     period_end: NaiveDate,
 ) -> Result<Option<StatementRow>, DbError> {
     let row = sqlx::query(
-        "SELECT * FROM statements WHERE customer_id = ? AND period_start = ? AND period_end = ?",
+        "SELECT * FROM statements WHERE customer_id = $1 AND period_start = $2 AND period_end = $3",
     )
     .bind(uuid_str(customer_id))
     .bind(date_str(period_start))
@@ -370,7 +389,7 @@ pub async fn list_statements_for_customer(
     customer_id: Uuid,
 ) -> Result<Vec<StatementRow>, DbError> {
     let rows =
-        sqlx::query("SELECT * FROM statements WHERE customer_id = ? ORDER BY period_start DESC")
+        sqlx::query("SELECT * FROM statements WHERE customer_id = $1 ORDER BY period_start DESC")
             .bind(uuid_str(customer_id))
             .fetch_all(pool)
             .await?;
@@ -384,7 +403,7 @@ pub async fn set_statement_pdf_sha256(
     id: Uuid,
     pdf_sha256: &str,
 ) -> Result<(), DbError> {
-    sqlx::query("UPDATE statements SET pdf_sha256 = ? WHERE id = ?")
+    sqlx::query("UPDATE statements SET pdf_sha256 = $1 WHERE id = $2")
         .bind(pdf_sha256)
         .bind(uuid_str(id))
         .execute(pool)
@@ -402,7 +421,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO inventory_transfers (id, org_id, from_store_id, to_store_id, status, reference, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO inventory_transfers (id, org_id, from_store_id, to_store_id, status, reference, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(uuid_str(transfer.id))
     .bind(uuid_str(transfer.org_id))
@@ -420,7 +439,7 @@ pub async fn get_inventory_transfer(
     pool: &AnyPool,
     id: Uuid,
 ) -> Result<InventoryTransfer, DbError> {
-    let row = sqlx::query("SELECT * FROM inventory_transfers WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM inventory_transfers WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -435,7 +454,7 @@ pub async fn list_transfers_for_store(
     store_id: Uuid,
 ) -> Result<Vec<InventoryTransfer>, DbError> {
     let rows = sqlx::query(
-        "SELECT * FROM inventory_transfers WHERE from_store_id = ? OR to_store_id = ? ORDER BY created_at DESC",
+        "SELECT * FROM inventory_transfers WHERE from_store_id = $1 OR to_store_id = $2 ORDER BY created_at DESC",
     )
     .bind(uuid_str(store_id))
     .bind(uuid_str(store_id))
@@ -448,7 +467,7 @@ pub async fn list_transfers_for_store(
 /// `received`, or `cancelled`). No transition validation here —
 /// the caller owns the state machine.
 pub async fn set_transfer_status(pool: &AnyPool, id: Uuid, status: &str) -> Result<(), DbError> {
-    sqlx::query("UPDATE inventory_transfers SET status = ? WHERE id = ?")
+    sqlx::query("UPDATE inventory_transfers SET status = $1 WHERE id = $2")
         .bind(status)
         .bind(uuid_str(id))
         .execute(pool)
@@ -461,7 +480,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO transfer_lines (id, transfer_id, product_id, qty, unit_cost) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO transfer_lines (id, transfer_id, product_id, qty, unit_cost) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(uuid_str(line.id))
     .bind(uuid_str(line.transfer_id))
@@ -477,7 +496,7 @@ pub async fn list_transfer_lines(
     pool: &AnyPool,
     transfer_id: Uuid,
 ) -> Result<Vec<TransferLine>, DbError> {
-    let rows = sqlx::query("SELECT * FROM transfer_lines WHERE transfer_id = ?")
+    let rows = sqlx::query("SELECT * FROM transfer_lines WHERE transfer_id = $1")
         .bind(uuid_str(transfer_id))
         .fetch_all(pool)
         .await?;
@@ -491,7 +510,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO physical_counts (id, store_id, status, counted_at, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO physical_counts (id, store_id, status, counted_at, created_at) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(uuid_str(count.id))
     .bind(uuid_str(count.store_id))
@@ -504,7 +523,7 @@ where
 }
 
 pub async fn get_physical_count(pool: &AnyPool, id: Uuid) -> Result<PhysicalCount, DbError> {
-    let row = sqlx::query("SELECT * FROM physical_counts WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM physical_counts WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -519,7 +538,7 @@ pub async fn list_physical_counts_for_store(
     store_id: Uuid,
 ) -> Result<Vec<PhysicalCount>, DbError> {
     let rows =
-        sqlx::query("SELECT * FROM physical_counts WHERE store_id = ? ORDER BY created_at DESC")
+        sqlx::query("SELECT * FROM physical_counts WHERE store_id = $1 ORDER BY created_at DESC")
             .bind(uuid_str(store_id))
             .fetch_all(pool)
             .await?;
@@ -534,7 +553,7 @@ pub async fn reconcile_physical_count(
     id: Uuid,
     counted_at: DateTime<Utc>,
 ) -> Result<(), DbError> {
-    sqlx::query("UPDATE physical_counts SET status = 'reconciled', counted_at = ? WHERE id = ?")
+    sqlx::query("UPDATE physical_counts SET status = 'reconciled', counted_at = $1 WHERE id = $2")
         .bind(dt_str(counted_at))
         .bind(uuid_str(id))
         .execute(pool)
@@ -547,7 +566,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO count_lines (id, count_id, product_id, counted_qty, system_qty, variance_qty, unit_cost) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO count_lines (id, count_id, product_id, counted_qty, system_qty, variance_qty, unit_cost) VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(uuid_str(line.id))
     .bind(uuid_str(line.count_id))
@@ -562,7 +581,7 @@ where
 }
 
 pub async fn list_count_lines(pool: &AnyPool, count_id: Uuid) -> Result<Vec<CountLine>, DbError> {
-    let rows = sqlx::query("SELECT * FROM count_lines WHERE count_id = ?")
+    let rows = sqlx::query("SELECT * FROM count_lines WHERE count_id = $1")
         .bind(uuid_str(count_id))
         .fetch_all(pool)
         .await?;
@@ -577,13 +596,13 @@ pub async fn list_count_lines(pool: &AnyPool, count_id: Uuid) -> Result<Vec<Coun
 /// without `ON CONFLICT` syntax differences.
 pub async fn upsert_reorder_point(pool: &AnyPool, point: &ReorderPoint) -> Result<(), DbError> {
     let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM reorder_points WHERE store_id = ? AND product_id = ?")
+    sqlx::query("DELETE FROM reorder_points WHERE store_id = $1 AND product_id = $2")
         .bind(uuid_str(point.store_id))
         .bind(uuid_str(point.product_id))
         .execute(&mut *tx)
         .await?;
     sqlx::query(
-        "INSERT INTO reorder_points (id, store_id, product_id, min_qty, max_qty, reorder_qty) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO reorder_points (id, store_id, product_id, min_qty, max_qty, reorder_qty) VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(uuid_str(point.id))
     .bind(uuid_str(point.store_id))
@@ -602,7 +621,7 @@ pub async fn get_reorder_point(
     store_id: Uuid,
     product_id: Uuid,
 ) -> Result<Option<ReorderPoint>, DbError> {
-    let row = sqlx::query("SELECT * FROM reorder_points WHERE store_id = ? AND product_id = ?")
+    let row = sqlx::query("SELECT * FROM reorder_points WHERE store_id = $1 AND product_id = $2")
         .bind(uuid_str(store_id))
         .bind(uuid_str(product_id))
         .fetch_optional(pool)
@@ -617,7 +636,7 @@ pub async fn list_reorder_points_for_store(
     pool: &AnyPool,
     store_id: Uuid,
 ) -> Result<Vec<ReorderPoint>, DbError> {
-    let rows = sqlx::query("SELECT * FROM reorder_points WHERE store_id = ?")
+    let rows = sqlx::query("SELECT * FROM reorder_points WHERE store_id = $1")
         .bind(uuid_str(store_id))
         .fetch_all(pool)
         .await?;

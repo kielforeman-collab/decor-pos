@@ -82,7 +82,7 @@ fn like_pattern(query: &str) -> String {
 
 /// One color by id.
 pub async fn get_color(pool: &AnyPool, id: Uuid) -> Result<ColorCatalogEntry, DbError> {
-    let row = sqlx::query("SELECT * FROM color_catalog WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM color_catalog WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -103,7 +103,7 @@ pub async fn search_colors(
 ) -> Result<Vec<ColorCatalogEntry>, DbError> {
     let pattern = like_pattern(&query.to_lowercase());
     let rows = sqlx::query(
-        "SELECT * FROM color_catalog WHERE org_id = ? AND LOWER(manufacturer) = LOWER(?) AND (LOWER(color_code) LIKE ? ESCAPE '\\' OR LOWER(color_name) LIKE ? ESCAPE '\\') ORDER BY color_code ASC",
+        "SELECT * FROM color_catalog WHERE org_id = $1 AND LOWER(manufacturer) = LOWER($2) AND (LOWER(color_code) LIKE $3 ESCAPE '\\' OR LOWER(color_name) LIKE $4 ESCAPE '\\') ORDER BY color_code ASC",
     )
     .bind(uuid_str(org_id))
     .bind(manufacturer)
@@ -117,7 +117,7 @@ pub async fn search_colors(
 // --- colorants (CRUD) ---------------------------------------------------------
 
 pub async fn get_colorant(pool: &AnyPool, id: Uuid) -> Result<Colorant, DbError> {
-    let row = sqlx::query("SELECT * FROM colorants WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM colorants WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -132,7 +132,7 @@ pub async fn get_colorant_by_code(
     code: &str,
 ) -> Result<Colorant, DbError> {
     let row =
-        sqlx::query("SELECT * FROM colorants WHERE org_id = ? AND system_name = ? AND code = ?")
+        sqlx::query("SELECT * FROM colorants WHERE org_id = $1 AND system_name = $2 AND code = $3")
             .bind(uuid_str(org_id))
             .bind(system_name)
             .bind(code)
@@ -147,7 +147,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "UPDATE colorants SET system_name = ?, code = ?, name = ?, cost_per_fl_oz = ?, shots_per_fl_oz = ? WHERE id = ?",
+        "UPDATE colorants SET system_name = $1, code = $2, name = $3, cost_per_fl_oz = $4, shots_per_fl_oz = $5 WHERE id = $6",
     )
     .bind(&colorant.system_name)
     .bind(&colorant.code)
@@ -164,7 +164,7 @@ pub async fn delete_colorant<'e, E>(executor: E, id: Uuid) -> Result<(), DbError
 where
     E: Executor<'e, Database = sqlx::Any>,
 {
-    sqlx::query("DELETE FROM colorants WHERE id = ?")
+    sqlx::query("DELETE FROM colorants WHERE id = $1")
         .bind(uuid_str(id))
         .execute(executor)
         .await?;
@@ -174,7 +174,7 @@ where
 // --- tint formulas (lookup) ---------------------------------------------------
 
 pub async fn get_tint_formula(pool: &AnyPool, id: Uuid) -> Result<TintFormula, DbError> {
-    let row = sqlx::query("SELECT * FROM tint_formulas WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM tint_formulas WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -191,7 +191,7 @@ pub async fn search_tint_formulas_by_color(
 ) -> Result<Vec<TintFormula>, DbError> {
     let pattern = like_pattern(&query.to_lowercase());
     let rows = sqlx::query(
-        "SELECT * FROM tint_formulas WHERE org_id = ? AND (LOWER(color_code_snapshot) LIKE ? ESCAPE '\\' OR LOWER(color_name_snapshot) LIKE ? ESCAPE '\\') ORDER BY dispensed_at DESC",
+        "SELECT * FROM tint_formulas WHERE org_id = $1 AND (LOWER(color_code_snapshot) LIKE $2 ESCAPE '\\' OR LOWER(color_name_snapshot) LIKE $3 ESCAPE '\\') ORDER BY dispensed_at DESC",
     )
     .bind(uuid_str(org_id))
     .bind(&pattern)
@@ -212,13 +212,13 @@ pub async fn list_tint_formulas_for_customer_job(
 ) -> Result<Vec<TintFormula>, DbError> {
     let rows = match job_id {
         None => sqlx::query(
-            "SELECT * FROM tint_formulas WHERE customer_id = ? ORDER BY dispensed_at DESC",
+            "SELECT * FROM tint_formulas WHERE customer_id = $1 ORDER BY dispensed_at DESC",
         )
         .bind(uuid_str(customer_id))
         .fetch_all(pool)
         .await?,
         Some(job) => sqlx::query(
-            "SELECT * FROM tint_formulas WHERE customer_id = ? AND job_id = ? ORDER BY dispensed_at DESC",
+            "SELECT * FROM tint_formulas WHERE customer_id = $1 AND job_id = $2 ORDER BY dispensed_at DESC",
         )
         .bind(uuid_str(customer_id))
         .bind(uuid_str(job))
@@ -235,7 +235,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO tint_jobs (id, formula_id, transaction_id, line_no, status, dispensed_json, error, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO tint_jobs (id, formula_id, transaction_id, line_no, status, dispensed_json, error, created_at, completed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(uuid_str(job.id))
     .bind(uuid_str(job.formula_id))
@@ -252,7 +252,7 @@ where
 }
 
 pub async fn get_tint_job(pool: &AnyPool, id: Uuid) -> Result<TintJobRow, DbError> {
-    let row = sqlx::query("SELECT * FROM tint_jobs WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM tint_jobs WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -265,7 +265,7 @@ pub async fn list_tint_jobs_for_formula(
     pool: &AnyPool,
     formula_id: Uuid,
 ) -> Result<Vec<TintJobRow>, DbError> {
-    let rows = sqlx::query("SELECT * FROM tint_jobs WHERE formula_id = ? ORDER BY created_at ASC")
+    let rows = sqlx::query("SELECT * FROM tint_jobs WHERE formula_id = $1 ORDER BY created_at ASC")
         .bind(uuid_str(formula_id))
         .fetch_all(pool)
         .await?;
@@ -279,7 +279,7 @@ pub async fn list_tint_jobs_for_transaction(
     transaction_id: Uuid,
 ) -> Result<Vec<TintJobRow>, DbError> {
     let rows =
-        sqlx::query("SELECT * FROM tint_jobs WHERE transaction_id = ? ORDER BY created_at ASC")
+        sqlx::query("SELECT * FROM tint_jobs WHERE transaction_id = $1 ORDER BY created_at ASC")
             .bind(uuid_str(transaction_id))
             .fetch_all(pool)
             .await?;
@@ -296,7 +296,7 @@ pub async fn list_tint_jobs_for_store(
     store_id: Uuid,
 ) -> Result<Vec<TintJobRow>, DbError> {
     let rows = sqlx::query(
-        "SELECT tj.* FROM tint_jobs tj JOIN tint_formulas f ON f.id = tj.formula_id WHERE f.store_id = ? ORDER BY tj.created_at ASC",
+        "SELECT tj.* FROM tint_jobs tj JOIN tint_formulas f ON f.id = tj.formula_id WHERE f.store_id = $1 ORDER BY tj.created_at ASC",
     )
     .bind(uuid_str(store_id))
     .fetch_all(pool)
@@ -312,7 +312,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "UPDATE tint_jobs SET formula_id = ?, transaction_id = ?, line_no = ?, status = ?, dispensed_json = ?, error = ?, created_at = ?, completed_at = ? WHERE id = ?",
+        "UPDATE tint_jobs SET formula_id = $1, transaction_id = $2, line_no = $3, status = $4, dispensed_json = $5, error = $6, created_at = $7, completed_at = $8 WHERE id = $9",
     )
     .bind(uuid_str(job.formula_id))
     .bind(opt_uuid_str(job.transaction_id))
@@ -339,7 +339,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO colorant_levels (colorant_id, store_id, on_hand_fl_oz, low_threshold_fl_oz, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(colorant_id, store_id) DO UPDATE SET on_hand_fl_oz = excluded.on_hand_fl_oz, low_threshold_fl_oz = excluded.low_threshold_fl_oz, updated_at = excluded.updated_at",
+        "INSERT INTO colorant_levels (colorant_id, store_id, on_hand_fl_oz, low_threshold_fl_oz, updated_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT(colorant_id, store_id) DO UPDATE SET on_hand_fl_oz = excluded.on_hand_fl_oz, low_threshold_fl_oz = excluded.low_threshold_fl_oz, updated_at = excluded.updated_at",
     )
     .bind(uuid_str(level.colorant_id))
     .bind(uuid_str(level.store_id))
@@ -356,7 +356,7 @@ pub async fn get_colorant_level(
     colorant_id: Uuid,
     store_id: Uuid,
 ) -> Result<Option<ColorantLevelRow>, DbError> {
-    let row = sqlx::query("SELECT * FROM colorant_levels WHERE colorant_id = ? AND store_id = ?")
+    let row = sqlx::query("SELECT * FROM colorant_levels WHERE colorant_id = $1 AND store_id = $2")
         .bind(uuid_str(colorant_id))
         .bind(uuid_str(store_id))
         .fetch_optional(pool)
@@ -373,7 +373,7 @@ pub async fn list_colorant_levels_for_store(
     store_id: Uuid,
 ) -> Result<Vec<ColorantLevelRow>, DbError> {
     let rows =
-        sqlx::query("SELECT * FROM colorant_levels WHERE store_id = ? ORDER BY colorant_id ASC")
+        sqlx::query("SELECT * FROM colorant_levels WHERE store_id = $1 ORDER BY colorant_id ASC")
             .bind(uuid_str(store_id))
             .fetch_all(pool)
             .await?;
@@ -421,7 +421,7 @@ pub async fn decrement_colorant_levels_in_tx(
     let mut levels = Vec::with_capacity(amounts.len());
     for (colorant_id, amount) in amounts {
         let row =
-            sqlx::query("SELECT * FROM colorant_levels WHERE colorant_id = ? AND store_id = ?")
+            sqlx::query("SELECT * FROM colorant_levels WHERE colorant_id = $1 AND store_id = $2")
                 .bind(uuid_str(*colorant_id))
                 .bind(uuid_str(store_id))
                 .fetch_one(&mut **tx)
@@ -451,7 +451,7 @@ pub async fn decrement_colorant_levels_in_tx(
             updated_at: now,
         };
         sqlx::query(
-            "UPDATE colorant_levels SET on_hand_fl_oz = ?, updated_at = ? WHERE colorant_id = ? AND store_id = ?",
+            "UPDATE colorant_levels SET on_hand_fl_oz = $1, updated_at = $2 WHERE colorant_id = $3 AND store_id = $4",
         )
         .bind(dec_str(next.on_hand_fl_oz))
         .bind(dt_str(next.updated_at))
@@ -483,7 +483,7 @@ pub async fn decrement_colorant_level(
         )));
     }
     let mut tx = pool.begin().await?;
-    let row = sqlx::query("SELECT * FROM colorant_levels WHERE colorant_id = ? AND store_id = ?")
+    let row = sqlx::query("SELECT * FROM colorant_levels WHERE colorant_id = $1 AND store_id = $2")
         .bind(uuid_str(colorant_id))
         .bind(uuid_str(store_id))
         .fetch_one(&mut *tx)
@@ -509,7 +509,7 @@ pub async fn decrement_colorant_level(
         updated_at: Utc::now(),
     };
     sqlx::query(
-        "UPDATE colorant_levels SET on_hand_fl_oz = ?, updated_at = ? WHERE colorant_id = ? AND store_id = ?",
+        "UPDATE colorant_levels SET on_hand_fl_oz = $1, updated_at = $2 WHERE colorant_id = $3 AND store_id = $4",
     )
     .bind(dec_str(updated.on_hand_fl_oz))
     .bind(dt_str(updated.updated_at))

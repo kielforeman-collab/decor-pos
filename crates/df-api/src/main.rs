@@ -76,7 +76,11 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(cli.listen)
         .await
         .expect("bind listen address");
-    println!("df-api 0.3.0 listening on http://{}", cli.listen);
+    println!(
+        "df-api {} listening on http://{}",
+        env!("CARGO_PKG_VERSION"),
+        cli.listen
+    );
     println!("OpenAPI: http://{}/api-docs/openapi.json", cli.listen);
     axum::serve(listener, router).await.expect("serve df-api");
 }

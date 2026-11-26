@@ -25,7 +25,7 @@ pub async fn load_ar_entries_for_store(
     store_id: Uuid,
 ) -> Result<Vec<ArLedgerEntry>, AccountingError> {
     let rows =
-        sqlx::query("SELECT * FROM ar_ledger WHERE store_id = ? ORDER BY created_at ASC, id ASC")
+        sqlx::query("SELECT * FROM ar_ledger WHERE store_id = $1 ORDER BY created_at ASC, id ASC")
             .bind(store_id.to_string())
             .fetch_all(pool)
             .await?;

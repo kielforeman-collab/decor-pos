@@ -1,15 +1,19 @@
 //! Repositories over [`sqlx::AnyPool`].
 //!
-//! One implementation serves both dialects: `?` placeholders are
-//! rewritten to `$N` for PostgreSQL by sqlx's `Any` driver.
+//! One implementation serves both dialects with one SQL text. All
+//! queries use `$N` placeholders: sqlx's `Any` driver does NOT rewrite
+//! `?` — a literal `?` reaches PostgreSQL, where it is the JSONB
+//! operator, so every `?` query syntax-errors on PG (proven live
+//! 2026-11-26). `$N` works on both: natively on PG, and as named
+//! parameters bound positionally on SQLite.
 //!
 //! Why strings? sqlx's `Any` driver implements `Encode`/`Decode` only
 //! for primitive types — not for `Uuid`, `Decimal` or `DateTime`. So
 //! ids, money and timestamps cross the driver boundary as text:
 //!
-//! * `Uuid` as hyphenated text (UUID in PostgreSQL, TEXT in SQLite).
-//! * Money as an exact decimal string (NUMERIC(14,4) in PostgreSQL,
-//!   TEXT in SQLite — spec §5: "scaled integer/text in SQLite").
+//! * `Uuid` as hyphenated text (TEXT on both dialects).
+//! * Money as an exact decimal string (TEXT on both dialects —
+//!   spec §5: "scaled integer/text in SQLite").
 //! * Timestamps as RFC 3339 text, dates as `YYYY-MM-DD` text.
 //!
 //! Booleans and integers cross natively. Call [`crate::connect`]
@@ -20,9 +24,10 @@
 //! ledger rows, never from a stored mutable balance.
 //!
 //! PostgreSQL note: the migrations are embedded and the SQL is
-//! dialect-shared, but no live-Postgres round-trip test runs in
-//! Phase 0 (it needs a running PG 16+); that test is a Phase 1 item.
-//! The SQLite path is tested end-to-end.
+//! dialect-shared. TEXT columns on PG are deliberate (see `lib.rs`):
+//! the `Any` driver cannot decode uuid / numeric / timestamptz /
+//! jsonb columns and cannot bind text into them, and the CASTs that
+//! would fix that are destructive on SQLite.
 
 use std::str::FromStr;
 
@@ -297,7 +302,7 @@ fn not_found(what: &str) -> impl Fn(sqlx::Error) -> DbError + '_ {
 
 pub async fn insert_organization(pool: &AnyPool, org: &Organization) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO organizations (id, name, default_currency, enabled_modules, settings_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO organizations (id, name, default_currency, enabled_modules, settings_json, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(uuid_str(org.id))
     .bind(&org.name)
@@ -311,7 +316,7 @@ pub async fn insert_organization(pool: &AnyPool, org: &Organization) -> Result<(
 }
 
 pub async fn get_organization(pool: &AnyPool, id: Uuid) -> Result<Organization, DbError> {
-    let row = sqlx::query("SELECT * FROM organizations WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM organizations WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -323,7 +328,7 @@ pub async fn get_organization(pool: &AnyPool, id: Uuid) -> Result<Organization, 
 
 pub async fn insert_store(pool: &AnyPool, store: &Store) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO stores (id, org_id, code, name, country_code, region_code, postal_code, currency, tax_zone_id, timezone, is_warehouse) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO stores (id, org_id, code, name, country_code, region_code, postal_code, currency, tax_zone_id, timezone, is_warehouse) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(uuid_str(store.id))
     .bind(uuid_str(store.org_id))
@@ -342,7 +347,7 @@ pub async fn insert_store(pool: &AnyPool, store: &Store) -> Result<(), DbError> 
 }
 
 pub async fn get_store_by_code(pool: &AnyPool, org_id: Uuid, code: &str) -> Result<Store, DbError> {
-    let row = sqlx::query("SELECT * FROM stores WHERE org_id = ? AND code = ?")
+    let row = sqlx::query("SELECT * FROM stores WHERE org_id = $1 AND code = $2")
         .bind(uuid_str(org_id))
         .bind(code)
         .fetch_one(pool)
@@ -352,7 +357,7 @@ pub async fn get_store_by_code(pool: &AnyPool, org_id: Uuid, code: &str) -> Resu
 }
 
 pub async fn get_store(pool: &AnyPool, id: Uuid) -> Result<Store, DbError> {
-    let row = sqlx::query("SELECT * FROM stores WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM stores WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -364,7 +369,7 @@ pub async fn get_store(pool: &AnyPool, id: Uuid) -> Result<Store, DbError> {
 /// org-wide reports (e.g. the eco-fee remittance, which groups by
 /// each store's country/region jurisdiction).
 pub async fn list_stores_for_org(pool: &AnyPool, org_id: Uuid) -> Result<Vec<Store>, DbError> {
-    let rows = sqlx::query("SELECT * FROM stores WHERE org_id = ? ORDER BY code ASC")
+    let rows = sqlx::query("SELECT * FROM stores WHERE org_id = $1 ORDER BY code ASC")
         .bind(uuid_str(org_id))
         .fetch_all(pool)
         .await?;
@@ -375,7 +380,7 @@ pub async fn list_stores_for_org(pool: &AnyPool, org_id: Uuid) -> Result<Vec<Sto
 
 pub async fn insert_user(pool: &AnyPool, user: &UserRow) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO users (id, org_id, email, display_name, password_hash, oidc_subject, counter_pin_hash, badge_token_hash, role_id, portal_customer_id, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO users (id, org_id, email, display_name, password_hash, oidc_subject, counter_pin_hash, badge_token_hash, role_id, portal_customer_id, active) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(uuid_str(user.id))
     .bind(uuid_str(user.org_id))
@@ -394,7 +399,7 @@ pub async fn insert_user(pool: &AnyPool, user: &UserRow) -> Result<(), DbError> 
 }
 
 pub async fn get_user_by_email(pool: &AnyPool, email: &str) -> Result<UserRow, DbError> {
-    let row = sqlx::query("SELECT * FROM users WHERE email = ?")
+    let row = sqlx::query("SELECT * FROM users WHERE email = $1")
         .bind(email)
         .fetch_one(pool)
         .await
@@ -406,7 +411,7 @@ pub async fn get_user_by_email(pool: &AnyPool, email: &str) -> Result<UserRow, D
 
 pub async fn insert_product(pool: &AnyPool, product: &Product) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO products (id, org_id, sku, manufacturer_code, name, department_id, class_id, product_line_id, primary_vendor_id, product_type, base_uom, list_price, standard_cost, avg_cost, min_margin_pct, sheen, paint_base_code, container_volume_ml, eco_fee_category, tax_class_id, prompt_template_id, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO products (id, org_id, sku, manufacturer_code, name, department_id, class_id, product_line_id, primary_vendor_id, product_type, base_uom, list_price, standard_cost, avg_cost, min_margin_pct, sheen, paint_base_code, container_volume_ml, eco_fee_category, tax_class_id, prompt_template_id, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)",
     )
     .bind(uuid_str(product.id))
     .bind(uuid_str(product.org_id))
@@ -440,7 +445,7 @@ pub async fn get_product_by_sku(
     org_id: Uuid,
     sku: &str,
 ) -> Result<Product, DbError> {
-    let row = sqlx::query("SELECT * FROM products WHERE org_id = ? AND sku = ?")
+    let row = sqlx::query("SELECT * FROM products WHERE org_id = $1 AND sku = $2")
         .bind(uuid_str(org_id))
         .bind(sku)
         .fetch_one(pool)
@@ -450,7 +455,7 @@ pub async fn get_product_by_sku(
 }
 
 pub async fn get_product(pool: &AnyPool, id: Uuid) -> Result<Product, DbError> {
-    let row = sqlx::query("SELECT * FROM products WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM products WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -461,7 +466,7 @@ pub async fn get_product(pool: &AnyPool, id: Uuid) -> Result<Product, DbError> {
 /// Every product of an org, ordered by SKU. The back-office
 /// inventory browser builds on this (balances come from the ledger).
 pub async fn list_products_for_org(pool: &AnyPool, org_id: Uuid) -> Result<Vec<Product>, DbError> {
-    let rows = sqlx::query("SELECT * FROM products WHERE org_id = ? ORDER BY sku ASC")
+    let rows = sqlx::query("SELECT * FROM products WHERE org_id = $1 ORDER BY sku ASC")
         .bind(uuid_str(org_id))
         .fetch_all(pool)
         .await?;
@@ -472,7 +477,7 @@ pub async fn list_products_for_org(pool: &AnyPool, org_id: Uuid) -> Result<Vec<P
 
 pub async fn insert_color(pool: &AnyPool, color: &ColorCatalogEntry) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO color_catalog (id, org_id, manufacturer, color_code, color_name, collection, rgb_hex, recommended_base) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO color_catalog (id, org_id, manufacturer, color_code, color_name, collection, rgb_hex, recommended_base) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(uuid_str(color.id))
     .bind(uuid_str(color.org_id))
@@ -494,7 +499,7 @@ pub async fn get_color_by_code(
     color_code: &str,
 ) -> Result<ColorCatalogEntry, DbError> {
     let row = sqlx::query(
-        "SELECT * FROM color_catalog WHERE org_id = ? AND manufacturer = ? AND color_code = ?",
+        "SELECT * FROM color_catalog WHERE org_id = $1 AND manufacturer = $2 AND color_code = $3",
     )
     .bind(uuid_str(org_id))
     .bind(manufacturer)
@@ -507,7 +512,7 @@ pub async fn get_color_by_code(
 
 pub async fn insert_colorant(pool: &AnyPool, colorant: &Colorant) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO colorants (id, org_id, system_name, code, name, cost_per_fl_oz, shots_per_fl_oz) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO colorants (id, org_id, system_name, code, name, cost_per_fl_oz, shots_per_fl_oz) VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(uuid_str(colorant.id))
     .bind(uuid_str(colorant.org_id))
@@ -527,7 +532,7 @@ pub async fn list_colorants_for_system(
     system_name: &str,
 ) -> Result<Vec<Colorant>, DbError> {
     let rows = sqlx::query(
-        "SELECT * FROM colorants WHERE org_id = ? AND system_name = ? ORDER BY code ASC",
+        "SELECT * FROM colorants WHERE org_id = $1 AND system_name = $2 ORDER BY code ASC",
     )
     .bind(uuid_str(org_id))
     .bind(system_name)
@@ -548,7 +553,7 @@ pub async fn list_colorants_for_org(
     org_id: Uuid,
 ) -> Result<Vec<Colorant>, DbError> {
     let rows =
-        sqlx::query("SELECT * FROM colorants WHERE org_id = ? ORDER BY system_name ASC, code ASC")
+        sqlx::query("SELECT * FROM colorants WHERE org_id = $1 ORDER BY system_name ASC, code ASC")
             .bind(uuid_str(org_id))
             .fetch_all(pool)
             .await?;
@@ -559,7 +564,7 @@ pub async fn list_colorants_for_org(
 
 pub async fn insert_tint_formula(pool: &AnyPool, formula: &TintFormula) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO tint_formulas (id, org_id, store_id, customer_id, job_id, color_id, color_code_snapshot, color_name_snapshot, base_product_id, container_volume_ml, sheen, room_or_usage, is_custom_match, colorants_json, total_tint_cost, tint_surcharge, dispenser_name, external_formula_ref, dispensed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO tint_formulas (id, org_id, store_id, customer_id, job_id, color_id, color_code_snapshot, color_name_snapshot, base_product_id, container_volume_ml, sheen, room_or_usage, is_custom_match, colorants_json, total_tint_cost, tint_surcharge, dispenser_name, external_formula_ref, dispensed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)",
     )
     .bind(uuid_str(formula.id))
     .bind(uuid_str(formula.org_id))
@@ -589,11 +594,12 @@ pub async fn list_tint_formulas_for_customer(
     pool: &AnyPool,
     customer_id: Uuid,
 ) -> Result<Vec<TintFormula>, DbError> {
-    let rows =
-        sqlx::query("SELECT * FROM tint_formulas WHERE customer_id = ? ORDER BY dispensed_at DESC")
-            .bind(uuid_str(customer_id))
-            .fetch_all(pool)
-            .await?;
+    let rows = sqlx::query(
+        "SELECT * FROM tint_formulas WHERE customer_id = $1 ORDER BY dispensed_at DESC",
+    )
+    .bind(uuid_str(customer_id))
+    .fetch_all(pool)
+    .await?;
     rows.iter().map(tint_formula_from_row).collect()
 }
 
@@ -605,7 +611,7 @@ pub async fn list_tint_formulas_for_store(
     store_id: Uuid,
 ) -> Result<Vec<TintFormula>, DbError> {
     let rows =
-        sqlx::query("SELECT * FROM tint_formulas WHERE store_id = ? ORDER BY dispensed_at DESC")
+        sqlx::query("SELECT * FROM tint_formulas WHERE store_id = $1 ORDER BY dispensed_at DESC")
             .bind(uuid_str(store_id))
             .fetch_all(pool)
             .await?;
@@ -616,7 +622,7 @@ pub async fn list_tint_formulas_for_store(
 
 pub async fn insert_customer(pool: &AnyPool, customer: &Customer) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO customers (id, org_id, account_number, customer_type, company_name, first_name, last_name, email, phone, price_level_id, salesperson_id, tax_exempt_cert, tax_exempt_expires, charge_enabled, credit_limit, payment_terms, terms_days, finance_rate_pct_monthly, credit_hold, require_po_number, require_job_name, portal_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO customers (id, org_id, account_number, customer_type, company_name, first_name, last_name, email, phone, price_level_id, salesperson_id, tax_exempt_cert, tax_exempt_expires, charge_enabled, credit_limit, payment_terms, terms_days, finance_rate_pct_monthly, credit_hold, require_po_number, require_job_name, portal_enabled) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)",
     )
     .bind(uuid_str(customer.id))
     .bind(uuid_str(customer.org_id))
@@ -650,7 +656,7 @@ pub async fn get_customer_by_account(
     org_id: Uuid,
     account_number: &str,
 ) -> Result<Customer, DbError> {
-    let row = sqlx::query("SELECT * FROM customers WHERE org_id = ? AND account_number = ?")
+    let row = sqlx::query("SELECT * FROM customers WHERE org_id = $1 AND account_number = $2")
         .bind(uuid_str(org_id))
         .bind(account_number)
         .fetch_one(pool)
@@ -663,7 +669,7 @@ pub async fn list_customers_for_org(
     pool: &AnyPool,
     org_id: Uuid,
 ) -> Result<Vec<Customer>, DbError> {
-    let rows = sqlx::query("SELECT * FROM customers WHERE org_id = ? ORDER BY account_number ASC")
+    let rows = sqlx::query("SELECT * FROM customers WHERE org_id = $1 ORDER BY account_number ASC")
         .bind(uuid_str(org_id))
         .fetch_all(pool)
         .await?;
@@ -674,7 +680,7 @@ pub async fn list_customers_for_org(
 
 pub async fn insert_pricing_rule(pool: &AnyPool, rule: &PricingRuleRow) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO pricing_rules (id, org_id, priority, customer_id, job_id, price_level_id, product_id, product_line_id, class_id, department_id, vendor_id, min_qty, calc_method, calc_value, min_margin_floor, effective_from, effective_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO pricing_rules (id, org_id, priority, customer_id, job_id, price_level_id, product_id, product_line_id, class_id, department_id, vendor_id, min_qty, calc_method, calc_value, min_margin_floor, effective_from, effective_to) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
     )
     .bind(uuid_str(rule.id))
     .bind(uuid_str(rule.org_id))
@@ -702,7 +708,7 @@ pub async fn list_pricing_rules(
     pool: &AnyPool,
     org_id: Uuid,
 ) -> Result<Vec<PricingRuleRow>, DbError> {
-    let rows = sqlx::query("SELECT * FROM pricing_rules WHERE org_id = ? ORDER BY priority ASC")
+    let rows = sqlx::query("SELECT * FROM pricing_rules WHERE org_id = $1 ORDER BY priority ASC")
         .bind(uuid_str(org_id))
         .fetch_all(pool)
         .await?;
@@ -710,7 +716,7 @@ pub async fn list_pricing_rules(
 }
 
 pub async fn get_pricing_rule(pool: &AnyPool, id: Uuid) -> Result<PricingRuleRow, DbError> {
-    let row = sqlx::query("SELECT * FROM pricing_rules WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM pricing_rules WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -725,7 +731,7 @@ pub async fn get_pricing_rule(pool: &AnyPool, id: Uuid) -> Result<PricingRuleRow
 /// min-margin guardrail) before calling this.
 pub async fn update_pricing_rule(pool: &AnyPool, rule: &PricingRuleRow) -> Result<(), DbError> {
     sqlx::query(
-        "UPDATE pricing_rules SET calc_method = ?, calc_value = ?, min_margin_floor = ? WHERE id = ?",
+        "UPDATE pricing_rules SET calc_method = $1, calc_value = $2, min_margin_floor = $3 WHERE id = $4",
     )
     .bind(&rule.calc_method)
     .bind(dec_str(rule.calc_value))
@@ -740,7 +746,7 @@ pub async fn update_pricing_rule(pool: &AnyPool, rule: &PricingRuleRow) -> Resul
 
 pub async fn insert_ar_entry(pool: &AnyPool, entry: &ArLedgerEntry) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO ar_ledger (id, org_id, store_id, customer_id, job_id, entry_type, reference_type, reference_id, amount, due_date, statement_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO ar_ledger (id, org_id, store_id, customer_id, job_id, entry_type, reference_type, reference_id, amount, due_date, statement_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(uuid_str(entry.id))
     .bind(uuid_str(entry.org_id))
@@ -763,10 +769,11 @@ pub async fn list_ar_entries_for_customer(
     pool: &AnyPool,
     customer_id: Uuid,
 ) -> Result<Vec<ArLedgerEntry>, DbError> {
-    let rows = sqlx::query("SELECT * FROM ar_ledger WHERE customer_id = ? ORDER BY created_at ASC")
-        .bind(uuid_str(customer_id))
-        .fetch_all(pool)
-        .await?;
+    let rows =
+        sqlx::query("SELECT * FROM ar_ledger WHERE customer_id = $1 ORDER BY created_at ASC")
+            .bind(uuid_str(customer_id))
+            .fetch_all(pool)
+            .await?;
     rows.iter().map(ar_entry_from_row).collect()
 }
 
@@ -790,7 +797,7 @@ pub async fn list_ar_entries_for_store(
     pool: &AnyPool,
     store_id: Uuid,
 ) -> Result<Vec<ArLedgerEntry>, DbError> {
-    let rows = sqlx::query("SELECT * FROM ar_ledger WHERE store_id = ? ORDER BY created_at ASC")
+    let rows = sqlx::query("SELECT * FROM ar_ledger WHERE store_id = $1 ORDER BY created_at ASC")
         .bind(uuid_str(store_id))
         .fetch_all(pool)
         .await?;

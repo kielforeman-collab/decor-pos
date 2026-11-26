@@ -180,7 +180,7 @@ fn cash_sale_for(customer_id: Uuid) -> SaleInput {
 /// real checkout; only the clock is adjusted for the test.
 async fn backdate_sale(edge: &Edge, transaction_id: Uuid, days_ago: i64) {
     let at = Utc::now() - TimeDelta::days(days_ago);
-    sqlx::query("UPDATE transactions SET created_at = ? WHERE id = ?")
+    sqlx::query("UPDATE transactions SET created_at = $1 WHERE id = $2")
         .bind(at.to_rfc3339())
         .bind(transaction_id.to_string())
         .execute(edge.pool())

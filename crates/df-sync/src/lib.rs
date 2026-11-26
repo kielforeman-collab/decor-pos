@@ -17,15 +17,21 @@
 //!   newest-`updated_at`-wins with the loser kept for audit.
 //!
 //! [`MemoryHq`] is the in-memory HQ used by tests and by the edge
-//! daemon's local sync endpoint; a real PostgreSQL HQ sink replaces it
-//! in a later phase. No floating-point money anywhere: ledger deltas
-//! are `rust_decimal::Decimal`.
+//! daemon's local sync endpoint; [`DbHq`](crate::db::DbHq) is the
+//! DB-backed HQ behind the live ingest endpoint, and
+//! [`RemoteHq`](crate::remote::RemoteHq) pushes batches to it over
+//! HTTPS. No floating-point money anywhere: ledger deltas are
+//! `rust_decimal::Decimal`.
 
+pub mod db;
 pub mod error;
 pub mod outbox;
+pub mod remote;
 pub mod resolve;
 pub mod sink;
 
+pub use db::DbHq;
 pub use error::SyncError;
 pub use outbox::{DeltaBatch, Outbox, OutboxEntry, SyncState};
+pub use remote::RemoteHq;
 pub use sink::{ApplyReport, HqSink, MemoryHq};

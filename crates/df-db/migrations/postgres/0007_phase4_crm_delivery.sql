@@ -3,7 +3,7 @@
 -- delivery_logistics, §7 Phase 4; domain crates df-crm /
 -- df-delivery, repos in df-db::{delivery, crm_reports}).
 -- Same tables as migrations/sqlite/0007_phase4_crm_delivery.sql,
--- adapted for PostgreSQL: UUID, TIMESTAMPTZ, TEXT. No f32/f64
+-- adapted for PostgreSQL: TEXT encoding for ids/money/timestamps. No f32/f64
 -- anywhere. No PAN/CVV anywhere.
 --   Adds only what 0006 did not have: the delivery status-change
 --   audit trail (`delivery_events`), persisted packing slips
@@ -13,27 +13,27 @@
 --   of Phase 4.
 
 CREATE TABLE delivery_events (
-    id                  UUID PRIMARY KEY,
-    delivery_id         UUID NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
+    id                  TEXT PRIMARY KEY,
+    delivery_id         TEXT NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
     from_status         TEXT NOT NULL,
     to_status           TEXT NOT NULL,
-    actor_user_id       UUID NOT NULL REFERENCES users(id),
+    actor_user_id       TEXT NOT NULL REFERENCES users(id),
     note                TEXT,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at          TEXT NOT NULL
 );
 
 CREATE INDEX idx_delivery_events_delivery ON delivery_events (delivery_id, created_at);
 
 CREATE TABLE packing_slips (
-    id                  UUID PRIMARY KEY,
-    delivery_id         UUID NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
+    id                  TEXT PRIMARY KEY,
+    delivery_id         TEXT NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
     rendered_text       TEXT NOT NULL,
     rendered_zpl        TEXT NOT NULL,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at          TEXT NOT NULL
 );
 
 CREATE INDEX idx_packing_slips_delivery ON packing_slips (delivery_id);
 
 ALTER TABLE deliveries ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE deliveries ADD COLUMN vehicle TEXT;
-ALTER TABLE delivery_pods ADD COLUMN photo_at TIMESTAMPTZ;
+ALTER TABLE delivery_pods ADD COLUMN photo_at TEXT;

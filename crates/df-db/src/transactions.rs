@@ -75,7 +75,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO transactions (id, org_id, store_id, till_session_id, doc_number, doc_type, status, customer_id, job_id, po_number, salesperson_id, cashier_id, currency, subtotal, tax_total, eco_fee_total, pos_fee_total, grand_total, deposit_paid, fulfillment_mode, scheduled_at, completed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO transactions (id, org_id, store_id, till_session_id, doc_number, doc_type, status, customer_id, job_id, po_number, salesperson_id, cashier_id, currency, subtotal, tax_total, eco_fee_total, pos_fee_total, grand_total, deposit_paid, fulfillment_mode, scheduled_at, completed_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)",
     )
     .bind(uuid_str(tx.id))
     .bind(uuid_str(tx.org_id))
@@ -106,7 +106,7 @@ where
 }
 
 pub async fn get_transaction(pool: &AnyPool, id: Uuid) -> Result<Transaction, DbError> {
-    let row = sqlx::query("SELECT * FROM transactions WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM transactions WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -114,21 +114,42 @@ pub async fn get_transaction(pool: &AnyPool, id: Uuid) -> Result<Transaction, Db
     transaction_from_row(&row)
 }
 
+/// Executor-generic `get_transaction`, for the sync sink: the ingest
+/// endpoint checks the stored row inside the apply transaction before
+/// deciding insert / replay / conflict (see `df-sync::db::DbHq`).
+pub async fn get_transaction_exec<'e, E>(
+    executor: E,
+    id: Uuid,
+) -> Result<Option<Transaction>, DbError>
+where
+    E: Executor<'e, Database = sqlx::Any>,
+{
+    let row = sqlx::query("SELECT * FROM transactions WHERE id = $1")
+        .bind(uuid_str(id))
+        .fetch_optional(executor)
+        .await?;
+    match row {
+        None => Ok(None),
+        Some(row) => Ok(Some(transaction_from_row(&row)?)),
+    }
+}
+
 pub async fn list_transactions_for_till(
     pool: &AnyPool,
     till_session_id: Uuid,
 ) -> Result<Vec<Transaction>, DbError> {
-    let rows =
-        sqlx::query("SELECT * FROM transactions WHERE till_session_id = ? ORDER BY created_at ASC")
-            .bind(uuid_str(till_session_id))
-            .fetch_all(pool)
-            .await?;
+    let rows = sqlx::query(
+        "SELECT * FROM transactions WHERE till_session_id = $1 ORDER BY created_at ASC",
+    )
+    .bind(uuid_str(till_session_id))
+    .fetch_all(pool)
+    .await?;
     rows.iter().map(transaction_from_row).collect()
 }
 
 /// Count of transactions for a store (used for sequential doc numbers).
 pub async fn count_transactions_for_store(pool: &AnyPool, store_id: Uuid) -> Result<i64, DbError> {
-    let row = sqlx::query("SELECT COUNT(*) AS n FROM transactions WHERE store_id = ?")
+    let row = sqlx::query("SELECT COUNT(*) AS n FROM transactions WHERE store_id = $1")
         .bind(uuid_str(store_id))
         .fetch_one(pool)
         .await?;
@@ -142,10 +163,11 @@ pub async fn list_transactions_for_store(
     pool: &AnyPool,
     store_id: Uuid,
 ) -> Result<Vec<Transaction>, DbError> {
-    let rows = sqlx::query("SELECT * FROM transactions WHERE store_id = ? ORDER BY created_at ASC")
-        .bind(uuid_str(store_id))
-        .fetch_all(pool)
-        .await?;
+    let rows =
+        sqlx::query("SELECT * FROM transactions WHERE store_id = $1 ORDER BY created_at ASC")
+            .bind(uuid_str(store_id))
+            .fetch_all(pool)
+            .await?;
     rows.iter().map(transaction_from_row).collect()
 }
 
@@ -154,7 +176,7 @@ pub async fn list_transactions_for_customer(
     customer_id: Uuid,
 ) -> Result<Vec<Transaction>, DbError> {
     let rows =
-        sqlx::query("SELECT * FROM transactions WHERE customer_id = ? ORDER BY created_at DESC")
+        sqlx::query("SELECT * FROM transactions WHERE customer_id = $1 ORDER BY created_at DESC")
             .bind(uuid_str(customer_id))
             .fetch_all(pool)
             .await?;
@@ -162,7 +184,7 @@ pub async fn list_transactions_for_customer(
 }
 
 pub async fn set_transaction_status(pool: &AnyPool, id: Uuid, status: &str) -> Result<(), DbError> {
-    sqlx::query("UPDATE transactions SET status = ? WHERE id = ?")
+    sqlx::query("UPDATE transactions SET status = $1 WHERE id = $2")
         .bind(status)
         .bind(uuid_str(id))
         .execute(pool)
@@ -180,7 +202,7 @@ pub async fn complete_transaction<'e, E>(
 where
     E: sqlx::Executor<'e, Database = sqlx::Any>,
 {
-    sqlx::query("UPDATE transactions SET status = 'completed', completed_at = ? WHERE id = ?")
+    sqlx::query("UPDATE transactions SET status = 'completed', completed_at = $1 WHERE id = $2")
         .bind(dt_str(completed_at))
         .bind(uuid_str(id))
         .execute(executor)
@@ -198,7 +220,7 @@ pub async fn set_transaction_line_fulfilled<'e, E>(
 where
     E: sqlx::Executor<'e, Database = sqlx::Any>,
 {
-    sqlx::query("UPDATE transaction_lines SET fulfilled_qty = ? WHERE id = ?")
+    sqlx::query("UPDATE transaction_lines SET fulfilled_qty = $1 WHERE id = $2")
         .bind(dec_str(fulfilled_qty))
         .bind(uuid_str(line_id))
         .execute(executor)
@@ -214,7 +236,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO transaction_lines (id, transaction_id, line_no, product_id, description, qty, uom_code, unit_price, base_unit_cost, tint_unit_cost, discount_amount, tax_amount, eco_fee_amount, line_total, tint_formula_id, prompts_json, vertical_spec_json, linked_po_line_id, fulfilled_qty) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO transaction_lines (id, transaction_id, line_no, product_id, description, qty, uom_code, unit_price, base_unit_cost, tint_unit_cost, discount_amount, tax_amount, eco_fee_amount, line_total, tint_formula_id, prompts_json, vertical_spec_json, linked_po_line_id, fulfilled_qty) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)",
     )
     .bind(uuid_str(line.id))
     .bind(uuid_str(line.transaction_id))
@@ -245,7 +267,7 @@ pub async fn list_transaction_lines(
     transaction_id: Uuid,
 ) -> Result<Vec<TransactionLine>, DbError> {
     let rows = sqlx::query(
-        "SELECT * FROM transaction_lines WHERE transaction_id = ? ORDER BY line_no ASC",
+        "SELECT * FROM transaction_lines WHERE transaction_id = $1 ORDER BY line_no ASC",
     )
     .bind(uuid_str(transaction_id))
     .fetch_all(pool)
@@ -260,7 +282,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO ar_ledger (id, org_id, store_id, customer_id, job_id, entry_type, reference_type, reference_id, amount, due_date, statement_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO ar_ledger (id, org_id, store_id, customer_id, job_id, entry_type, reference_type, reference_id, amount, due_date, statement_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(uuid_str(entry.id))
     .bind(uuid_str(entry.org_id))

@@ -2,7 +2,8 @@
 //!
 //! These live in `df-edi`, not in `df-db`: they operate on the
 //! `df-db`-owned [`df_db::AnyPool`] type and follow the `df-db`
-//! conventions — `?` placeholders (rewritten to `$N` for PostgreSQL),
+//! conventions — `$N` placeholders (sqlx's `Any` driver does NOT
+//! rewrite `?`; a literal `?` syntax-errors on PostgreSQL),
 //! ids / money / timestamps crossing the driver as text (UUID as
 //! hyphenated text, money as an exact decimal string, timestamps as
 //! RFC 3339). No `query!` macros, so the workspace builds with
@@ -190,7 +191,7 @@ fn i32_col(row: &AnyRow, name: &str) -> Result<i32, EdiError> {
 /// Insert a purchase order header plus all of its lines.
 pub async fn insert_purchase_order(pool: &AnyPool, po: &PurchaseOrder) -> Result<(), EdiError> {
     sqlx::query(
-        "INSERT INTO purchase_orders (id, po_number, vendor_id, store_id, status, total, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO purchase_orders (id, po_number, vendor_id, store_id, status, total, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(uuid_str(po.id))
     .bind(&po.po_number)
@@ -213,7 +214,7 @@ async fn insert_purchase_order_line(
     line: &PurchaseOrderLine,
 ) -> Result<(), EdiError> {
     sqlx::query(
-        "INSERT INTO purchase_order_lines (id, po_id, product_id, line_no, vendor_sku, description, qty, uom, unit_cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO purchase_order_lines (id, po_id, product_id, line_no, vendor_sku, description, qty, uom, unit_cost) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(uuid_str(Uuid::now_v7()))
     .bind(uuid_str(po_id))
@@ -259,7 +260,7 @@ fn purchase_order_from_rows(
 
 /// Fetch a purchase order by id, with its lines in order.
 pub async fn get_purchase_order(pool: &AnyPool, id: Uuid) -> Result<PurchaseOrder, EdiError> {
-    let header = sqlx::query("SELECT * FROM purchase_orders WHERE id = ?")
+    let header = sqlx::query("SELECT * FROM purchase_orders WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -268,7 +269,7 @@ pub async fn get_purchase_order(pool: &AnyPool, id: Uuid) -> Result<PurchaseOrde
             other => EdiError::Sqlx(other),
         })?;
     let line_rows =
-        sqlx::query("SELECT * FROM purchase_order_lines WHERE po_id = ? ORDER BY line_no ASC")
+        sqlx::query("SELECT * FROM purchase_order_lines WHERE po_id = $1 ORDER BY line_no ASC")
             .bind(uuid_str(id))
             .fetch_all(pool)
             .await?;
@@ -281,7 +282,7 @@ pub async fn list_purchase_orders_for_vendor(
     vendor_id: &str,
 ) -> Result<Vec<PurchaseOrder>, EdiError> {
     let headers =
-        sqlx::query("SELECT * FROM purchase_orders WHERE vendor_id = ? ORDER BY created_at DESC")
+        sqlx::query("SELECT * FROM purchase_orders WHERE vendor_id = $1 ORDER BY created_at DESC")
             .bind(vendor_id)
             .fetch_all(pool)
             .await?;
@@ -289,7 +290,7 @@ pub async fn list_purchase_orders_for_vendor(
     for header in &headers {
         let id = uuid_col(header, "id")?;
         let line_rows =
-            sqlx::query("SELECT * FROM purchase_order_lines WHERE po_id = ? ORDER BY line_no ASC")
+            sqlx::query("SELECT * FROM purchase_order_lines WHERE po_id = $1 ORDER BY line_no ASC")
                 .bind(uuid_str(id))
                 .fetch_all(pool)
                 .await?;
@@ -301,7 +302,7 @@ pub async fn list_purchase_orders_for_vendor(
 /// Insert one EDI document row (raw text + parsed JSON).
 pub async fn insert_edi_document(pool: &AnyPool, doc: &EdiDocument) -> Result<(), EdiError> {
     sqlx::query(
-        "INSERT INTO edi_documents (id, doc_type, direction, vendor_id, related_po_id, raw_text, parsed_json, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO edi_documents (id, doc_type, direction, vendor_id, related_po_id, raw_text, parsed_json, received_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(uuid_str(doc.id))
     .bind(doc.doc_type.as_str())
@@ -331,7 +332,7 @@ fn edi_document_from_row(row: &AnyRow) -> Result<EdiDocument, EdiError> {
 
 /// Fetch one EDI document by id.
 pub async fn get_edi_document(pool: &AnyPool, id: Uuid) -> Result<EdiDocument, EdiError> {
-    let row = sqlx::query("SELECT * FROM edi_documents WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM edi_documents WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -348,7 +349,7 @@ pub async fn list_edi_documents_for_po(
     po_id: Uuid,
 ) -> Result<Vec<EdiDocument>, EdiError> {
     let rows = sqlx::query(
-        "SELECT * FROM edi_documents WHERE related_po_id = ? ORDER BY received_at DESC",
+        "SELECT * FROM edi_documents WHERE related_po_id = $1 ORDER BY received_at DESC",
     )
     .bind(uuid_str(po_id))
     .fetch_all(pool)
@@ -431,7 +432,7 @@ pub async fn insert_po_acknowledgment(
 ) -> Result<Uuid, EdiError> {
     let id = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO po_acknowledgments (id, po_id, po_number, ack_date, received_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO po_acknowledgments (id, po_id, po_number, ack_date, received_at) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(uuid_str(id))
     .bind(uuid_str(po_id))
@@ -442,7 +443,7 @@ pub async fn insert_po_acknowledgment(
     .await?;
     for line in &ack.lines {
         sqlx::query(
-            "INSERT INTO po_acknowledgment_lines (id, ack_id, line_no, vendor_sku, ack_code, qty_acknowledged, uom, unit_cost, promised_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO po_acknowledgment_lines (id, ack_id, line_no, vendor_sku, ack_code, qty_acknowledged, uom, unit_cost, promised_date) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(uuid_str(Uuid::now_v7()))
         .bind(uuid_str(id))
@@ -461,7 +462,7 @@ pub async fn insert_po_acknowledgment(
 
 async fn po_acknowledgment_lines(pool: &AnyPool, ack_id: Uuid) -> Result<Vec<AckLine>, EdiError> {
     let rows =
-        sqlx::query("SELECT * FROM po_acknowledgment_lines WHERE ack_id = ? ORDER BY line_no ASC")
+        sqlx::query("SELECT * FROM po_acknowledgment_lines WHERE ack_id = $1 ORDER BY line_no ASC")
             .bind(uuid_str(ack_id))
             .fetch_all(pool)
             .await?;
@@ -502,7 +503,7 @@ pub async fn get_po_acknowledgment(
     pool: &AnyPool,
     id: Uuid,
 ) -> Result<PoAcknowledgmentRow, EdiError> {
-    let header = sqlx::query("SELECT * FROM po_acknowledgments WHERE id = ?")
+    let header = sqlx::query("SELECT * FROM po_acknowledgments WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -522,7 +523,7 @@ pub async fn list_po_acknowledgments_for_po(
     po_id: Uuid,
 ) -> Result<Vec<PoAcknowledgmentRow>, EdiError> {
     let headers =
-        sqlx::query("SELECT * FROM po_acknowledgments WHERE po_id = ? ORDER BY received_at DESC")
+        sqlx::query("SELECT * FROM po_acknowledgments WHERE po_id = $1 ORDER BY received_at DESC")
             .bind(uuid_str(po_id))
             .fetch_all(pool)
             .await?;
@@ -551,7 +552,7 @@ pub async fn insert_invoice_match_report(
     report: &InvoiceMatchReport,
 ) -> Result<(), EdiError> {
     sqlx::query(
-        "INSERT INTO invoice_match_reports (id, po_id, po_number, invoice_number, shipment_id, status, po_total, invoiced_total, total_variance, stated_total_difference, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO invoice_match_reports (id, po_id, po_number, invoice_number, shipment_id, status, po_total, invoiced_total, total_variance, stated_total_difference, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(uuid_str(report.id))
     .bind(uuid_str(po_id))
@@ -568,7 +569,7 @@ pub async fn insert_invoice_match_report(
     .await?;
     for line in &report.lines {
         sqlx::query(
-            "INSERT INTO invoice_match_lines (id, match_id, po_line_no, vendor_sku, po_qty, received_qty, invoiced_qty, po_unit_cost, invoiced_unit_price, qty_variance, price_variance_per_unit, qty_variance_amount, price_variance_amount, total_variance_amount, status, variance_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO invoice_match_lines (id, match_id, po_line_no, vendor_sku, po_qty, received_qty, invoiced_qty, po_unit_cost, invoiced_unit_price, qty_variance, price_variance_per_unit, qty_variance_amount, price_variance_amount, total_variance_amount, status, variance_kind) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
         )
         .bind(uuid_str(Uuid::now_v7()))
         .bind(uuid_str(report.id))
@@ -595,11 +596,12 @@ pub async fn insert_invoice_match_report(
 async fn invoice_match_lines(pool: &AnyPool, match_id: Uuid) -> Result<Vec<MatchLine>, EdiError> {
     // Lines carry no sequence column; order by SKU for a stable
     // read-back (callers match lines by SKU, not position).
-    let rows =
-        sqlx::query("SELECT * FROM invoice_match_lines WHERE match_id = ? ORDER BY vendor_sku ASC")
-            .bind(uuid_str(match_id))
-            .fetch_all(pool)
-            .await?;
+    let rows = sqlx::query(
+        "SELECT * FROM invoice_match_lines WHERE match_id = $1 ORDER BY vendor_sku ASC",
+    )
+    .bind(uuid_str(match_id))
+    .fetch_all(pool)
+    .await?;
     let mut lines = Vec::new();
     for row in &rows {
         lines.push(MatchLine {
@@ -650,7 +652,7 @@ pub async fn get_invoice_match_report(
     pool: &AnyPool,
     id: Uuid,
 ) -> Result<InvoiceMatchReportRow, EdiError> {
-    let header = sqlx::query("SELECT * FROM invoice_match_reports WHERE id = ?")
+    let header = sqlx::query("SELECT * FROM invoice_match_reports WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -669,11 +671,12 @@ pub async fn list_invoice_match_reports_for_po(
     pool: &AnyPool,
     po_id: Uuid,
 ) -> Result<Vec<InvoiceMatchReportRow>, EdiError> {
-    let headers =
-        sqlx::query("SELECT * FROM invoice_match_reports WHERE po_id = ? ORDER BY created_at DESC")
-            .bind(uuid_str(po_id))
-            .fetch_all(pool)
-            .await?;
+    let headers = sqlx::query(
+        "SELECT * FROM invoice_match_reports WHERE po_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(uuid_str(po_id))
+    .fetch_all(pool)
+    .await?;
     let mut out = Vec::new();
     for header in &headers {
         let id = uuid_col(header, "id")?;
@@ -701,7 +704,7 @@ pub async fn insert_price_catalog_application(
     applied_at: Option<DateTime<Utc>>,
 ) -> Result<(), EdiError> {
     sqlx::query(
-        "INSERT INTO price_catalog_applications (id, vendor_id, catalog_id, catalog_date, status, reviewed_by, applied_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO price_catalog_applications (id, vendor_id, catalog_id, catalog_date, status, reviewed_by, applied_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(uuid_str(application.id))
     .bind(&application.vendor_id)
@@ -715,7 +718,7 @@ pub async fn insert_price_catalog_application(
     .await?;
     for line in &application.lines {
         sqlx::query(
-            "INSERT INTO price_catalog_lines (id, application_id, vendor_sku, action, old_cost, old_list_price, new_cost, new_list_price, result, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO price_catalog_lines (id, application_id, vendor_sku, action, old_cost, old_list_price, new_cost, new_list_price, result, note) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(uuid_str(Uuid::now_v7()))
         .bind(uuid_str(application.id))
@@ -740,7 +743,7 @@ async fn price_catalog_lines(
     // Lines carry no sequence column; order by SKU for a stable
     // read-back (callers match lines by SKU, not position).
     let rows = sqlx::query(
-        "SELECT * FROM price_catalog_lines WHERE application_id = ? ORDER BY vendor_sku ASC",
+        "SELECT * FROM price_catalog_lines WHERE application_id = $1 ORDER BY vendor_sku ASC",
     )
     .bind(uuid_str(application_id))
     .fetch_all(pool)
@@ -785,7 +788,7 @@ pub async fn get_price_catalog_application(
     pool: &AnyPool,
     id: Uuid,
 ) -> Result<PriceCatalogApplicationRow, EdiError> {
-    let header = sqlx::query("SELECT * FROM price_catalog_applications WHERE id = ?")
+    let header = sqlx::query("SELECT * FROM price_catalog_applications WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -823,7 +826,7 @@ pub async fn insert_transport_record(
     record: &TransportRecord,
 ) -> Result<(), EdiError> {
     sqlx::query(
-        "INSERT INTO edi_transport_records (id, vendor_id, direction, transport, file_name, doc_type, status, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO edi_transport_records (id, vendor_id, direction, transport, file_name, doc_type, status, error, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(uuid_str(record.id))
     .bind(&record.vendor_id)
@@ -862,7 +865,7 @@ pub async fn list_transport_records_for_vendor(
     vendor_id: &str,
 ) -> Result<Vec<TransportRecord>, EdiError> {
     let rows = sqlx::query(
-        "SELECT * FROM edi_transport_records WHERE vendor_id = ? ORDER BY created_at DESC",
+        "SELECT * FROM edi_transport_records WHERE vendor_id = $1 ORDER BY created_at DESC",
     )
     .bind(vendor_id)
     .fetch_all(pool)

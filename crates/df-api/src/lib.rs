@@ -17,9 +17,9 @@
 //! (list, set level/threshold), and reports (daily usage, low
 //! stock, shortage alerts). The same repos run over `AnyPool`, so
 //! these handlers work against SQLite (edge/dev) and PostgreSQL
-//! (HQ) alike — but the **live-Postgres round-trip is still
-//! unverified** (no PG 16+ in this VM), so treat the HQ path as
-//! compile-checked, not tested.
+//! (HQ) alike — the live-Postgres round-trip is covered by
+//! `df-db/tests/pg_repos.rs` and `df-sync/tests/db_hq.rs` (Phase 8)
+//! plus `df-server/tests/postgres_hq_round_trip.rs`.
 //!
 //! Phase 4 (v0.5) HQ reads (spec §6.1/§7) on the same pattern:
 //! `GET /api/v1/crm/activities`, `GET /api/v1/crm/appointments`,
@@ -56,6 +56,7 @@ use df_db::InventoryBalance;
 use df_db::models::{ColorCatalogEntry, ColorantLevelRow, TintFormula};
 use df_domain::Currency;
 use df_domain::ar::{ArEntry, aging_totals};
+use df_sync::{ApplyReport, DeltaBatch, HqSink};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use utoipa::OpenApi;
@@ -78,7 +79,7 @@ pub struct ApiState {
 impl Default for ApiState {
     fn default() -> Self {
         Self {
-            version: "1.1.0",
+            version: "1.2.0",
             pool: None,
             org_id: None,
             store_id: None,
@@ -334,6 +335,65 @@ pub async fn health() -> Json<HealthResponse> {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
+}
+
+// --- Phase 8 sync ingest (spec §5.5/§7) -----------------------------------
+// `POST /api/v1/sync/ingest`: an edge pushes one `DeltaBatch` of
+// outbox entries; the DB-backed sink (`df_sync::DbHq`) applies them
+// to this HQ pool in one transaction and answers with the same
+// `ApplyReport` the in-process sinks return (applied / duplicates /
+// conflicts / applied_ids), so the edge marks exactly the ids HQ
+// resolved as synced.
+//
+// AUTH DECISION (Phase 8, recorded here — the coordinator carries it
+// into `docs/auth.md` §6): a staff session `Bearer dfp_...` token
+// whose role holds `Permission::SyncIngest` (Manager and Admin
+// only). NOT a separate store service token. Rationale:
+//   * No new credential type, storage, issuance CLI or rotation
+//     story: sessions already exist (Phase 7), are SHA-256-hashed
+//     at rest, expire after 8h, and revoke via logout /
+//     `df-server users revoke-sessions`.
+//   * The existing gate middleware enforces it (`AuthRule::AnyOf`),
+//     answering 401 for a missing/invalid/expired token and 403
+//     for a valid token with the wrong role — no bespoke auth code.
+//   * The blast radius is bounded: only Manager/Admin can push
+//     deltas, and the sink itself is idempotent, so a replayed or
+//     intercepted batch cannot double-post money.
+//   * Operational cost: the edge daemon needs a Manager/Admin
+//     session token (8h TTL — re-login / re-issue on expiry). A
+//     long-lived service token would remove that chore but add a
+//     new secret to manage and rotate; if the edge fleet grows,
+//     revisit with a dedicated service-token table then.
+// A PortalContractor session is never accepted here (portal users
+// hold no staff permissions).
+//
+// IDEMPOTENCY: enforced at the DB layer, not by trusting the
+// caller — `sync_applied_entries.entry_id` is the PRIMARY KEY, so
+// replaying the same entry UUIDs is a no-op (duplicates, nothing
+// re-inserted, no money double-counted); see `df_sync::db::DbHq`.
+// A batch whose store does not exist on HQ fails whole with 400
+// (the store must be seeded on HQ before the first sync); unknown
+// aggregate types are recorded applied and ignored. A conflicting
+// transaction re-send is counted in `conflicts`, recorded in
+// `sync_conflicts`, and NOT in `applied_ids`, so the edge leaves it
+// pending for an operator.
+//
+// Not in the utoipa path list: `DeltaBatch` / `ApplyReport` carry
+// `Uuid` / `DateTime` fields, which do not implement `ToSchema`.
+pub async fn sync_ingest(
+    State(state): State<ApiState>,
+    Extension(_auth): Extension<AuthSession>,
+    Json(batch): Json<DeltaBatch>,
+) -> Result<Json<ApplyReport>, (StatusCode, Json<ErrorResponse>)> {
+    let pool = pool(&state)?;
+    df_sync::DbHq::new(pool)
+        .apply_batch(&batch)
+        .await
+        .map(Json)
+        .map_err(|e| match e {
+            df_sync::SyncError::InvalidPayload(message) => err(StatusCode::BAD_REQUEST, message),
+            other => err(StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })
 }
 
 /// The configured pool for an auth handler, or a 503 in the auth
@@ -1060,6 +1120,7 @@ pub fn create_router(state: ApiState) -> Router {
     let reports_gate = gate(AuthRule::AnyOf(vec![Permission::ReportView]));
     let ar_view_gate = gate(AuthRule::AnyOf(vec![Permission::ArView]));
     let customer_gate = gate(AuthRule::AnyOf(vec![Permission::CustomerManage]));
+    let sync_ingest_gate = gate(AuthRule::AnyOf(vec![Permission::SyncIngest]));
 
     // Public by design: health, the OpenAPI document (shapes only —
     // no data rows), and the login endpoints (how a session is
@@ -1110,6 +1171,10 @@ pub fn create_router(state: ApiState) -> Router {
         .route("/api/v1/crm/appointments", get(crm_appointments))
         .route_layer(customer_gate);
 
+    let sync_routes = Router::new()
+        .route("/api/v1/sync/ingest", post(sync_ingest))
+        .route_layer(sync_ingest_gate);
+
     Router::new()
         .merge(public)
         .merge(logout_routes)
@@ -1118,6 +1183,7 @@ pub fn create_router(state: ApiState) -> Router {
         .merge(report_routes)
         .merge(ar_routes)
         .merge(crm_routes)
+        .merge(sync_routes)
         .with_state(state)
 }
 
@@ -1248,7 +1314,7 @@ mod tests {
         let users = df_auth_http::test_support::seed_test_users(&pool, org_id).await;
         (
             ApiState {
-                version: "1.1.0",
+                version: "1.2.0",
                 pool: Some(pool),
                 org_id: Some(org_id),
                 store_id: Some(store_id),
@@ -1319,7 +1385,7 @@ mod tests {
             .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["status"], "ok");
-        assert_eq!(value["version"], "1.1.0");
+        assert_eq!(value["version"], "1.2.0");
     }
 
     #[tokio::test]
@@ -1763,5 +1829,180 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(body["colorants"].as_array().unwrap().is_empty());
+    }
+
+    fn sync_sale_delta_batch(
+        store_id: Uuid,
+        customer_id: Uuid,
+        tx_id: Uuid,
+    ) -> df_sync::DeltaBatch {
+        use df_sync::{DeltaBatch, OutboxEntry};
+        DeltaBatch::new(
+            store_id,
+            vec![
+                OutboxEntry::new(
+                    store_id,
+                    "transaction",
+                    tx_id,
+                    serde_json::json!({
+                        "id": tx_id.to_string(),
+                        "doc_number": "TX-000001",
+                        "doc_type": "sale",
+                        "status": "completed",
+                        "customer_id": customer_id.to_string(),
+                        "subtotal": "200.0000",
+                        "tax_total": "16.1088",
+                        "eco_fee_total": "0.0000",
+                        "pos_fee_total": "0.0000",
+                        "grand_total": "216.1088"
+                    }),
+                ),
+                OutboxEntry::new(
+                    store_id,
+                    "inventory_ledger",
+                    Uuid::now_v7(),
+                    serde_json::json!({
+                        "product_id": Uuid::from_u128(0x3000).to_string(),
+                        "delta_on_hand": "-2",
+                        "delta_committed": "0",
+                        "delta_on_order": "0",
+                        "delta_in_transit": "0",
+                        "unit_cost": "50.0000",
+                        "lot_number": null,
+                        "reason_type": "sale",
+                        "reference_id": tx_id.to_string(),
+                        "created_at": Utc::now().to_rfc3339()
+                    }),
+                ),
+                OutboxEntry::new(
+                    store_id,
+                    "ar_ledger",
+                    Uuid::now_v7(),
+                    serde_json::json!({
+                        "customer_id": customer_id.to_string(),
+                        "amount": "216.1088",
+                        "entry_type": "charge",
+                        "reference_type": "transaction",
+                        "reference_id": tx_id.to_string(),
+                        "due_date": "2026-12-26",
+                        "created_at": Utc::now().to_rfc3339()
+                    }),
+                ),
+            ],
+        )
+    }
+
+    fn sync_sale_batch(store_id: Uuid, customer_id: Uuid, tx_id: Uuid) -> serde_json::Value {
+        serde_json::to_value(sync_sale_delta_batch(store_id, customer_id, tx_id)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn sync_ingest_applies_sale_and_replay_is_noop() {
+        let (state, users) = seeded_state().await;
+        let store_id = Uuid::from_u128(0x1000);
+        let router = create_router(state);
+        let tx_id = Uuid::now_v7();
+        let batch = sync_sale_batch(store_id, users.customer_a, tx_id);
+        let (status, body) = post_json(
+            router.clone(),
+            "/api/v1/sync/ingest",
+            batch.clone(),
+            Some(&users.manager.token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["applied"], 3);
+        assert_eq!(body["duplicates"], 0);
+        assert_eq!(body["conflicts"], 0);
+        assert_eq!(body["applied_ids"].as_array().unwrap().len(), 3);
+
+        // Replay: the same entry UUIDs are a no-op.
+        let (status, body) = post_json(
+            router.clone(),
+            "/api/v1/sync/ingest",
+            batch,
+            Some(&users.manager.token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["applied"], 0);
+        assert_eq!(body["duplicates"], 3);
+        assert_eq!(body["conflicts"], 0);
+    }
+
+    #[tokio::test]
+    async fn sync_ingest_auth() {
+        let (state, users) = seeded_state().await;
+        let router = create_router(state);
+        let empty = serde_json::json!({
+            "batch_id": Uuid::now_v7().to_string(),
+            "store_id": Uuid::from_u128(0x1000).to_string(),
+            "entries": []
+        });
+        // No token -> 401.
+        let (status, _) =
+            post_json(router.clone(), "/api/v1/sync/ingest", empty.clone(), None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        // Cashier -> 403 (SyncIngest is Manager/Admin only).
+        let (status, _) = post_json(
+            router.clone(),
+            "/api/v1/sync/ingest",
+            empty.clone(),
+            Some(&users.cashier.token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // Portal contractor -> 403 (no staff permissions at all).
+        let (status, _) = post_json(
+            router.clone(),
+            "/api/v1/sync/ingest",
+            empty.clone(),
+            Some(&users.contractor_a.token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // Manager -> 200 on an empty batch.
+        let (status, body) = post_json(
+            router.clone(),
+            "/api/v1/sync/ingest",
+            empty.clone(),
+            Some(&users.manager.token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["applied"], 0);
+        // Admin -> 200 too.
+        let (status, body) = post_json(
+            router,
+            "/api/v1/sync/ingest",
+            empty,
+            Some(&users.admin.token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    #[tokio::test]
+    async fn sync_ingest_remote_hq_end_to_end() {
+        use df_sync::{HqSink, RemoteHq};
+        let (state, users) = seeded_state().await;
+        let store_id = Uuid::from_u128(0x1000);
+        let router = create_router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let remote = RemoteHq::new(format!("http://{addr}"), users.manager.token.clone());
+        let batch = sync_sale_delta_batch(store_id, users.customer_a, Uuid::now_v7());
+        let report = remote.apply_batch(&batch).await.unwrap();
+        assert_eq!(report.applied, 3);
+        assert_eq!(report.duplicates, 0);
+        assert_eq!(report.conflicts, 0);
+        // Replay through the remote client is a duplicate, not a
+        // double post.
+        let replay = remote.apply_batch(&batch).await.unwrap();
+        assert_eq!(replay.applied, 0);
+        assert_eq!(replay.duplicates, 3);
     }
 }

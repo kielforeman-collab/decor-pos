@@ -50,7 +50,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO purchase_orders (id, po_number, vendor_id, store_id, status, total, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO purchase_orders (id, po_number, vendor_id, store_id, status, total, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(uuid_str(po.id))
     .bind(&po.po_number)
@@ -72,7 +72,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO purchase_order_lines (id, po_id, product_id, line_no, vendor_sku, description, qty, uom, unit_cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO purchase_order_lines (id, po_id, product_id, line_no, vendor_sku, description, qty, uom, unit_cost) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(uuid_str(line.id))
     .bind(uuid_str(line.po_id))
@@ -89,7 +89,7 @@ where
 }
 
 pub async fn get_purchase_order(pool: &AnyPool, id: Uuid) -> Result<PurchaseOrderRow, DbError> {
-    let row = sqlx::query("SELECT * FROM purchase_orders WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM purchase_orders WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -103,7 +103,7 @@ pub async fn list_purchase_orders_for_store(
     store_id: Uuid,
 ) -> Result<Vec<PurchaseOrderRow>, DbError> {
     let rows =
-        sqlx::query("SELECT * FROM purchase_orders WHERE store_id = ? ORDER BY created_at DESC")
+        sqlx::query("SELECT * FROM purchase_orders WHERE store_id = $1 ORDER BY created_at DESC")
             .bind(uuid_str(store_id))
             .fetch_all(pool)
             .await?;
@@ -115,7 +115,7 @@ pub async fn list_purchase_order_lines(
     po_id: Uuid,
 ) -> Result<Vec<PurchaseOrderLineRow>, DbError> {
     let rows =
-        sqlx::query("SELECT * FROM purchase_order_lines WHERE po_id = ? ORDER BY line_no ASC")
+        sqlx::query("SELECT * FROM purchase_order_lines WHERE po_id = $1 ORDER BY line_no ASC")
             .bind(uuid_str(po_id))
             .fetch_all(pool)
             .await?;
@@ -128,7 +128,7 @@ pub async fn count_purchase_orders_for_store(
     pool: &AnyPool,
     store_id: Uuid,
 ) -> Result<i64, DbError> {
-    let row = sqlx::query("SELECT COUNT(*) AS n FROM purchase_orders WHERE store_id = ?")
+    let row = sqlx::query("SELECT COUNT(*) AS n FROM purchase_orders WHERE store_id = $1")
         .bind(uuid_str(store_id))
         .fetch_one(pool)
         .await?;
@@ -143,7 +143,7 @@ pub async fn update_purchase_order_status<'e, E>(
 where
     E: Executor<'e, Database = sqlx::Any>,
 {
-    sqlx::query("UPDATE purchase_orders SET status = ? WHERE id = ?")
+    sqlx::query("UPDATE purchase_orders SET status = $1 WHERE id = $2")
         .bind(status)
         .bind(uuid_str(id))
         .execute(executor)
@@ -161,7 +161,7 @@ pub async fn po_received_by_product(
     po_id: Uuid,
 ) -> Result<HashMap<Uuid, Decimal>, DbError> {
     let rows = sqlx::query(
-        "SELECT * FROM inventory_ledger WHERE reference_id = ? AND reason_type = 'po_receive' ORDER BY created_at ASC",
+        "SELECT * FROM inventory_ledger WHERE reference_id = $1 AND reason_type = 'po_receive' ORDER BY created_at ASC",
     )
     .bind(uuid_str(po_id))
     .fetch_all(pool)

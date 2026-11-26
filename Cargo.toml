@@ -27,7 +27,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0 OR MIT"
@@ -48,6 +48,7 @@ df-auth-http = { path = "crates/df-auth-http" }
 df-crm = { path = "crates/df-crm" }
 df-delivery = { path = "crates/df-delivery" }
 df-accounting = { path = "crates/df-accounting" }
+df-api = { path = "crates/df-api" }
 df-db = { path = "crates/df-db" }
 df-domain = { path = "crates/df-domain" }
 df-edge = { path = "crates/df-edge" }

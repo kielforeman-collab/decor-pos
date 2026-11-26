@@ -203,7 +203,7 @@ impl Edge {
             received_at: Utc::now(),
         };
         df_edi::repos::insert_edi_document(self.pool(), &doc).await?;
-        sqlx::query("UPDATE purchase_orders SET status = ? WHERE id = ?")
+        sqlx::query("UPDATE purchase_orders SET status = $1 WHERE id = $2")
             .bind("sent")
             .bind(po_id.to_string())
             .execute(self.pool())
@@ -562,7 +562,7 @@ impl Edge {
         row.application.mark_applied(reviewed_by);
         let applied_at = Utc::now();
         sqlx::query(
-            "UPDATE price_catalog_applications SET status = ?, reviewed_by = ?, applied_at = ? WHERE id = ?",
+            "UPDATE price_catalog_applications SET status = $1, reviewed_by = $2, applied_at = $3 WHERE id = $4",
         )
         .bind(row.application.status.as_str())
         .bind(reviewed_by)

@@ -40,7 +40,9 @@ use df_db::models::{
 };
 use df_db::{AnyPool, DbError};
 use df_domain::{Currency, Money};
-use df_sync::{ApplyReport, DeltaBatch, HqSink, MemoryHq, Outbox, OutboxEntry, SyncState};
+use df_sync::{
+    ApplyReport, DeltaBatch, HqSink, MemoryHq, Outbox, OutboxEntry, RemoteHq, SyncState,
+};
 use rust_decimal::Decimal;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -164,6 +166,11 @@ pub struct Edge {
     printer: Arc<RwLock<Option<Arc<dyn Printer>>>>,
     provider: Arc<RwLock<Option<Arc<dyn PaymentProvider>>>>,
     hq: Arc<RwLock<Option<Arc<MemoryHq>>>>,
+    /// Remote HQ push target (`POST {base_url}/api/v1/sync/ingest`),
+    /// set from `DF_HQ_URL` + `DF_HQ_TOKEN` in [`Edge::open`] or
+    /// with [`Edge::set_remote_hq`]. Preferred over the in-process
+    /// `hq` by [`Edge::sync_now_with_configured_hq`].
+    remote_hq: Arc<RwLock<Option<RemoteHq>>>,
     holds: Arc<Mutex<HashMap<Uuid, SaleInput>>>,
     events: broadcast::Sender<String>,
     /// The hosted in-process virtual tinter (Phase 2). Its levels
@@ -189,6 +196,12 @@ impl std::fmt::Debug for Edge {
             .field("db_url", &df_db::redact_db_url(&self.config.db_url))
             .field("store_name", &self.config.store_name)
             .field("currency", &self.config.currency)
+            // The token itself is never logged (RemoteHq redacts it
+            // in its own Debug); only whether one is configured.
+            .field(
+                "remote_hq_configured",
+                &self.remote_hq.read().expect("remote hq lock").is_some(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -196,16 +209,31 @@ impl std::fmt::Debug for Edge {
 impl Edge {
     /// Connect to the SQLite database at `config.db_url` and run the
     /// SQLite migrations. Seeds nothing.
+    ///
+    /// Remote HQ: when both `DF_HQ_URL` and `DF_HQ_TOKEN` are set
+    /// (non-empty), the edge pushes its outbox to that HQ
+    /// (`POST {DF_HQ_URL}/api/v1/sync/ingest`, staff session token
+    /// with the `SyncIngest` permission — Manager/Admin only, 8h
+    /// TTL). Either variable missing means no remote HQ; the
+    /// in-process sink ([`Edge::set_hq`]) still works for offline
+    /// tests. The token is held in memory only, never logged.
     pub async fn open(config: EdgeConfig) -> Result<Self, EdgeError> {
         let pool = df_db::connect(&config.db_url).await?;
         df_db::migrate(&pool, df_db::Dialect::Sqlite).await?;
         let (events, _) = broadcast::channel(64);
+        let remote_hq = match (std::env::var("DF_HQ_URL"), std::env::var("DF_HQ_TOKEN")) {
+            (Ok(url), Ok(token)) if !url.trim().is_empty() && !token.is_empty() => {
+                Some(RemoteHq::new(url, token))
+            }
+            _ => None,
+        };
         Ok(Self {
             config,
             pool,
             printer: Arc::new(RwLock::new(None)),
             provider: Arc::new(RwLock::new(None)),
             hq: Arc::new(RwLock::new(None)),
+            remote_hq: Arc::new(RwLock::new(remote_hq)),
             holds: Arc::new(Mutex::new(HashMap::new())),
             events,
             tinter: Arc::new(Mutex::new(VirtualTinter::new("virtual-simulator"))),
@@ -271,6 +299,20 @@ impl Edge {
     /// Set the in-process HQ sink used by `POST /pos/sync/run`.
     pub fn set_hq(&self, hq: Arc<MemoryHq>) {
         *self.hq.write().expect("hq lock") = Some(hq);
+    }
+
+    /// Set the remote HQ push target (`POST {base_url}/api/v1/sync/ingest`
+    /// with a staff session `Bearer` token holding `SyncIngest`).
+    /// Preferred over the in-process sink by
+    /// [`Edge::sync_now_with_configured_hq`]. The token is held in
+    /// memory only, never logged.
+    pub fn set_remote_hq(&self, base_url: impl Into<String>, token: impl Into<String>) {
+        *self.remote_hq.write().expect("remote hq lock") = Some(RemoteHq::new(base_url, token));
+    }
+
+    /// Whether a remote HQ push target is configured.
+    pub fn remote_hq_configured(&self) -> bool {
+        self.remote_hq.read().expect("remote hq lock").is_some()
     }
 
     fn printer(&self) -> Option<Arc<dyn Printer>> {
@@ -701,8 +743,14 @@ impl Edge {
                 serde_json::json!({
                     "product_id": line.product_id.to_string(),
                     "delta_on_hand": (-line.qty).to_string(),
+                    "delta_committed": "0",
+                    "delta_on_order": "0",
+                    "delta_in_transit": "0",
+                    "unit_cost": line.unit_cost.amount().to_string(),
+                    "lot_number": null,
                     "reason_type": "sale",
                     "reference_id": tx_id.to_string(),
+                    "created_at": now.to_rfc3339(),
                 }),
             ));
         }
@@ -740,7 +788,11 @@ impl Edge {
                     "customer_id": customer_id.to_string(),
                     "amount": charge_total.amount().to_string(),
                     "entry_type": "charge",
+                    "reference_type": "transaction",
                     "reference_id": tx_id.to_string(),
+                    "due_date": charge_due_date.map(|d| d.to_string()),
+                    "job_id": input.job_id.map(|id| id.to_string()),
+                    "created_at": now.to_rfc3339(),
                 }),
             ));
         }
@@ -771,6 +823,8 @@ impl Edge {
                 "doc_type": "sale",
                 "status": "completed",
                 "customer_id": input.customer_id.map(|id| id.to_string()),
+                "job_id": input.job_id.map(|id| id.to_string()),
+                "po_number": input.po_number.clone(),
                 "subtotal": priced.subtotal.amount().to_string(),
                 "tax_total": priced.tax_total.amount().to_string(),
                 "eco_fee_total": priced.eco_fee_total.amount().to_string(),
@@ -1071,8 +1125,14 @@ impl Edge {
                 serde_json::json!({
                     "product_id": line.product_id.to_string(),
                     "delta_on_hand": (-line.qty).to_string(),
+                    "delta_committed": "0",
+                    "delta_on_order": "0",
+                    "delta_in_transit": "0",
+                    "unit_cost": line.unit_cost.amount().to_string(),
+                    "lot_number": null,
                     "reason_type": "return",
                     "reference_id": tx_id.to_string(),
+                    "created_at": now.to_rfc3339(),
                 }),
             ));
         }
@@ -1104,7 +1164,11 @@ impl Edge {
                     "customer_id": customer_id.to_string(),
                     "amount": grand_total.amount().to_string(),
                     "entry_type": "credit_memo",
+                    "reference_type": "transaction",
                     "reference_id": tx_id.to_string(),
+                    "due_date": null,
+                    "job_id": original.job_id.map(|id| id.to_string()),
+                    "created_at": now.to_rfc3339(),
                 }),
             ));
         }
@@ -1118,6 +1182,8 @@ impl Edge {
                 "doc_type": "return",
                 "status": "completed",
                 "customer_id": original.customer_id.map(|id| id.to_string()),
+                "job_id": original.job_id.map(|id| id.to_string()),
+                "po_number": original.po_number.clone(),
                 "subtotal": subtotal.amount().to_string(),
                 "tax_total": tax_total.amount().to_string(),
                 "eco_fee_total": eco_fee_total.amount().to_string(),
@@ -1487,6 +1553,8 @@ impl Edge {
                     "doc_type": "layaway",
                     "status": "open",
                     "customer_id": input.customer_id.map(|id| id.to_string()),
+                    "job_id": input.job_id.map(|id| id.to_string()),
+                    "po_number": input.po_number.clone(),
                     "subtotal": priced.subtotal.amount().to_string(),
                     "tax_total": priced.tax_total.amount().to_string(),
                     "eco_fee_total": priced.eco_fee_total.amount().to_string(),
@@ -1568,16 +1636,26 @@ impl Edge {
         }
     }
 
-    /// Sync against the in-process HQ sink configured with
-    /// [`Edge::set_hq`], or fail with [`EdgeError::NoHq`] when none
+    /// Sync against the remote HQ when one is configured
+    /// (`DF_HQ_URL` / `DF_HQ_TOKEN`, or [`Edge::set_remote_hq`]),
+    /// else against the in-process HQ sink configured with
+    /// [`Edge::set_hq`]; fail with [`EdgeError::NoHq`] when neither
     /// was configured (the HTTP `/pos/sync/run` endpoint surfaces
     /// this as 503).
     pub async fn sync_now_with_configured_hq(&self) -> Result<ApplyReport, EdgeError> {
+        // Clone out of the lock first: holding the std RwLock guard
+        // across the await below would make this future !Send
+        // (std::sync::RwLockReadGuard is !Send) and axum handlers
+        // must be Send.
+        let remote = self.remote_hq.read().expect("remote hq lock").clone();
+        if let Some(remote) = remote {
+            return self.sync_now(&remote).await;
+        }
         let hq = self.hq.read().expect("hq lock").clone();
         match hq {
             Some(hq) => self.sync_now(hq.as_ref()).await,
             None => Err(EdgeError::NoHq(
-                "no HQ sink configured for this edge (call Edge::set_hq first)".to_string(),
+                "no HQ sink configured for this edge (set DF_HQ_URL + DF_HQ_TOKEN, or call Edge::set_remote_hq / Edge::set_hq first)".to_string(),
             )),
         }
     }

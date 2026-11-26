@@ -15,6 +15,17 @@ use uuid::Uuid;
 use crate::payments::{PaymentResult, TenderKind};
 
 /// Static configuration for one store edge node.
+///
+/// Remote HQ (Phase 8): the push target is NOT a field here — the
+/// `df-server` binary constructs `EdgeConfig` with struct literals,
+/// so a new required field would break its construction sites.
+/// Instead [`Edge::open`](crate::edge::Edge::open) reads `DF_HQ_URL`
+/// and `DF_HQ_TOKEN` from the environment (both must be non-empty),
+/// or call [`Edge::set_remote_hq`](crate::edge::Edge::set_remote_hq).
+///
+/// `DF_HQ_TOKEN` is a staff session token with the `SyncIngest`
+/// permission (Manager/Admin only, 8h TTL). It is held in memory
+/// only and never logged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EdgeConfig {
     pub store_id: Uuid,

@@ -38,7 +38,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use df_db::models::{
-    ArLedgerEntry, CountLine as CountLineRow, Customer, InventoryTransfer,
+    ArLedgerEntry, CountLine as CountLineRow, Customer, InventoryLedgerEntry, InventoryTransfer,
     PhysicalCount as PhysicalCountRow, PricingRuleRow, PurchaseOrderLineRow, PurchaseOrderRow,
     ReorderPoint, TransferLine as TransferLineRow,
 };
@@ -325,24 +325,26 @@ fn zero_money(currency: Currency) -> Money {
     Money::zero(currency)
 }
 
-/// Outbox entry for one inventory-ledger row, mirroring checkout.
-fn inventory_outbox_entry(
-    store_id: Uuid,
-    entry_id: Uuid,
-    product_id: Uuid,
-    delta_on_hand: Decimal,
-    reason_type: &str,
-    reference_id: Uuid,
-) -> OutboxEntry {
+/// Outbox entry for one inventory-ledger row, carrying the full row
+/// (all four deltas, unit cost, lot, created_at) so HQ can rebuild
+/// it exactly — mirroring checkout. The transfer "close" leg's
+/// `delta_in_transit` used to be lost in sync; the full row keeps it.
+fn inventory_outbox_entry(store_id: Uuid, entry: &InventoryLedgerEntry) -> OutboxEntry {
     OutboxEntry::new(
         store_id,
         "inventory_ledger",
-        entry_id,
+        entry.id,
         serde_json::json!({
-            "product_id": product_id.to_string(),
-            "delta_on_hand": delta_on_hand.to_string(),
-            "reason_type": reason_type,
-            "reference_id": reference_id.to_string(),
+            "product_id": entry.product_id.to_string(),
+            "delta_on_hand": entry.delta_on_hand.to_string(),
+            "delta_committed": entry.delta_committed.to_string(),
+            "delta_on_order": entry.delta_on_order.to_string(),
+            "delta_in_transit": entry.delta_in_transit.to_string(),
+            "unit_cost": entry.unit_cost.to_string(),
+            "lot_number": entry.lot_number,
+            "reason_type": entry.reason_type,
+            "reference_id": entry.reference_id.to_string(),
+            "created_at": entry.created_at.to_rfc3339(),
         }),
     )
 }
@@ -771,34 +773,23 @@ impl Edge {
         let now = Utc::now();
         let mut db_tx = self.pool().begin().await.map_err(DbError::Sqlx)?;
         for (line, qty) in &resolved {
-            let entry_id = Uuid::now_v7();
-            df_db::insert_inventory_delta(
-                &mut *db_tx,
-                &df_db::models::InventoryLedgerEntry {
-                    id: entry_id,
-                    org_id: self.config().org_id,
-                    store_id: po.store_id,
-                    product_id: line.product_id,
-                    lot_number: None,
-                    delta_on_hand: *qty,
-                    delta_committed: Decimal::ZERO,
-                    delta_on_order: Decimal::ZERO,
-                    delta_in_transit: Decimal::ZERO,
-                    unit_cost: line.unit_cost,
-                    reason_type: "po_receive".to_string(),
-                    reference_id: id,
-                    created_at: now,
-                },
-            )
-            .await?;
-            let outbox = inventory_outbox_entry(
-                po.store_id,
-                entry_id,
-                line.product_id,
-                *qty,
-                "po_receive",
-                id,
-            );
+            let entry = df_db::models::InventoryLedgerEntry {
+                id: Uuid::now_v7(),
+                org_id: self.config().org_id,
+                store_id: po.store_id,
+                product_id: line.product_id,
+                lot_number: None,
+                delta_on_hand: *qty,
+                delta_committed: Decimal::ZERO,
+                delta_on_order: Decimal::ZERO,
+                delta_in_transit: Decimal::ZERO,
+                unit_cost: line.unit_cost,
+                reason_type: "po_receive".to_string(),
+                reference_id: id,
+                created_at: now,
+            };
+            df_db::insert_inventory_delta(&mut *db_tx, &entry).await?;
+            let outbox = inventory_outbox_entry(po.store_id, &entry);
             Outbox::enqueue_exec(&mut *db_tx, &outbox).await?;
         }
         // Recompute received totals including this receive.
@@ -941,40 +932,29 @@ impl Edge {
         let now = Utc::now();
         let mut db_tx = self.pool().begin().await.map_err(DbError::Sqlx)?;
         for line in &lines {
-            let entry_id = Uuid::now_v7();
-            df_db::insert_inventory_delta(
-                &mut *db_tx,
-                &df_db::models::InventoryLedgerEntry {
-                    id: entry_id,
-                    org_id: self.config().org_id,
-                    store_id: row.from_store_id,
-                    product_id: line.product_id,
-                    lot_number: None,
-                    delta_on_hand: -line.qty,
-                    delta_committed: Decimal::ZERO,
-                    delta_on_order: Decimal::ZERO,
-                    delta_in_transit: line.qty,
-                    unit_cost: line.unit_cost,
-                    reason_type: "transfer".to_string(),
-                    reference_id: id,
-                    created_at: now,
-                },
-            )
-            .await?;
-            let outbox = inventory_outbox_entry(
-                row.from_store_id,
-                entry_id,
-                line.product_id,
-                -line.qty,
-                "transfer",
-                id,
-            );
+            let entry = df_db::models::InventoryLedgerEntry {
+                id: Uuid::now_v7(),
+                org_id: self.config().org_id,
+                store_id: row.from_store_id,
+                product_id: line.product_id,
+                lot_number: None,
+                delta_on_hand: -line.qty,
+                delta_committed: Decimal::ZERO,
+                delta_on_order: Decimal::ZERO,
+                delta_in_transit: line.qty,
+                unit_cost: line.unit_cost,
+                reason_type: "transfer".to_string(),
+                reference_id: id,
+                created_at: now,
+            };
+            df_db::insert_inventory_delta(&mut *db_tx, &entry).await?;
+            let outbox = inventory_outbox_entry(row.from_store_id, &entry);
             Outbox::enqueue_exec(&mut *db_tx, &outbox).await?;
         }
         // Same statement as `df-db::ar::set_transfer_status`, inside
         // this transaction so the flip and the ledger post commit
         // together (see the module docs).
-        sqlx::query("UPDATE inventory_transfers SET status = ? WHERE id = ?")
+        sqlx::query("UPDATE inventory_transfers SET status = $1 WHERE id = $2")
             .bind("shipped")
             .bind(id.to_string())
             .execute(&mut *db_tx)
@@ -1001,66 +981,44 @@ impl Edge {
         let now = Utc::now();
         let mut db_tx = self.pool().begin().await.map_err(DbError::Sqlx)?;
         for line in &lines {
-            let close_id = Uuid::now_v7();
-            df_db::insert_inventory_delta(
-                &mut *db_tx,
-                &df_db::models::InventoryLedgerEntry {
-                    id: close_id,
-                    org_id: self.config().org_id,
-                    store_id: row.from_store_id,
-                    product_id: line.product_id,
-                    lot_number: None,
-                    delta_on_hand: Decimal::ZERO,
-                    delta_committed: Decimal::ZERO,
-                    delta_on_order: Decimal::ZERO,
-                    delta_in_transit: -line.qty,
-                    unit_cost: line.unit_cost,
-                    reason_type: "transfer".to_string(),
-                    reference_id: id,
-                    created_at: now,
-                },
-            )
-            .await?;
-            let close_outbox = inventory_outbox_entry(
-                row.from_store_id,
-                close_id,
-                line.product_id,
-                Decimal::ZERO,
-                "transfer",
-                id,
-            );
+            let close_entry = df_db::models::InventoryLedgerEntry {
+                id: Uuid::now_v7(),
+                org_id: self.config().org_id,
+                store_id: row.from_store_id,
+                product_id: line.product_id,
+                lot_number: None,
+                delta_on_hand: Decimal::ZERO,
+                delta_committed: Decimal::ZERO,
+                delta_on_order: Decimal::ZERO,
+                delta_in_transit: -line.qty,
+                unit_cost: line.unit_cost,
+                reason_type: "transfer".to_string(),
+                reference_id: id,
+                created_at: now,
+            };
+            df_db::insert_inventory_delta(&mut *db_tx, &close_entry).await?;
+            let close_outbox = inventory_outbox_entry(row.from_store_id, &close_entry);
             Outbox::enqueue_exec(&mut *db_tx, &close_outbox).await?;
-            let arrive_id = Uuid::now_v7();
-            df_db::insert_inventory_delta(
-                &mut *db_tx,
-                &df_db::models::InventoryLedgerEntry {
-                    id: arrive_id,
-                    org_id: self.config().org_id,
-                    store_id: row.to_store_id,
-                    product_id: line.product_id,
-                    lot_number: None,
-                    delta_on_hand: line.qty,
-                    delta_committed: Decimal::ZERO,
-                    delta_on_order: Decimal::ZERO,
-                    delta_in_transit: Decimal::ZERO,
-                    unit_cost: line.unit_cost,
-                    reason_type: "transfer".to_string(),
-                    reference_id: id,
-                    created_at: now,
-                },
-            )
-            .await?;
-            let arrive_outbox = inventory_outbox_entry(
-                row.to_store_id,
-                arrive_id,
-                line.product_id,
-                line.qty,
-                "transfer",
-                id,
-            );
+            let arrive_entry = df_db::models::InventoryLedgerEntry {
+                id: Uuid::now_v7(),
+                org_id: self.config().org_id,
+                store_id: row.to_store_id,
+                product_id: line.product_id,
+                lot_number: None,
+                delta_on_hand: line.qty,
+                delta_committed: Decimal::ZERO,
+                delta_on_order: Decimal::ZERO,
+                delta_in_transit: Decimal::ZERO,
+                unit_cost: line.unit_cost,
+                reason_type: "transfer".to_string(),
+                reference_id: id,
+                created_at: now,
+            };
+            df_db::insert_inventory_delta(&mut *db_tx, &arrive_entry).await?;
+            let arrive_outbox = inventory_outbox_entry(row.to_store_id, &arrive_entry);
             Outbox::enqueue_exec(&mut *db_tx, &arrive_outbox).await?;
         }
-        sqlx::query("UPDATE inventory_transfers SET status = ? WHERE id = ?")
+        sqlx::query("UPDATE inventory_transfers SET status = $1 WHERE id = $2")
             .bind("received")
             .bind(id.to_string())
             .execute(&mut *db_tx)
@@ -1163,7 +1121,7 @@ impl Edge {
         let system_qty =
             df_db::inventory_on_hand(self.pool(), count.store_id, request.product_id).await?;
         let mut db_tx = self.pool().begin().await.map_err(DbError::Sqlx)?;
-        sqlx::query("DELETE FROM count_lines WHERE count_id = ? AND product_id = ?")
+        sqlx::query("DELETE FROM count_lines WHERE count_id = $1 AND product_id = $2")
             .bind(id.to_string())
             .bind(request.product_id.to_string())
             .execute(&mut *db_tx)
@@ -1233,37 +1191,26 @@ impl Edge {
         for (line, rewrite) in lines.iter().zip(rewrites.iter()) {
             let adjustment = rewrite.variance_qty;
             if adjustment != Decimal::ZERO {
-                let entry_id = Uuid::now_v7();
-                df_db::insert_inventory_delta(
-                    &mut *db_tx,
-                    &df_db::models::InventoryLedgerEntry {
-                        id: entry_id,
-                        org_id: self.config().org_id,
-                        store_id: count.store_id,
-                        product_id: line.product_id,
-                        lot_number: None,
-                        delta_on_hand: adjustment,
-                        delta_committed: Decimal::ZERO,
-                        delta_on_order: Decimal::ZERO,
-                        delta_in_transit: Decimal::ZERO,
-                        unit_cost: line.unit_cost,
-                        reason_type: "count_adj".to_string(),
-                        reference_id: id,
-                        created_at: now,
-                    },
-                )
-                .await?;
-                let outbox = inventory_outbox_entry(
-                    count.store_id,
-                    entry_id,
-                    line.product_id,
-                    adjustment,
-                    "count_adj",
-                    id,
-                );
+                let entry = df_db::models::InventoryLedgerEntry {
+                    id: Uuid::now_v7(),
+                    org_id: self.config().org_id,
+                    store_id: count.store_id,
+                    product_id: line.product_id,
+                    lot_number: None,
+                    delta_on_hand: adjustment,
+                    delta_committed: Decimal::ZERO,
+                    delta_on_order: Decimal::ZERO,
+                    delta_in_transit: Decimal::ZERO,
+                    unit_cost: line.unit_cost,
+                    reason_type: "count_adj".to_string(),
+                    reference_id: id,
+                    created_at: now,
+                };
+                df_db::insert_inventory_delta(&mut *db_tx, &entry).await?;
+                let outbox = inventory_outbox_entry(count.store_id, &entry);
                 Outbox::enqueue_exec(&mut *db_tx, &outbox).await?;
             }
-            sqlx::query("DELETE FROM count_lines WHERE id = ?")
+            sqlx::query("DELETE FROM count_lines WHERE id = $1")
                 .bind(line.id.to_string())
                 .execute(&mut *db_tx)
                 .await
@@ -1273,7 +1220,7 @@ impl Edge {
         // Same statement as `df-db::ar::reconcile_physical_count`,
         // inside this transaction (see the module docs).
         sqlx::query(
-            "UPDATE physical_counts SET status = 'reconciled', counted_at = ? WHERE id = ?",
+            "UPDATE physical_counts SET status = 'reconciled', counted_at = $1 WHERE id = $2",
         )
         .bind(now.to_rfc3339())
         .bind(id.to_string())

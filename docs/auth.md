@@ -317,6 +317,22 @@ customers' AR summaries through the unscoped staff AR routes).
 | `GET /api/v1/reports/daily-usage`, `/low-stock`, `/shortage-alerts`, `/api/v1/edi/documents` | `ReportView` | |
 | `GET /api/v1/ar/customers/{id}/summary`, `/api/v1/ar/aging` | `ArView` | |
 | `GET /api/v1/crm/activities`, `/api/v1/crm/appointments` | `CustomerManage` | HQ CRM is read-only; writes go through the edge |
+| `POST /api/v1/sync/ingest` | `SyncIngest` | Edge→HQ sync ingest (Phase 8, v1.2). See the decision note below. |
+
+### Sync ingest auth (Phase 8, v1.2)
+
+`POST /api/v1/sync/ingest` takes a staff session `Bearer dfp_…`
+token with permission `SyncIngest`, held by Manager and Admin
+only — **not** a separate store service token. Rationale: no new
+credential type, storage, issuance, or rotation to build; sessions
+already exist (Phase 7, SHA-256-hashed, 8h expiry, revocable via
+logout / `revoke-sessions`); the existing gate enforces 401/403;
+blast radius is bounded by the idempotent sink (replayed entry ids
+are a no-op). Cost: the edge needs a Manager/Admin session token
+(8h TTL, re-login on expiry) — there is no long-lived service
+token yet. `PortalContractor` is never accepted on this route.
+The edge reads it from `DF_HQ_TOKEN` (with the HQ base URL from
+`DF_HQ_URL`).
 
 ### Portal scoping (F4, HTTP layer)
 
@@ -405,6 +421,18 @@ df-server users create --db sqlite:edge.db --org-id <uuid> \
   --email contractor@example.invalid --display-name "Contractor" \
   --role PortalContractor --customer-id <customer-uuid>
 
+# HQ (PostgreSQL) variant — same commands, a Postgres URL instead of
+# a SQLite file. `df-server hq` (Phase 8, v1.2) serves the same
+# `df-api` router — and the same auth gate — against Postgres.
+export DATABASE_URL='postgres://decor:<password>@127.0.0.1:5432/decorpos'
+df-server migrate schema            # first run only; a second run is a no-op
+df-server users create-admin --db "$DATABASE_URL" --org-id <uuid> \
+  --email admin@example.invalid --display-name "Admin"
+df-server hq --db "$DATABASE_URL" --org-id <uuid> --listen 127.0.0.1:3000
+# --db wins over DATABASE_URL when both are set; with neither, the
+# command exits 2. The URL (and its password) is never logged —
+# startup logs show postgres://***@host:5432/decorpos.
+
 # 4. Verify and manage.
 df-server users list --db sqlite:edge.db --org-id <uuid>
 df-server users revoke-sessions --db sqlite:edge.db --email cashier@example.invalid
@@ -412,6 +440,12 @@ df-server users revoke-sessions --db sqlite:edge.db --email cashier@example.inva
 
 Notes:
 
+- `--db` / `DATABASE_URL` precedence (`hq`, `migrate schema`):
+  `--db <url>` wins when given; otherwise `DATABASE_URL` is used;
+  with neither, the command exits 2. The URL format is a sqlx URL:
+  `postgres://<user>:<password>@<host>:<port>/<database>` or
+  `sqlite:<path>` / `sqlite::memory:`. Never commit a real URL or
+  password; pass it via env or a secrets manager.
 - `--password-env NAME` (default `DF_USERS_PASSWORD`) names the env
   var the password is read from. An empty/unset var falls through
   to the stdin prompt.

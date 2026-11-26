@@ -196,7 +196,8 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ clippy clean (`-D warnings`, workspace-wide), fmt clean, `npm run build` clean in pos-desktop (253 kB), web-backoffice (304 kB), web-portal (241 kB), mobile-pwa (262 kB)
 - ✅ Exit-test files re-run by the coordinator: `df-edge/tests/phase7_http_auth.rs` 4/4, `df-api/tests/phase7_http_auth.rs` 3/3
 ### GitHub
-- ⬜ NOT pushed yet (local only) — push via connector in one commit once Kiel asks (connector writes currently refused — local work only)
+- ✅ Pushed Nov 26 via connector in ONE commit `1d7cf78` (352 files, 25 new; 2 binary PWA icons excluded — connector cannot carry binaries)
+- ✅ Tagged v1.1 Nov 26 via browser release page (commit `1d7cf78`, marked Latest): https://github.com/kielforeman-collab/decor-pos/releases/tag/v1.1
 ### Known limits
 - Tokens live in localStorage (`df-pos-token`), readable by any script on the origin — httpOnly cookies are the follow-up before exposing the POS beyond the store network.
 - No login rate limiting/lockout; no refresh/sliding sessions (8h is hard); no expired-session janitor (expired rows rejected on read, never deleted).
@@ -205,3 +206,32 @@ only its own section, ticking items as they are verified — not when code merel
 - EDI vendor config has no separate permission (all `/edi/*` is `ReportView`-gated).
 - Tauri `invoke()` calls cannot carry a Bearer token (local IPC) — login gates the UI in Tauri mode, but in-process command enforcement belongs to the Tauri layer.
 - PG round-trip still untested; F8/F9/F10 stay OPEN (dead-letter, TLS/mTLS, CORS/rate limiting).
+
+## Phase 8 — PostgreSQL HQ (v1.2) — ✅ DONE Nov 26, 2026
+### Scope
+- ✅ `df-server hq` — `df-server hq --db <url> --org-id <uuid> [--store-id <uuid>] [--listen <addr>]` (default 127.0.0.1:3000); `--db` falls back to `DATABASE_URL` env (`--db` wins; exit 2 when neither is set); connects via `df-db::connect`, applies pending migrations, serves the `df-api` router with the pool in `ApiState` — Phase 7 auth gate reused verbatim; logs the redacted URL, migration counts, listen address; never logs the password
+- ✅ `df-server migrate schema` — applies pending migrations, prints JSON `{database (redacted), dialect, status, newly_applied, applied}`; second run `"already_up_to_date"`, exit 0. Reporting reads sqlx's own `_sqlx_migrations` table before/after (sqlx 0.8.6 does not expose applied migrations on the migrator API)
+- ✅ df-db Postgres parity — the AnyPool layer could NOT run on Postgres at all (found live, not by audit): sqlx 0.8.6 `Any` does not rewrite `?` → `$N` (reaches PG literally, where `?` is the JSONB operator), cannot bind TEXT params to uuid/numeric/timestamptz columns, and cannot decode native PG types on read. Fix: all queries rewritten `?` → `$N` (803 placeholders, 218 literals, 19 files) and Postgres migrations use TEXT columns with the same encoding SQLite already uses (ids hyphenated, money exact decimal strings, timestamps RFC 3339, JSON verbatim). Native PG types remain a future data-layer phase (logical schema identical, reversible from here). Also fixed: `payments.authorization` is a reserved word in PG — quoted `"authorization"` in the Postgres migration + repo INSERT. New migration `0013_phase8` (both dialects): `sync_applied_entries` + `sync_conflicts` tables for idempotent ingest
+- ✅ HTTP sync ingest — `POST /api/v1/sync/ingest` on df-api, gated by `Permission::SyncIngest` (Manager/Admin staff session token only — no separate service token; recorded in docs/auth.md §6: no new credential type to build/rotate, 8h TTL is the cost). Accepts a `DeltaBatch`, applies through a DB-backed `DbHq` sink (one transaction per batch); idempotency at the DB layer via `sync_applied_entries` (`ON CONFLICT(entry_id) DO NOTHING` — replay counted duplicate, nothing else changes); same-id/different-content → `sync_conflicts`, stored row never overwritten. Edge push client: `RemoteHq` (`POST {base}/api/v1/sync/ingest`, Bearer, 30s timeout) wired via `DF_HQ_URL` + `DF_HQ_TOKEN` env (read in `Edge::open`); `sync_now_with_configured_hq` prefers remote, then in-process `MemoryHq`, else `NoHq`. Payloads enriched additively (job_id/po_number on transactions, all four deltas + unit_cost/lot on inventory, reference_type/due_date on AR) — also fixes the transfer "close" leg's `delta_in_transit` being lost in sync
+- ✅ Version bump to 1.2.0 for real — workspace Cargo.toml, df-api health version, df-edge health (via `CARGO_PKG_VERSION`), all version-asserting tests; `grep -rn '1\.1\.0'` clean; `df-server --version` prints `1.2.0`
+- ✅ Docs — docs/self-hosting.md (HQ against PostgreSQL section, local apt Postgres provisioning, v1.2 validation notes) + docs/auth.md (§6 SyncIngest matrix row + decision note, §7 HQ bootstrap variant)
+### Exit tests
+- ✅ (a) `df-server migrate schema` against fresh live Postgres applies 12 migrations `[1,2,3,4,5,6,7,9,10,11,12,13]` (no 0008), second run `already_up_to_date` — re-verified by the coordinator manually against the live DB
+- ✅ (b) `df-server hq` against live Postgres: GET /health → 200 `{"status":"ok","version":"1.2.0"}`; 3 protected routes without a token → 401
+- ✅ (c) Live round-trip (re-run by the coordinator): offline SQLite edge cash sale 2 gal (grand 173.2088, TX-000001) + charge sale 1 gal (grand 86.6044, TX-000002) → HTTP ingest `applied=5 duplicates=0`; HQ inventory −3 (edge −3), HQ AR 86.6044 (edge 86.6044), rows inv=2 ar=1 tx=2; replay `applied=0 duplicates=5`, figures unchanged
+- ✅ (d) Portal + AR reads against Postgres HQ return the same figures as the SQLite HQ path for the same fixture (repo-level + HTTP-level via two spawned `hq` instances; inventory on_hand −3, AR 86.6044, portal payment 150.0000)
+- ✅ (e) All prior phases' exit tests re-run green: full workspace suite 458/0 (see Verification); Worker 3's per-file table: 57/57 across df-edge/df-sync/df-api/df-migrator/df-server exit-test files
+### Verification
+- ✅ `cargo test --workspace --no-fail-fast` re-run by the coordinator — **458 passed, 0 failed** (Phase 7 baseline: 439; Phase 8 added 19)
+- ✅ `cargo test -p df-server --test postgres_hq_round_trip` re-run by the coordinator — **4/4 pass live** (5.9s); skips cleanly with a printed reason when no live Postgres is reachable
+- ✅ clippy clean (`-D warnings`, workspace-wide), fmt clean — both re-run by the coordinator. No frontend touched, no `npm run build` needed
+### GitHub
+- ⬜ NOT pushed yet (local only)
+### Known limits
+- Postgres columns are TEXT, not native UUID/NUMERIC/TIMESTAMPTZ — deliberate Phase 8 trade (see Scope); native types are a future data-layer phase. Spec §5's native-type language is not yet met.
+- HTTP ingest auth uses a staff Manager/Admin session token (8h TTL, re-login on expiry) — no long-lived service token yet.
+- `RemoteHq` edge→HQ push is exercised through the ingest endpoint test, not as a live edge-daemon push; `Edge::open` always runs SQLite migrations (edge is SQLite-only).
+- `df-server standalone` / `worker` remain Phase 0 stubs (exit 2). `docker-compose.yml` still runs the `df-api` service (not switched to `df-server hq`).
+- The VM's Postgres is ephemeral by design: a VM restart wipes `/tmp` (including the URL/password files) and the installed server — re-provision with the apt steps in docs/self-hosting.md. Kiel's Linux box (100.94.29.18) already has Postgres 18.3 + decor-pos at v1.1 as a fallback host.
+- PG round-trip test uses per-test fresh DBs (`decorpos_hq_rt_a/b/c/d`); `df-db pg_repos` shares the `decorpos_hq` DB and its rows accumulate (fresh UUIDv7 ids per run, no cleanup).
+- F8/F9/F10 stay OPEN (dead-letter, TLS/mTLS, CORS/rate limiting). No COLORx code. No f32/f64 money code.

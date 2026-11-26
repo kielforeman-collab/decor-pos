@@ -137,7 +137,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO delivery_events (id, delivery_id, from_status, to_status, actor_user_id, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO delivery_events (id, delivery_id, from_status, to_status, actor_user_id, note, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(uuid_str(event.id))
     .bind(uuid_str(event.delivery_id))
@@ -157,7 +157,7 @@ pub async fn list_delivery_events_for_delivery(
     delivery_id: Uuid,
 ) -> Result<Vec<DeliveryEvent>, DbError> {
     let rows =
-        sqlx::query("SELECT * FROM delivery_events WHERE delivery_id = ? ORDER BY created_at ASC")
+        sqlx::query("SELECT * FROM delivery_events WHERE delivery_id = $1 ORDER BY created_at ASC")
             .bind(uuid_str(delivery_id))
             .fetch_all(pool)
             .await?;
@@ -186,7 +186,7 @@ pub async fn assign_delivery(
     let event = domain_event_to_row(&domain_event, note);
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "UPDATE deliveries SET driver_id = ?, vehicle = ?, status = ?, updated_at = ? WHERE id = ?",
+        "UPDATE deliveries SET driver_id = $1, vehicle = $2, status = $3, updated_at = $4 WHERE id = $5",
     )
     .bind(uuid_str(driver_id))
     .bind(&vehicle)
@@ -218,7 +218,7 @@ pub async fn transition_delivery(
     let domain_event = domain.transition(to, actor_user_id, at, note.clone())?;
     let event = domain_event_to_row(&domain_event, note);
     let mut tx = pool.begin().await?;
-    sqlx::query("UPDATE deliveries SET status = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE deliveries SET status = $1, updated_at = $2 WHERE id = $3")
         .bind(domain.status.as_str())
         .bind(dt_str(at))
         .bind(uuid_str(id))
@@ -263,7 +263,7 @@ pub async fn close_out_delivery(
         )),
     );
     let mut tx = pool.begin().await?;
-    sqlx::query("UPDATE deliveries SET status = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE deliveries SET status = $1, updated_at = $2 WHERE id = $3")
         .bind(domain.status.as_str())
         .bind(dt_str(at))
         .bind(uuid_str(id))
@@ -273,7 +273,7 @@ pub async fn close_out_delivery(
     // Auto-close the linked order (only when it is still open).
     if let Some(transaction_id) = row.transaction_id {
         sqlx::query(
-            "UPDATE transactions SET status = 'completed', completed_at = ? WHERE id = ? AND status IN ('open', 'parked')",
+            "UPDATE transactions SET status = 'completed', completed_at = $1 WHERE id = $2 AND status IN ('open', 'parked')",
         )
         .bind(dt_str(at))
         .bind(uuid_str(transaction_id))
@@ -303,7 +303,7 @@ pub async fn list_dispatch_board(pool: &AnyPool, store_id: Uuid) -> Result<Vec<D
 /// Insert one rendered packing slip row.
 pub async fn insert_packing_slip(pool: &AnyPool, slip: &PackingSlipRow) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO packing_slips (id, delivery_id, rendered_text, rendered_zpl, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO packing_slips (id, delivery_id, rendered_text, rendered_zpl, created_at) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(uuid_str(slip.id))
     .bind(uuid_str(slip.delivery_id))
@@ -321,7 +321,7 @@ pub async fn get_packing_slip_for_delivery(
     delivery_id: Uuid,
 ) -> Result<Option<PackingSlipRow>, DbError> {
     let row = sqlx::query(
-        "SELECT * FROM packing_slips WHERE delivery_id = ? ORDER BY created_at DESC LIMIT 1",
+        "SELECT * FROM packing_slips WHERE delivery_id = $1 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(uuid_str(delivery_id))
     .fetch_optional(pool)

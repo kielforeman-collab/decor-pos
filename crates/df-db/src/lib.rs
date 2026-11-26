@@ -1,20 +1,37 @@
 //! `df-db` — sqlx repositories & migrations (Phase 1, v0.2).
 //!
-//! Two dialects, one repository implementation:
+//! Two dialects, one repository implementation, one SQL text:
 //!
-//! * PostgreSQL HQ — `migrations/postgres/` (NUMERIC(14,4), UUID, JSONB,
-//!   TIMESTAMPTZ).
+//! * PostgreSQL HQ — `migrations/postgres/` (same tables as SQLite;
+//!   ids, money, timestamps, dates and JSON are stored as TEXT, the
+//!   same encoding SQLite uses).
 //! * SQLite edge — `migrations/sqlite/` (same tables; UUID/JSON as TEXT,
 //!   timestamps as RFC 3339 text, booleans as INTEGER 0/1).
 //!
-//! Repositories run over [`sqlx::AnyPool`] with `?` placeholders,
-//! which sqlx rewrites to `$N` for PostgreSQL. No `query!` macros are
+//! Repositories run over [`sqlx::AnyPool`] with `$N` placeholders.
+//! sqlx's `Any` driver does NOT rewrite `?` placeholders — they reach
+//! PostgreSQL literally, where `?` is the JSONB operator, so every
+//! query syntax-errors there (proven live 2026-11-26). `$N` works on
+//! both dialects: natively on PostgreSQL, and as named parameters
+//! bound positionally on SQLite. No `query!` macros are
 //! used, so the workspace builds with `SQLX_OFFLINE=true` and no live
 //! database (see `.cargo/config.toml`).
 //!
+//! Why TEXT columns on PostgreSQL? The `Any` driver can only decode
+//! Bool, integers, floats, Bytea and Text from Postgres, and it sends
+//! text binds typed as TEXT, which Postgres refuses to assign into
+//! uuid / numeric / timestamptz / date / jsonb columns. Native PG
+//! types would need per-parameter `CAST`s and per-column CAST reads,
+//! which SQLite destroys (`CAST(uuid-text AS UUID)` yields 0).
+//! TEXT keeps one SQL text for both dialects; money stays exact
+//! (decimal strings), UUIDs stay hyphenated, timestamps stay
+//! RFC 3339. Native PG types are a future data-layer phase, not a
+//! Phase 8 item.
+//!
 //! Phase 0 tests exercise the SQLite path end-to-end. The PostgreSQL
-//! path is migration-embedded and compile-checked; a live-Postgres
-//! round-trip test is a Phase 1 item (needs a running PG 16+).
+//! path is covered live since Phase 8 (`tests/pg_repos.rs`, gated on
+//! a running PG 16+ via `DECOR_POS_TEST_PG_URL` or
+//! `/tmp/decor-pos-pg-url.txt`).
 //! See `repos.rs` for why ids/money/timestamps cross the driver as text.
 //!
 //! Phase 1 adds the spec §5.5 tables (`transactions`,

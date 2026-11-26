@@ -74,6 +74,14 @@ pub enum Permission {
     SchedulingView,
     /// Manage shift templates, shifts and statuses.
     SchedulingManage,
+    /// Push edge outbox batches to HQ (`POST /api/v1/sync/ingest`).
+    /// Held by Manager and Admin only. The ingest endpoint takes a
+    /// staff session `Bearer` token, not a separate store service
+    /// token (Phase 8 decision — see the endpoint's doc comment):
+    /// sessions already exist, expire in 8h and are revocable, so
+    /// no new credential type, storage, issuance or rotation is
+    /// needed; the sink is idempotent, which bounds the blast radius.
+    SyncIngest,
 }
 
 /// Roles. A `Manager` can do everything a cashier can, plus overrides;
@@ -136,6 +144,7 @@ impl Role {
                 ReportView,
                 SchedulingView,
                 SchedulingManage,
+                SyncIngest,
             ],
             Role::Admin => &[
                 PosCheckout,
@@ -156,6 +165,7 @@ impl Role {
                 SystemAdmin,
                 SchedulingView,
                 SchedulingManage,
+                SyncIngest,
             ],
             // Portal contractors hold NO staff permissions: their
             // only access is the Portal rule (role == PortalContractor
@@ -238,6 +248,7 @@ mod tests {
             Permission::SystemAdmin,
             Permission::SchedulingView,
             Permission::SchedulingManage,
+            Permission::SyncIngest,
         ] {
             assert!(
                 Role::Admin.has_permission(permission),
@@ -292,6 +303,20 @@ mod tests {
         assert!(Role::Warehouse.has_permission(Permission::PoReceive));
         assert!(!Role::Warehouse.has_permission(Permission::PosCheckout));
         assert!(!Role::Driver.has_permission(Permission::ArPayment));
+    }
+
+    #[test]
+    fn sync_ingest_permission() {
+        // Only Manager and Admin may push outbox batches to HQ
+        // (Phase 8 ingest endpoint). Cashiers run the till but do
+        // not sync; portal contractors hold no staff permissions.
+        assert!(Role::Manager.has_permission(Permission::SyncIngest));
+        assert!(Role::Admin.has_permission(Permission::SyncIngest));
+        assert!(!Role::Cashier.has_permission(Permission::SyncIngest));
+        assert!(!Role::SalesAssociate.has_permission(Permission::SyncIngest));
+        assert!(!Role::Warehouse.has_permission(Permission::SyncIngest));
+        assert!(!Role::Driver.has_permission(Permission::SyncIngest));
+        assert!(!Role::PortalContractor.has_permission(Permission::SyncIngest));
     }
 
     #[test]

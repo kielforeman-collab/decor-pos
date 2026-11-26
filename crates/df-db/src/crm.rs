@@ -104,7 +104,7 @@ fn pod_from_row(row: &sqlx::any::AnyRow) -> Result<DeliveryPod, DbError> {
 /// Insert one CRM activity row.
 pub async fn insert_crm_activity(pool: &AnyPool, activity: &CrmActivity) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO crm_activities (id, org_id, store_id, customer_id, activity_type, subject, notes, created_by, due_at, completed_at, snoozed_until, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO crm_activities (id, org_id, store_id, customer_id, activity_type, subject, notes, created_by, due_at, completed_at, snoozed_until, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(uuid_str(activity.id))
     .bind(uuid_str(activity.org_id))
@@ -125,7 +125,7 @@ pub async fn insert_crm_activity(pool: &AnyPool, activity: &CrmActivity) -> Resu
 
 /// Fetch one activity by id.
 pub async fn get_crm_activity(pool: &AnyPool, id: Uuid) -> Result<CrmActivity, DbError> {
-    let row = sqlx::query("SELECT * FROM crm_activities WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM crm_activities WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -140,7 +140,7 @@ pub async fn list_crm_activities_for_store(
     store_id: Uuid,
 ) -> Result<Vec<CrmActivity>, DbError> {
     let rows =
-        sqlx::query("SELECT * FROM crm_activities WHERE store_id = ? ORDER BY created_at DESC")
+        sqlx::query("SELECT * FROM crm_activities WHERE store_id = $1 ORDER BY created_at DESC")
             .bind(uuid_str(store_id))
             .fetch_all(pool)
             .await?;
@@ -151,7 +151,7 @@ pub async fn list_crm_activities_for_store(
 /// due/completed/snoozed timestamps, customer link).
 pub async fn update_crm_activity(pool: &AnyPool, activity: &CrmActivity) -> Result<(), DbError> {
     sqlx::query(
-        "UPDATE crm_activities SET customer_id = ?, activity_type = ?, subject = ?, notes = ?, due_at = ?, completed_at = ?, snoozed_until = ? WHERE id = ?",
+        "UPDATE crm_activities SET customer_id = $1, activity_type = $2, subject = $3, notes = $4, due_at = $5, completed_at = $6, snoozed_until = $7 WHERE id = $8",
     )
     .bind(opt_uuid_str(activity.customer_id))
     .bind(&activity.activity_type)
@@ -168,7 +168,7 @@ pub async fn update_crm_activity(pool: &AnyPool, activity: &CrmActivity) -> Resu
 
 /// Delete one activity. No-op when the id does not exist.
 pub async fn delete_crm_activity(pool: &AnyPool, id: Uuid) -> Result<(), DbError> {
-    sqlx::query("DELETE FROM crm_activities WHERE id = ?")
+    sqlx::query("DELETE FROM crm_activities WHERE id = $1")
         .bind(uuid_str(id))
         .execute(pool)
         .await?;
@@ -180,7 +180,7 @@ pub async fn delete_crm_activity(pool: &AnyPool, id: Uuid) -> Result<(), DbError
 /// Insert one appointment row.
 pub async fn insert_appointment(pool: &AnyPool, appointment: &Appointment) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO appointments (id, org_id, store_id, customer_id, staff_id, title, starts_at, ends_at, status, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO appointments (id, org_id, store_id, customer_id, staff_id, title, starts_at, ends_at, status, notes, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(uuid_str(appointment.id))
     .bind(uuid_str(appointment.org_id))
@@ -200,7 +200,7 @@ pub async fn insert_appointment(pool: &AnyPool, appointment: &Appointment) -> Re
 
 /// Fetch one appointment by id.
 pub async fn get_appointment(pool: &AnyPool, id: Uuid) -> Result<Appointment, DbError> {
-    let row = sqlx::query("SELECT * FROM appointments WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM appointments WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -214,7 +214,7 @@ pub async fn list_appointments_for_store(
     pool: &AnyPool,
     store_id: Uuid,
 ) -> Result<Vec<Appointment>, DbError> {
-    let rows = sqlx::query("SELECT * FROM appointments WHERE store_id = ? ORDER BY starts_at ASC")
+    let rows = sqlx::query("SELECT * FROM appointments WHERE store_id = $1 ORDER BY starts_at ASC")
         .bind(uuid_str(store_id))
         .fetch_all(pool)
         .await?;
@@ -224,7 +224,7 @@ pub async fn list_appointments_for_store(
 /// Update the mutable fields of an appointment.
 pub async fn update_appointment(pool: &AnyPool, appointment: &Appointment) -> Result<(), DbError> {
     sqlx::query(
-        "UPDATE appointments SET customer_id = ?, staff_id = ?, title = ?, starts_at = ?, ends_at = ?, status = ?, notes = ? WHERE id = ?",
+        "UPDATE appointments SET customer_id = $1, staff_id = $2, title = $3, starts_at = $4, ends_at = $5, status = $6, notes = $7 WHERE id = $8",
     )
     .bind(opt_uuid_str(appointment.customer_id))
     .bind(opt_uuid_str(appointment.staff_id))
@@ -241,7 +241,7 @@ pub async fn update_appointment(pool: &AnyPool, appointment: &Appointment) -> Re
 
 /// Delete one appointment. No-op when the id does not exist.
 pub async fn delete_appointment(pool: &AnyPool, id: Uuid) -> Result<(), DbError> {
-    sqlx::query("DELETE FROM appointments WHERE id = ?")
+    sqlx::query("DELETE FROM appointments WHERE id = $1")
         .bind(uuid_str(id))
         .execute(pool)
         .await?;
@@ -254,7 +254,7 @@ pub async fn delete_appointment(pool: &AnyPool, id: Uuid) -> Result<(), DbError>
 /// enforced by the schema; a duplicate name is a `DbError::Sqlx`.
 pub async fn insert_crm_saved_view(pool: &AnyPool, view: &CrmSavedView) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO crm_saved_views (id, org_id, store_id, name, filter_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO crm_saved_views (id, org_id, store_id, name, filter_json, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(uuid_str(view.id))
     .bind(uuid_str(view.org_id))
@@ -269,7 +269,7 @@ pub async fn insert_crm_saved_view(pool: &AnyPool, view: &CrmSavedView) -> Resul
 
 /// Fetch one saved view by id.
 pub async fn get_crm_saved_view(pool: &AnyPool, id: Uuid) -> Result<CrmSavedView, DbError> {
-    let row = sqlx::query("SELECT * FROM crm_saved_views WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM crm_saved_views WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -282,7 +282,7 @@ pub async fn list_crm_saved_views_for_store(
     pool: &AnyPool,
     store_id: Uuid,
 ) -> Result<Vec<CrmSavedView>, DbError> {
-    let rows = sqlx::query("SELECT * FROM crm_saved_views WHERE store_id = ? ORDER BY name ASC")
+    let rows = sqlx::query("SELECT * FROM crm_saved_views WHERE store_id = $1 ORDER BY name ASC")
         .bind(uuid_str(store_id))
         .fetch_all(pool)
         .await?;
@@ -291,7 +291,7 @@ pub async fn list_crm_saved_views_for_store(
 
 /// Delete one saved view. No-op when the id does not exist.
 pub async fn delete_crm_saved_view(pool: &AnyPool, id: Uuid) -> Result<(), DbError> {
-    sqlx::query("DELETE FROM crm_saved_views WHERE id = ?")
+    sqlx::query("DELETE FROM crm_saved_views WHERE id = $1")
         .bind(uuid_str(id))
         .execute(pool)
         .await?;
@@ -303,7 +303,7 @@ pub async fn delete_crm_saved_view(pool: &AnyPool, id: Uuid) -> Result<(), DbErr
 /// Insert one delivery row.
 pub async fn insert_delivery(pool: &AnyPool, delivery: &Delivery) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO deliveries (id, org_id, store_id, transaction_id, customer_id, driver_id, status, address_json, scheduled_date, priority, vehicle, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO deliveries (id, org_id, store_id, transaction_id, customer_id, driver_id, status, address_json, scheduled_date, priority, vehicle, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(uuid_str(delivery.id))
     .bind(uuid_str(delivery.org_id))
@@ -325,7 +325,7 @@ pub async fn insert_delivery(pool: &AnyPool, delivery: &Delivery) -> Result<(), 
 
 /// Fetch one delivery by id.
 pub async fn get_delivery(pool: &AnyPool, id: Uuid) -> Result<Delivery, DbError> {
-    let row = sqlx::query("SELECT * FROM deliveries WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM deliveries WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -339,7 +339,7 @@ pub async fn list_deliveries_for_store(
     pool: &AnyPool,
     store_id: Uuid,
 ) -> Result<Vec<Delivery>, DbError> {
-    let rows = sqlx::query("SELECT * FROM deliveries WHERE store_id = ? ORDER BY created_at DESC")
+    let rows = sqlx::query("SELECT * FROM deliveries WHERE store_id = $1 ORDER BY created_at DESC")
         .bind(uuid_str(store_id))
         .fetch_all(pool)
         .await?;
@@ -354,7 +354,7 @@ pub async fn set_delivery_status(
     status: &str,
     now: DateTime<Utc>,
 ) -> Result<(), DbError> {
-    sqlx::query("UPDATE deliveries SET status = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE deliveries SET status = $1, updated_at = $2 WHERE id = $3")
         .bind(status)
         .bind(dt_str(now))
         .bind(uuid_str(id))
@@ -368,7 +368,7 @@ pub async fn set_delivery_status(
 /// Insert one POD row.
 pub async fn insert_delivery_pod(pool: &AnyPool, pod: &DeliveryPod) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO delivery_pods (id, delivery_id, signature_sha256, signature_b64, photo_ref, photo_sha256, received_by, signed_at, photo_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO delivery_pods (id, delivery_id, signature_sha256, signature_b64, photo_ref, photo_sha256, received_by, signed_at, photo_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(uuid_str(pod.id))
     .bind(uuid_str(pod.delivery_id))
@@ -391,7 +391,7 @@ pub async fn get_delivery_pod_for_delivery(
     delivery_id: Uuid,
 ) -> Result<Option<DeliveryPod>, DbError> {
     let row = sqlx::query(
-        "SELECT * FROM delivery_pods WHERE delivery_id = ? ORDER BY created_at DESC LIMIT 1",
+        "SELECT * FROM delivery_pods WHERE delivery_id = $1 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(uuid_str(delivery_id))
     .fetch_optional(pool)

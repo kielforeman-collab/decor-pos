@@ -192,7 +192,7 @@ pub async fn create_user(pool: &AnyPool, new: &NewUser) -> Result<UserRow, DbErr
 }
 
 pub async fn get_user_by_id(pool: &AnyPool, id: Uuid) -> Result<UserRow, DbError> {
-    let row = sqlx::query("SELECT * FROM users WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM users WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -203,7 +203,7 @@ pub async fn get_user_by_id(pool: &AnyPool, id: Uuid) -> Result<UserRow, DbError
 /// Every user of an org, ordered by email — the raw material for
 /// `df-server users list` and admin screens.
 pub async fn list_users_for_org(pool: &AnyPool, org_id: Uuid) -> Result<Vec<UserRow>, DbError> {
-    let rows = sqlx::query("SELECT * FROM users WHERE org_id = ? ORDER BY email ASC")
+    let rows = sqlx::query("SELECT * FROM users WHERE org_id = $1 ORDER BY email ASC")
         .bind(uuid_str(org_id))
         .fetch_all(pool)
         .await?;
@@ -218,7 +218,7 @@ pub async fn count_users_with_role(
     org_id: Uuid,
     role: Role,
 ) -> Result<i64, DbError> {
-    let row = sqlx::query("SELECT COUNT(*) AS n FROM users WHERE org_id = ? AND role_id = ?")
+    let row = sqlx::query("SELECT COUNT(*) AS n FROM users WHERE org_id = $1 AND role_id = $2")
         .bind(uuid_str(org_id))
         .bind(uuid_str(role_id(role)))
         .fetch_one(pool)
@@ -234,7 +234,7 @@ pub async fn set_password_hash(
     user_id: Uuid,
     password_hash: Option<&str>,
 ) -> Result<(), DbError> {
-    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
         .bind(password_hash)
         .bind(uuid_str(user_id))
         .execute(pool)
@@ -248,7 +248,7 @@ pub async fn set_pin_hash(
     user_id: Uuid,
     pin_hash: Option<&str>,
 ) -> Result<(), DbError> {
-    sqlx::query("UPDATE users SET counter_pin_hash = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET counter_pin_hash = $1 WHERE id = $2")
         .bind(pin_hash)
         .bind(uuid_str(user_id))
         .execute(pool)
@@ -262,7 +262,7 @@ pub async fn set_badge_hash(
     user_id: Uuid,
     badge_hash: Option<&str>,
 ) -> Result<(), DbError> {
-    sqlx::query("UPDATE users SET badge_token_hash = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET badge_token_hash = $1 WHERE id = $2")
         .bind(badge_hash)
         .bind(uuid_str(user_id))
         .execute(pool)
@@ -278,7 +278,7 @@ pub async fn set_portal_customer(
     user_id: Uuid,
     customer_id: Option<Uuid>,
 ) -> Result<(), DbError> {
-    sqlx::query("UPDATE users SET portal_customer_id = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET portal_customer_id = $1 WHERE id = $2")
         .bind(opt_uuid_str(customer_id))
         .bind(uuid_str(user_id))
         .execute(pool)
@@ -292,7 +292,7 @@ pub async fn set_portal_customer(
 /// flips, so no separate session sweep is needed (revoke as well
 /// when the operator wants the sessions gone from the list).
 pub async fn set_user_active(pool: &AnyPool, user_id: Uuid, active: bool) -> Result<(), DbError> {
-    sqlx::query("UPDATE users SET active = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET active = $1 WHERE id = $2")
         .bind(active)
         .bind(uuid_str(user_id))
         .execute(pool)
@@ -306,7 +306,7 @@ pub async fn set_user_active(pool: &AnyPool, user_id: Uuid, active: bool) -> Res
 /// [`create_session` below). Stores the token hash only.
 pub async fn insert_session(pool: &AnyPool, session: &Session) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO sessions (id, user_id, token_hash, role, customer_id, created_at, expires_at, revoked_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO sessions (id, user_id, token_hash, role, customer_id, created_at, expires_at, revoked_at, last_used_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(uuid_str(session.id))
     .bind(uuid_str(session.user_id))
@@ -329,7 +329,7 @@ pub async fn get_session_by_token_hash(
     pool: &AnyPool,
     token_hash: &str,
 ) -> Result<Session, DbError> {
-    let row = sqlx::query("SELECT * FROM sessions WHERE token_hash = ?")
+    let row = sqlx::query("SELECT * FROM sessions WHERE token_hash = $1")
         .bind(token_hash)
         .fetch_one(pool)
         .await
@@ -340,7 +340,7 @@ pub async fn get_session_by_token_hash(
 /// Revoke one session by id (sets `revoked_at` to now). Revoked
 /// sessions stay in the table as an audit trail.
 pub async fn revoke_session(pool: &AnyPool, session_id: Uuid) -> Result<(), DbError> {
-    sqlx::query("UPDATE sessions SET revoked_at = ? WHERE id = ?")
+    sqlx::query("UPDATE sessions SET revoked_at = $1 WHERE id = $2")
         .bind(dt_str(Utc::now()))
         .bind(uuid_str(session_id))
         .execute(pool)
@@ -350,7 +350,7 @@ pub async fn revoke_session(pool: &AnyPool, session_id: Uuid) -> Result<(), DbEr
 
 /// Revoke one session by the SHA-256 hex of its token.
 pub async fn revoke_session_by_token_hash(pool: &AnyPool, token_hash: &str) -> Result<(), DbError> {
-    sqlx::query("UPDATE sessions SET revoked_at = ? WHERE token_hash = ?")
+    sqlx::query("UPDATE sessions SET revoked_at = $1 WHERE token_hash = $2")
         .bind(dt_str(Utc::now()))
         .bind(token_hash)
         .execute(pool)
@@ -362,12 +362,13 @@ pub async fn revoke_session_by_token_hash(pool: &AnyPool, token_hash: &str) -> R
 /// change, deactivation sweep). Returns the number of rows revoked.
 /// Already-revoked sessions are left untouched.
 pub async fn revoke_sessions_for_user(pool: &AnyPool, user_id: Uuid) -> Result<u64, DbError> {
-    let result =
-        sqlx::query("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL")
-            .bind(dt_str(Utc::now()))
-            .bind(uuid_str(user_id))
-            .execute(pool)
-            .await?;
+    let result = sqlx::query(
+        "UPDATE sessions SET revoked_at = $1 WHERE user_id = $2 AND revoked_at IS NULL",
+    )
+    .bind(dt_str(Utc::now()))
+    .bind(uuid_str(user_id))
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected())
 }
 
@@ -377,7 +378,7 @@ pub async fn list_sessions_for_user(
     pool: &AnyPool,
     user_id: Uuid,
 ) -> Result<Vec<Session>, DbError> {
-    let rows = sqlx::query("SELECT * FROM sessions WHERE user_id = ? ORDER BY created_at DESC")
+    let rows = sqlx::query("SELECT * FROM sessions WHERE user_id = $1 ORDER BY created_at DESC")
         .bind(uuid_str(user_id))
         .fetch_all(pool)
         .await?;
@@ -390,7 +391,7 @@ async fn touch_session(
     session_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<(), DbError> {
-    sqlx::query("UPDATE sessions SET last_used_at = ? WHERE id = ?")
+    sqlx::query("UPDATE sessions SET last_used_at = $1 WHERE id = $2")
         .bind(dt_str(now))
         .bind(uuid_str(session_id))
         .execute(pool)

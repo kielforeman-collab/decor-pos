@@ -69,7 +69,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO shift_templates (id, org_id, store_id, name, weekday, starts_at, ends_at, role, staff_id, required_count, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO shift_templates (id, org_id, store_id, name, weekday, starts_at, ends_at, role, staff_id, required_count, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(uuid_str(template.id))
     .bind(uuid_str(template.org_id))
@@ -92,7 +92,7 @@ pub async fn list_shift_templates_for_store(
     store_id: Uuid,
 ) -> Result<Vec<ShiftTemplate>, DbError> {
     let rows = sqlx::query(
-        "SELECT * FROM shift_templates WHERE store_id = ? ORDER BY weekday ASC, starts_at ASC",
+        "SELECT * FROM shift_templates WHERE store_id = $1 ORDER BY weekday ASC, starts_at ASC",
     )
     .bind(uuid_str(store_id))
     .fetch_all(pool)
@@ -107,7 +107,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO staff_shifts (id, org_id, store_id, template_id, staff_id, shift_date, starts_at, ends_at, status, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO staff_shifts (id, org_id, store_id, template_id, staff_id, shift_date, starts_at, ends_at, status, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(uuid_str(shift.id))
     .bind(uuid_str(shift.org_id))
@@ -125,7 +125,7 @@ where
 }
 
 pub async fn get_staff_shift(pool: &AnyPool, id: Uuid) -> Result<StaffShift, DbError> {
-    let row = sqlx::query("SELECT * FROM staff_shifts WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM staff_shifts WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -139,7 +139,7 @@ pub async fn list_staff_shifts_for_store_date(
     date: NaiveDate,
 ) -> Result<Vec<StaffShift>, DbError> {
     let rows = sqlx::query(
-        "SELECT * FROM staff_shifts WHERE store_id = ? AND shift_date = ? ORDER BY starts_at ASC",
+        "SELECT * FROM staff_shifts WHERE store_id = $1 AND shift_date = $2 ORDER BY starts_at ASC",
     )
     .bind(uuid_str(store_id))
     .bind(date_str(date))
@@ -157,7 +157,7 @@ pub async fn list_staff_shifts_for_store_range(
     to: NaiveDate,
 ) -> Result<Vec<StaffShift>, DbError> {
     let rows = sqlx::query(
-        "SELECT * FROM staff_shifts WHERE store_id = ? AND shift_date >= ? AND shift_date <= ? ORDER BY shift_date ASC, starts_at ASC",
+        "SELECT * FROM staff_shifts WHERE store_id = $1 AND shift_date >= $2 AND shift_date <= $3 ORDER BY shift_date ASC, starts_at ASC",
     )
     .bind(uuid_str(store_id))
     .bind(date_str(from))
@@ -168,7 +168,7 @@ pub async fn list_staff_shifts_for_store_range(
 }
 
 pub async fn set_staff_shift_status(pool: &AnyPool, id: Uuid, status: &str) -> Result<(), DbError> {
-    sqlx::query("UPDATE staff_shifts SET status = ? WHERE id = ?")
+    sqlx::query("UPDATE staff_shifts SET status = $1 WHERE id = $2")
         .bind(status)
         .bind(uuid_str(id))
         .execute(pool)
@@ -186,7 +186,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO timeclock_entries (id, org_id, store_id, staff_id, clock_in, clock_out, source) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO timeclock_entries (id, org_id, store_id, staff_id, clock_in, clock_out, source) VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(uuid_str(entry.id))
     .bind(uuid_str(entry.org_id))
@@ -208,7 +208,7 @@ pub async fn get_open_timeclock_entry(
     staff_id: Uuid,
 ) -> Result<Option<TimeclockEntry>, DbError> {
     let row = sqlx::query(
-        "SELECT * FROM timeclock_entries WHERE staff_id = ? AND clock_out IS NULL ORDER BY clock_in DESC",
+        "SELECT * FROM timeclock_entries WHERE staff_id = $1 AND clock_out IS NULL ORDER BY clock_in DESC",
     )
     .bind(uuid_str(staff_id))
     .fetch_optional(pool)
@@ -224,7 +224,7 @@ pub async fn close_timeclock_entry(
     id: Uuid,
     clock_out: DateTime<Utc>,
 ) -> Result<(), DbError> {
-    sqlx::query("UPDATE timeclock_entries SET clock_out = ? WHERE id = ? AND clock_out IS NULL")
+    sqlx::query("UPDATE timeclock_entries SET clock_out = $1 WHERE id = $2 AND clock_out IS NULL")
         .bind(dt_str(clock_out))
         .bind(uuid_str(id))
         .execute(pool)
@@ -241,7 +241,7 @@ pub async fn list_closed_timeclock_entries_for_store_range(
     to: DateTime<Utc>,
 ) -> Result<Vec<TimeclockEntry>, DbError> {
     let rows = sqlx::query(
-        "SELECT * FROM timeclock_entries WHERE store_id = ? AND clock_in >= ? AND clock_in < ? AND clock_out IS NOT NULL ORDER BY clock_in ASC",
+        "SELECT * FROM timeclock_entries WHERE store_id = $1 AND clock_in >= $2 AND clock_in < $3 AND clock_out IS NOT NULL ORDER BY clock_in ASC",
     )
     .bind(uuid_str(store_id))
     .bind(dt_str(from))
@@ -264,7 +264,7 @@ pub async fn list_timeclock_entries_for_store_date(
         .and_utc();
     let end = start + chrono::Duration::days(1);
     let rows = sqlx::query(
-        "SELECT * FROM timeclock_entries WHERE store_id = ? AND clock_in >= ? AND clock_in < ? ORDER BY clock_in DESC",
+        "SELECT * FROM timeclock_entries WHERE store_id = $1 AND clock_in >= $2 AND clock_in < $3 ORDER BY clock_in DESC",
     )
     .bind(uuid_str(store_id))
     .bind(dt_str(start))

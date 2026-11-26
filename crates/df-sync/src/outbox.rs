@@ -8,14 +8,26 @@
 //! batch. [`Outbox::mark_failed`] bumps `retry_count` and records the
 //! error, leaving the row pending for the next drain.
 //!
-//! Payload conventions (shared with `df-edge` and [`crate::sink::MemoryHq`]):
+//! Payload conventions (shared with `df-edge`, [`crate::sink::MemoryHq`]
+//! and [`crate::db::DbHq`]). The DB sink rebuilds HQ rows from these
+//! payloads, so the edge enriches them with the row's full fields —
+//! extra keys are ignored by sinks that do not need them, and older
+//! edge payloads that omit the enrichment still apply (with zeroed
+//! optional fields; balances stay exact):
 //!
-//! * `aggregate_type = "transaction"` — payload is the transaction JSON
-//!   object (at least `id`, `doc_number`, `doc_type`, `grand_total`).
-//! * `aggregate_type = "inventory_ledger"` — payload has `product_id`,
-//!   `delta_on_hand` (decimal string), `reason_type`, `reference_id`.
-//! * `aggregate_type = "ar_ledger"` — payload has `customer_id`,
-//!   `amount` (decimal string), `entry_type`, `reference_id`.
+//! * `aggregate_type = "transaction"` — payload is the transaction
+//!   JSON object (`id`, `doc_number`, `doc_type`, `status`,
+//!   `customer_id`, `job_id`, `po_number`, `subtotal`, `tax_total`,
+//!   `eco_fee_total`, `pos_fee_total`, `grand_total`; layaways also
+//!   carry `deposit_paid`).
+//! * `aggregate_type = "inventory_ledger"` — payload is the ledger
+//!   row (`product_id`, all four deltas as decimal strings,
+//!   `unit_cost`, `lot_number`, `reason_type`, `reference_id`,
+//!   `created_at` RFC 3339).
+//! * `aggregate_type = "ar_ledger"` — payload is the ledger row
+//!   (`customer_id`, `amount` as a decimal string, `entry_type`,
+//!   `reference_type`, `reference_id`, `due_date` `YYYY-MM-DD`,
+//!   `job_id`, `created_at` RFC 3339).
 //!
 //! Money and timestamps cross the driver as text, following the
 //! `df-db` convention (sqlx `Any` has no `Uuid`/`Decimal` codecs):
@@ -174,7 +186,7 @@ impl Outbox {
         E: Executor<'e, Database = sqlx::Any>,
     {
         sqlx::query(
-            "INSERT INTO sync_outbox (id, store_id, aggregate_type, aggregate_id, payload_json, created_at, synced_at, retry_count, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sync_outbox (id, store_id, aggregate_type, aggregate_id, payload_json, created_at, synced_at, retry_count, last_error) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(entry.id.to_string())
         .bind(entry.store_id.to_string())
@@ -197,7 +209,7 @@ impl Outbox {
         limit: i64,
     ) -> Result<Vec<OutboxEntry>, SyncError> {
         let rows = sqlx::query(
-            "SELECT * FROM sync_outbox WHERE store_id = ? AND synced_at IS NULL ORDER BY id ASC LIMIT ?",
+            "SELECT * FROM sync_outbox WHERE store_id = $1 AND synced_at IS NULL ORDER BY id ASC LIMIT $2",
         )
         .bind(store_id.to_string())
         .bind(limit)
@@ -209,7 +221,7 @@ impl Outbox {
     /// Number of unsynced entries for a store.
     pub async fn pending_count(pool: &AnyPool, store_id: Uuid) -> Result<u64, SyncError> {
         let row = sqlx::query(
-            "SELECT COUNT(*) AS n FROM sync_outbox WHERE store_id = ? AND synced_at IS NULL",
+            "SELECT COUNT(*) AS n FROM sync_outbox WHERE store_id = $1 AND synced_at IS NULL",
         )
         .bind(store_id.to_string())
         .fetch_one(pool)
@@ -225,10 +237,14 @@ impl Outbox {
         if ids.is_empty() {
             return Ok(());
         }
-        let placeholders = std::iter::repeat_n("?", ids.len())
+        // `$N` placeholders: `$1` is synced_at, `$2..` are the ids.
+        // (sqlx's `Any` driver does not rewrite `?`; a literal `?`
+        // syntax-errors on PostgreSQL. `$N` works on SQLite too.)
+        let placeholders = (2..=ids.len() + 1)
+            .map(|i| format!("${i}"))
             .collect::<Vec<_>>()
             .join(", ");
-        let sql = format!("UPDATE sync_outbox SET synced_at = ? WHERE id IN ({placeholders})");
+        let sql = format!("UPDATE sync_outbox SET synced_at = $1 WHERE id IN ({placeholders})");
         let mut query = sqlx::query(&sql).bind(Utc::now().to_rfc3339());
         for id in ids {
             query = query.bind(id.to_string());
@@ -241,7 +257,7 @@ impl Outbox {
     /// error, leave the row pending.
     pub async fn mark_failed(pool: &AnyPool, id: Uuid, error: &str) -> Result<(), SyncError> {
         sqlx::query(
-            "UPDATE sync_outbox SET retry_count = retry_count + 1, last_error = ? WHERE id = ?",
+            "UPDATE sync_outbox SET retry_count = retry_count + 1, last_error = $1 WHERE id = $2",
         )
         .bind(error)
         .bind(id.to_string())
@@ -257,7 +273,7 @@ impl Outbox {
     pub async fn sync_state(pool: &AnyPool, store_id: Uuid) -> Result<SyncState, SyncError> {
         let pending_count = Self::pending_count(pool, store_id).await?;
         let row = sqlx::query(
-            "SELECT MAX(synced_at) AS last_synced FROM sync_outbox WHERE store_id = ? AND synced_at IS NOT NULL",
+            "SELECT MAX(synced_at) AS last_synced FROM sync_outbox WHERE store_id = $1 AND synced_at IS NOT NULL",
         )
         .bind(store_id.to_string())
         .fetch_one(pool)

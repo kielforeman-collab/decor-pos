@@ -252,7 +252,7 @@ async fn load_customer_facts(
 ) -> Result<CustomerFacts, DbError> {
     let customers = crate::list_customers_for_org(pool, org_id).await?;
     let mut balances: HashMap<Uuid, Decimal> = HashMap::new();
-    let balance_rows = sqlx::query("SELECT customer_id, amount FROM ar_ledger WHERE org_id = ?")
+    let balance_rows = sqlx::query("SELECT customer_id, amount FROM ar_ledger WHERE org_id = $1")
         .bind(uuid_str(org_id))
         .fetch_all(pool)
         .await?;
@@ -262,7 +262,7 @@ async fn load_customer_facts(
         *balances.entry(customer_id).or_insert(Decimal::ZERO) += amount;
     }
     let purchase_rows = sqlx::query(
-        "SELECT customer_id, created_at, grand_total FROM transactions WHERE org_id = ? AND status = 'completed' AND doc_type = 'sale'",
+        "SELECT customer_id, created_at, grand_total FROM transactions WHERE org_id = $1 AND status = 'completed' AND doc_type = 'sale'",
     )
     .bind(uuid_str(org_id))
     .fetch_all(pool)

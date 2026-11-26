@@ -217,7 +217,11 @@ impl Edge {
                     "amount": (-amount.amount()).to_string(),
                     "entry_type": "payment",
                     "method": method,
+                    "reference_type": "payment",
                     "reference_id": payment_id.to_string(),
+                    "due_date": null,
+                    "job_id": null,
+                    "created_at": now.to_rfc3339(),
                     "allocations": allocations.iter().map(|a| serde_json::json!({
                         "charge_entry_id": a.charge_entry_id.to_string(),
                         "allocated_amount": a.allocated_amount.to_string(),
@@ -319,7 +323,11 @@ impl Edge {
                     "customer_id": customer.id.to_string(),
                     "amount": amount.amount().to_string(),
                     "entry_type": "finance_charge",
+                    "reference_type": "statement_run",
                     "reference_id": period_key.to_string(),
+                    "due_date": as_of.to_string(),
+                    "job_id": null,
+                    "created_at": assessed_at.to_rfc3339(),
                 }),
             ),
         )

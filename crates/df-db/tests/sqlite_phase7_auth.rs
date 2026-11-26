@@ -149,7 +149,7 @@ async fn migration_seeds_roles_and_user_role_maps() {
         Role::Admin,
         Role::PortalContractor,
     ] {
-        let row = sqlx::query("SELECT name FROM roles WHERE id = ?")
+        let row = sqlx::query("SELECT name FROM roles WHERE id = $1")
             .bind(role_id(role).to_string())
             .fetch_one(&pool)
             .await
@@ -223,7 +223,7 @@ async fn password_login_round_trip_and_token_validates() {
     assert_ne!(stored.token_hash, outcome.token);
     assert_eq!(stored.token_hash, hash_token(&outcome.token));
     // Raw SQL confirms the sessions row holds no raw token anywhere.
-    let row = sqlx::query("SELECT token_hash, role FROM sessions WHERE id = ?")
+    let row = sqlx::query("SELECT token_hash, role FROM sessions WHERE id = $1")
         .bind(outcome.session.id.to_string())
         .fetch_one(&pool)
         .await

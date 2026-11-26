@@ -8,6 +8,8 @@ pub enum SyncError {
     Db(#[from] sqlx::Error),
     #[error("sync conflict: {0}")]
     Conflict(String),
+    #[error("remote HQ request failed: {0}")]
+    Http(String),
     #[error("invalid sync payload: {0}")]
     InvalidPayload(String),
     #[error("serialization error: {0}")]

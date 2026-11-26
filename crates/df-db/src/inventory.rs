@@ -82,7 +82,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO inventory_ledger (id, org_id, store_id, product_id, lot_number, delta_on_hand, delta_committed, delta_on_order, delta_in_transit, unit_cost, reason_type, reference_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO inventory_ledger (id, org_id, store_id, product_id, lot_number, delta_on_hand, delta_committed, delta_on_order, delta_in_transit, unit_cost, reason_type, reference_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(uuid_str(entry.id))
     .bind(uuid_str(entry.org_id))
@@ -102,13 +102,32 @@ where
     Ok(())
 }
 
+/// One ledger entry by id, executor-generic (sync sink replay check:
+/// the ingest endpoint skips a ledger entry whose id already exists).
+pub async fn get_inventory_entry_exec<'e, E>(
+    executor: E,
+    id: Uuid,
+) -> Result<Option<InventoryLedgerEntry>, DbError>
+where
+    E: Executor<'e, Database = sqlx::Any>,
+{
+    let row = sqlx::query("SELECT * FROM inventory_ledger WHERE id = $1")
+        .bind(uuid_str(id))
+        .fetch_optional(executor)
+        .await?;
+    match row {
+        None => Ok(None),
+        Some(row) => Ok(Some(inventory_entry_from_row(&row)?)),
+    }
+}
+
 pub async fn list_inventory_entries_for_product(
     pool: &AnyPool,
     store_id: Uuid,
     product_id: Uuid,
 ) -> Result<Vec<InventoryLedgerEntry>, DbError> {
     let rows = sqlx::query(
-        "SELECT * FROM inventory_ledger WHERE store_id = ? AND product_id = ? ORDER BY created_at ASC",
+        "SELECT * FROM inventory_ledger WHERE store_id = $1 AND product_id = $2 ORDER BY created_at ASC",
     )
     .bind(uuid_str(store_id))
     .bind(uuid_str(product_id))
@@ -142,11 +161,12 @@ pub async fn find_inventory_entry_by_reference(
     store_id: Uuid,
     reference_id: Uuid,
 ) -> Result<Option<InventoryLedgerEntry>, DbError> {
-    let row = sqlx::query("SELECT * FROM inventory_ledger WHERE store_id = ? AND reference_id = ?")
-        .bind(uuid_str(store_id))
-        .bind(uuid_str(reference_id))
-        .fetch_optional(pool)
-        .await?;
+    let row =
+        sqlx::query("SELECT * FROM inventory_ledger WHERE store_id = $1 AND reference_id = $2")
+            .bind(uuid_str(store_id))
+            .bind(uuid_str(reference_id))
+            .fetch_optional(pool)
+            .await?;
     match row {
         Some(row) => Ok(Some(inventory_entry_from_row(&row)?)),
         None => Ok(None),
@@ -218,7 +238,7 @@ pub async fn list_inventory_entries_for_store(
     store_id: Uuid,
 ) -> Result<Vec<InventoryLedgerEntry>, DbError> {
     let rows =
-        sqlx::query("SELECT * FROM inventory_ledger WHERE store_id = ? ORDER BY created_at ASC")
+        sqlx::query("SELECT * FROM inventory_ledger WHERE store_id = $1 ORDER BY created_at ASC")
             .bind(uuid_str(store_id))
             .fetch_all(pool)
             .await?;
@@ -232,7 +252,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO till_sessions (id, org_id, store_id, cashier_id, opened_at, closed_at, opening_float, counted_cash, expected_cash, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO till_sessions (id, org_id, store_id, cashier_id, opened_at, closed_at, opening_float, counted_cash, expected_cash, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(uuid_str(till.id))
     .bind(uuid_str(till.org_id))
@@ -250,7 +270,7 @@ where
 }
 
 pub async fn get_till_session(pool: &AnyPool, id: Uuid) -> Result<TillSession, DbError> {
-    let row = sqlx::query("SELECT * FROM till_sessions WHERE id = ?")
+    let row = sqlx::query("SELECT * FROM till_sessions WHERE id = $1")
         .bind(uuid_str(id))
         .fetch_one(pool)
         .await
@@ -264,7 +284,7 @@ pub async fn open_till_for_store(
     store_id: Uuid,
 ) -> Result<Option<TillSession>, DbError> {
     let row = sqlx::query(
-        "SELECT * FROM till_sessions WHERE store_id = ? AND status = 'open' ORDER BY opened_at DESC LIMIT 1",
+        "SELECT * FROM till_sessions WHERE store_id = $1 AND status = 'open' ORDER BY opened_at DESC LIMIT 1",
     )
     .bind(uuid_str(store_id))
     .fetch_optional(pool)
@@ -285,7 +305,7 @@ pub async fn close_till_session(
     expected_cash: Decimal,
 ) -> Result<(), DbError> {
     sqlx::query(
-        "UPDATE till_sessions SET closed_at = ?, counted_cash = ?, expected_cash = ?, status = 'closed' WHERE id = ?",
+        "UPDATE till_sessions SET closed_at = $1, counted_cash = $2, expected_cash = $3, status = 'closed' WHERE id = $4",
     )
     .bind(dt_str(closed_at))
     .bind(dec_str(counted_cash))
@@ -303,7 +323,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO payments (id, transaction_id, tender, amount, reference, authorization, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO payments (id, transaction_id, tender, amount, reference, \"authorization\", created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(uuid_str(payment.id))
     .bind(uuid_str(payment.transaction_id))
@@ -322,7 +342,7 @@ pub async fn list_payments_for_transaction(
     transaction_id: Uuid,
 ) -> Result<Vec<PaymentRow>, DbError> {
     let rows =
-        sqlx::query("SELECT * FROM payments WHERE transaction_id = ? ORDER BY created_at ASC")
+        sqlx::query("SELECT * FROM payments WHERE transaction_id = $1 ORDER BY created_at ASC")
             .bind(uuid_str(transaction_id))
             .fetch_all(pool)
             .await?;
@@ -335,7 +355,7 @@ pub async fn get_sync_state(
     pool: &AnyPool,
     store_id: Uuid,
 ) -> Result<Option<SyncStateRow>, DbError> {
-    let row = sqlx::query("SELECT * FROM sync_state WHERE store_id = ?")
+    let row = sqlx::query("SELECT * FROM sync_state WHERE store_id = $1")
         .bind(uuid_str(store_id))
         .fetch_optional(pool)
         .await?;
@@ -348,7 +368,7 @@ pub async fn get_sync_state(
 /// Insert or replace the sync-state row for a store.
 pub async fn upsert_sync_state(pool: &AnyPool, state: &SyncStateRow) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO sync_state (store_id, last_batch_id, last_synced_at, pending_count) VALUES (?, ?, ?, ?) ON CONFLICT(store_id) DO UPDATE SET last_batch_id = excluded.last_batch_id, last_synced_at = excluded.last_synced_at, pending_count = excluded.pending_count",
+        "INSERT INTO sync_state (store_id, last_batch_id, last_synced_at, pending_count) VALUES ($1, $2, $3, $4) ON CONFLICT(store_id) DO UPDATE SET last_batch_id = excluded.last_batch_id, last_synced_at = excluded.last_synced_at, pending_count = excluded.pending_count",
     )
     .bind(uuid_str(state.store_id))
     .bind(opt_uuid_str(state.last_batch_id))

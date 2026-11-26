@@ -16,6 +16,7 @@ df-db = { workspace = true }
 df-domain = { workspace = true }
 df-edi = { workspace = true }
 df-reports = { workspace = true }
+df-sync = { workspace = true }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -27,5 +28,6 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 df-auth-http = { workspace = true }
+df-sync = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }

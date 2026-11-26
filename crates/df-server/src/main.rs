@@ -53,8 +53,8 @@
 //!   not a fresh database (SQLite would otherwise create one
 //!   silently).
 //!
-//! The other modes remain Phase 0 stubs (exit 2) until their phases
-//! land.
+//! The remaining modes (`standalone`, `worker`) are still Phase 0
+//! stubs (exit 2) until their phases land.
 //!
 //! ```text
 //! df-server edge --db sqlite:edge.db --store-id <uuid> --listen 127.0.0.1:8080
@@ -85,6 +85,33 @@
 //! unless `--force` is passed AND the operator types `YES` at the
 //! confirmation prompt. See `docs/auth.md` for the full bootstrap
 //! procedure.
+//!
+//! Phase 8 (v1.2) — PostgreSQL HQ mode:
+//!
+//! * `hq` is live: it connects to the database named by `--db`
+//!   (or the `DATABASE_URL` env var when `--db` is absent — the
+//!   flag wins), applies the pending migrations for the URL's
+//!   dialect, then serves the `df-api` router on `--listen`
+//!   (default `127.0.0.1:3000`) with the pool in `ApiState`. The
+//!   Phase 7 auth gate applies exactly as on the `df-api` binary:
+//!   every route except `/health`, `/api-docs/openapi.json` and
+//!   the `/api/v1/auth/*` login endpoints requires a `Bearer
+//!   dfp_...` session token, with per-route RBAC. HQ works against
+//!   PostgreSQL or SQLite — the dialect follows the URL.
+//! * `migrate schema` applies pending migrations to the database
+//!   named by `--db` / `DATABASE_URL` (PostgreSQL or SQLite) and
+//!   prints which migrations it applied as JSON; a second run is
+//!   a no-op (`"status": "already_up_to_date"`). The applied list
+//!   is read from sqlx's own `_sqlx_migrations` tracking table
+//!   before and after the run — no parallel tracking exists.
+//! * The database URL is never logged: startup logs show the
+//!   redacted URL (`postgres://***@host:5432/db`).
+//!
+//! ```text
+//! df-server migrate schema --db postgres://decor:<password>@127.0.0.1:5432/decorpos
+//! df-server hq --db postgres://decor:<password>@127.0.0.1:5432/decorpos --org-id <uuid> [--store-id <uuid>] [--listen 127.0.0.1:3000]
+//! df-server users create-admin --db postgres://decor:<password>@127.0.0.1:5432/decorpos --org-id <uuid> --email admin@example.invalid --display-name "Admin"
+//! ```
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -107,7 +134,7 @@ use uuid::Uuid;
 #[command(
     name = "df-server",
     version,
-    about = "decor-pos unified server binary (edge, reports and jobs run live in Phase 2, v0.3)"
+    about = "decor-pos unified server binary (hq live in Phase 8, v1.2; edge, reports and jobs live since v0.3)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -118,8 +145,28 @@ struct Cli {
 enum Command {
     /// All-in-one single-binary mode (df-api + df-edge + df-jobs).
     Standalone,
-    /// Central HQ server mode.
-    Hq,
+    /// Central HQ server mode (Phase 8, v1.2): connects to the
+    /// database, applies pending migrations, then serves the
+    /// `df-api` router (with the Phase 7 auth gate) on `--listen`.
+    Hq {
+        /// sqlx database URL, e.g.
+        /// `postgres://decor:<password>@127.0.0.1:5432/decorpos`
+        /// or `sqlite:edge.db`. When absent, the `DATABASE_URL`
+        /// env var is used; `--db` wins when both are set.
+        #[arg(long)]
+        db: Option<String>,
+        /// Address to listen on, e.g. `127.0.0.1:3000`.
+        #[arg(long, default_value = "127.0.0.1:3000")]
+        listen: SocketAddr,
+        /// Organization UUID the HQ API scopes to (required:
+        /// the admin endpoints 503 without one).
+        #[arg(long)]
+        org_id: Uuid,
+        /// Default store UUID (query `?store_id=` overrides it
+        /// per call).
+        #[arg(long)]
+        store_id: Option<Uuid>,
+    },
     /// Store edge daemon mode: local SQLite + POS HTTP/WS API.
     Edge {
         /// sqlx database URL, e.g. `sqlite:edge.db` or `sqlite::memory:`.
@@ -215,6 +262,18 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum MigrateCommand {
+    /// Apply pending schema migrations to the database named by
+    /// `--db` (or `DATABASE_URL` when `--db` is absent) and print
+    /// the result as JSON: the dialect, the versions newly applied
+    /// this run, and all applied versions. A second run is a
+    /// no-op (`"status": "already_up_to_date"`, exit 0).
+    Schema {
+        /// sqlx database URL, e.g. a PostgreSQL URL or
+        /// `sqlite:edge.db`. When absent, the `DATABASE_URL` env
+        /// var is used; `--db` wins when both are set.
+        #[arg(long)]
+        db: Option<String>,
+    },
     /// Import legacy Decor Fusion CSVs from a directory
     /// (customers, products, formulas, AR balances, inventory)
     /// and print the reconciliation manifest as JSON. The
@@ -580,6 +639,161 @@ async fn open_pool(db: &str) -> df_db::AnyPool {
             std::process::exit(1);
         }
     }
+}
+
+/// Resolve a database URL: `--db` wins when given (and non-empty),
+/// otherwise the `DATABASE_URL` env var, otherwise `None` — the
+/// caller exits 2 with a usage error. The URL value is never logged
+/// by this function.
+fn resolve_db_url(flag: Option<String>) -> Option<String> {
+    if let Some(db) = flag.filter(|db| !db.is_empty()) {
+        return Some(db);
+    }
+    std::env::var("DATABASE_URL")
+        .ok()
+        .filter(|db| !db.is_empty())
+}
+
+/// Require a database URL for a subcommand: `--db` wins, else
+/// `DATABASE_URL`; exit 2 when neither is set.
+fn require_db_url(flag: Option<String>, what: &str) -> String {
+    match resolve_db_url(flag) {
+        Some(db) => db,
+        None => {
+            eprintln!("df-server {what}: no database — pass --db <url> or set DATABASE_URL");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// The migration set for a database URL: PostgreSQL URLs take the
+/// `postgres` migrations, anything else the SQLite set.
+fn dialect_for_url(db: &str) -> df_db::Dialect {
+    if db.starts_with("postgres") {
+        df_db::Dialect::Postgres
+    } else {
+        df_db::Dialect::Sqlite
+    }
+}
+
+/// Versions sqlx has recorded in its own `_sqlx_migrations`
+/// tracking table, in ascending order. Empty when the table does
+/// not exist yet (a fresh database) — this reads sqlx's tracking,
+/// it does not re-implement it. sqlx 0.8.6's public `Migrator`
+/// exposes no applied-migration list, so the table read is the
+/// only way to report what a run applied.
+async fn applied_migration_versions(pool: &df_db::AnyPool) -> Vec<i64> {
+    sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations ORDER BY version")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+}
+
+/// Outcome of a migration run: which versions this run applied
+/// (`newly_applied`) and every version applied in total
+/// (`applied`), both ascending.
+struct MigrationReport {
+    newly_applied: Vec<i64>,
+    applied: Vec<i64>,
+}
+
+/// Open a pool, apply the pending migrations for the URL's
+/// dialect, and report what changed. The pool is returned so the
+/// caller (e.g. `hq`) can keep serving on it.
+async fn migrate_and_report(db: &str, what: &str) -> (df_db::AnyPool, MigrationReport) {
+    let pool = open_pool(db).await;
+    let before = applied_migration_versions(&pool).await;
+    if let Err(err) = df_db::migrate(&pool, dialect_for_url(db)).await {
+        eprintln!("df-server {what}: migration failed: {err}");
+        std::process::exit(1);
+    }
+    let applied = applied_migration_versions(&pool).await;
+    let newly_applied = applied
+        .iter()
+        .filter(|version| !before.contains(version))
+        .copied()
+        .collect();
+    (
+        pool,
+        MigrationReport {
+            newly_applied,
+            applied,
+        },
+    )
+}
+
+/// `df-server migrate schema`: apply pending migrations and print
+/// the result as JSON. Exit 0 whether or not anything was applied.
+async fn run_migrate_schema(db_flag: Option<String>) -> ! {
+    let db = require_db_url(db_flag, "migrate schema");
+    let dialect = dialect_for_url(&db);
+    let (_pool, report) = migrate_and_report(&db, "migrate schema").await;
+    let status = if report.newly_applied.is_empty() {
+        "already_up_to_date"
+    } else {
+        "migrated"
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "database": df_db::redact_db_url(&db),
+            "dialect": match dialect {
+                df_db::Dialect::Postgres => "postgres",
+                df_db::Dialect::Sqlite => "sqlite",
+            },
+            "status": status,
+            "newly_applied": report.newly_applied,
+            "applied": report.applied,
+        }))
+        .expect("report serialises")
+    );
+    std::process::exit(0);
+}
+
+/// `df-server hq`: connect, migrate, then serve the `df-api`
+/// router (Phase 7 auth gate included — `create_router` applies
+/// it, so HQ routes are authenticated exactly like `df-api`'s).
+async fn run_hq(
+    db_flag: Option<String>,
+    listen: SocketAddr,
+    org_id: Uuid,
+    store_id: Option<Uuid>,
+) -> ! {
+    let db = require_db_url(db_flag, "hq");
+    let (pool, report) = migrate_and_report(&db, "hq").await;
+    println!(
+        "df-server hq: database {} — {} migration(s) applied in total ({} newly applied this start)",
+        df_db::redact_db_url(&db),
+        report.applied.len(),
+        report.newly_applied.len()
+    );
+    if !report.newly_applied.is_empty() {
+        println!(
+            "df-server hq: newly applied migrations: {:?}",
+            report.newly_applied
+        );
+    }
+    let state = df_api::ApiState {
+        pool: Some(pool),
+        org_id: Some(org_id),
+        store_id,
+        ..df_api::ApiState::default()
+    };
+    let router = df_api::create_router(state);
+    let listener = match tokio::net::TcpListener::bind(listen).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            eprintln!("df-server hq: cannot bind {listen}: {err}");
+            std::process::exit(1);
+        }
+    };
+    println!("df-server hq listening on http://{listen} (org {org_id})");
+    println!("OpenAPI: http://{listen}/api-docs/openapi.json");
+    if let Err(err) = axum::serve(listener, router).await {
+        eprintln!("df-server hq: serve failed: {err}");
+        std::process::exit(1);
+    }
+    std::process::exit(0);
 }
 
 /// The store's currency: `--currency` wins when given, otherwise
@@ -1621,7 +1835,12 @@ async fn main() {
     let cli = Cli::parse();
     match cli.command {
         Command::Standalone => not_implemented("standalone"),
-        Command::Hq => not_implemented("hq"),
+        Command::Hq {
+            db,
+            listen,
+            org_id,
+            store_id,
+        } => run_hq(db, listen, org_id, store_id).await,
         Command::Edge {
             db,
             store_id,
@@ -1644,6 +1863,7 @@ async fn main() {
         }
         Command::Worker => not_implemented("worker"),
         Command::Migrate { command } => match command {
+            MigrateCommand::Schema { db } => run_migrate_schema(db).await,
             MigrateCommand::Import {
                 db,
                 org_id,
@@ -1844,5 +2064,66 @@ async fn main() {
                 .await
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dialect_for_url_prefers_postgres_prefix() {
+        assert_eq!(
+            dialect_for_url("postgres://decor:secret@127.0.0.1:5432/decorpos"),
+            df_db::Dialect::Postgres
+        );
+        assert_eq!(
+            dialect_for_url("postgresql://decor@db/decorpos"),
+            df_db::Dialect::Postgres
+        );
+        assert_eq!(dialect_for_url("sqlite:edge.db"), df_db::Dialect::Sqlite);
+        assert_eq!(dialect_for_url("sqlite::memory:"), df_db::Dialect::Sqlite);
+    }
+
+    #[test]
+    fn resolve_db_url_flag_wins_over_env() {
+        let saved = std::env::var("DATABASE_URL").ok();
+        unsafe { std::env::set_var("DATABASE_URL", "sqlite:from-env.db") };
+        let resolved = resolve_db_url(Some("sqlite:from-flag.db".to_string()));
+        match saved {
+            Some(value) => unsafe { std::env::set_var("DATABASE_URL", value) },
+            None => unsafe { std::env::remove_var("DATABASE_URL") },
+        }
+        assert_eq!(resolved.as_deref(), Some("sqlite:from-flag.db"));
+    }
+
+    #[test]
+    fn resolve_db_url_falls_back_to_env_then_none() {
+        let saved = std::env::var("DATABASE_URL").ok();
+        unsafe { std::env::set_var("DATABASE_URL", "sqlite:from-env.db") };
+        let from_env = resolve_db_url(None);
+        unsafe { std::env::remove_var("DATABASE_URL") };
+        let neither = resolve_db_url(None);
+        match saved {
+            Some(value) => unsafe { std::env::set_var("DATABASE_URL", value) },
+            None => unsafe { std::env::remove_var("DATABASE_URL") },
+        }
+        assert_eq!(from_env.as_deref(), Some("sqlite:from-env.db"));
+        assert_eq!(neither, None);
+    }
+
+    /// The reporting primitive `migrate schema` and `hq` share: a
+    /// fresh database reports no applied versions, `migrate`
+    /// applies 0001–0013 (0008 does not exist), and a second run
+    /// changes nothing.
+    #[tokio::test]
+    async fn migration_report_is_idempotent() {
+        let pool = df_db::connect("sqlite::memory:").await.unwrap();
+        assert!(applied_migration_versions(&pool).await.is_empty());
+        df_db::migrate(&pool, df_db::Dialect::Sqlite).await.unwrap();
+        let applied = applied_migration_versions(&pool).await;
+        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13]);
+        df_db::migrate(&pool, df_db::Dialect::Sqlite).await.unwrap();
+        assert_eq!(applied_migration_versions(&pool).await, applied);
     }
 }

@@ -1,18 +1,24 @@
-# Self-Hosting decor-pos (v1.0)
+# Self-Hosting decor-pos (v1.2)
 
 One-command stack, single-binary mode, and Kubernetes. Read
-`docs/security-review-v1.0.md` first: **v1.0 has no authentication on
-the API or the edge HTTP API** — this stack is for a trusted local
-network or a VPN, never the open internet.
+`docs/security-review-v1.0.md` first, and `docs/auth.md` for the
+Phase 7 auth gate: since v1.1 every `df-api` / `df-server hq` route
+except `/health`, `/api-docs/openapi.json` and the auth login
+endpoints requires a `Bearer dfp_...` session token (no default
+password exists; create the first admin with
+`df-server users create-admin`). This stack is for a trusted local
+network or a VPN, never the open internet without a reverse proxy
+in front.
 
-## What runs in v1.0
+## What runs in v1.2
 
-| Component | Status in v1.0 |
+| Component | Status in v1.2 |
 |---|---|
 | `edge` — `df-server edge` (SQLite) | Working: counter POS, portal, BOPIS, sync outbox |
 | `api` — `df-api` (HQ read API) | Working: health, OpenAPI, admin reads against the edge SQLite file |
-| `postgres` — PostgreSQL 16 | **Provisioned only.** `df-server hq` / `migrate` are not implemented, so nothing connects to it yet. It is in the stack so the database, volume and credentials exist when HQ lands. PostgreSQL round-trip is untested in v1.0. |
-| `standalone` / `hq` / `worker` / `migrate` | Not implemented (`df-server <mode>` exits 2) |
+| `hq` — `df-server hq` (PostgreSQL or SQLite) | Working in v1.2: connects to the database named by `--db` / `DATABASE_URL`, applies pending migrations, then serves the same `df-api` router — with the same Phase 7 auth gate — on `--listen` (default `127.0.0.1:3000`). `df-server migrate schema` applies migrations standalone (idempotent; a second run reports `already_up_to_date`). PostgreSQL round-trip: see Validation status below. |
+| `postgres` — PostgreSQL 16 | Working in v1.2 as the HQ database (see `hq` above). The compose stack still provisions it with the same credentials/volume as in v1.0. |
+| `standalone` / `worker` | Not implemented (`df-server <mode>` exits 2) |
 
 ## 1-command Docker Compose
 
@@ -55,7 +61,8 @@ data).
 | `ORG_ID` | edge, api | *(required)* | UUID of the organization |
 | `STORE_NAME` | edge | `Decor POS Store` | Shown on receipts |
 | `CURRENCY` | edge | `USD` | `USD` or `CAD` |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | postgres | `decor` / *(required)* / `decorpos` | Provisioned for future HQ; unused in v1.0 |
+| `DATABASE_URL` | hq, migrate schema | *(none — `--db` or this is required)* | sqlx URL for the HQ database: `postgres://<user>:<password>@<host>:<port>/<database>` or `sqlite:<path>`. `--db` wins when both are set. Never commit a real URL; never log one (startup logs show the redacted form `postgres://***@host:5432/db`). |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | postgres | `decor` / *(required)* / `decorpos` | The HQ database credentials; `DATABASE_URL` is built from these. |
 | `STRIPE_API_KEY`, `STRIPE_TERMINAL_LOCATION_ID` | edge | *(empty)* | Env-only; empty = mock terminal. Live Stripe Terminal calls are not implemented in v1.0 |
 | `DF_TYPST_BIN` | edge | *(empty)* | Path to a `typst` binary for monthly-statement PDFs. The image does not bundle Typst — mount one or run `statements` on the host |
 
@@ -64,7 +71,7 @@ data).
 | Volume / port | Purpose |
 |---|---|
 | `edgedata` → `/data` | Edge SQLite database (`edge.db`) — the only durable state in v1.0. Shared by the `api` service (read/write pool, no migrations). |
-| `pgdata` → `/var/lib/postgresql/data` | Postgres data (unused in v1.0) |
+| `pgdata` → `/var/lib/postgresql/data` | Postgres data — the HQ database in v1.2. |
 | `8080` (edge), `3000` (api) | Host-mapped HTTP. Postgres is bound to `127.0.0.1:5432` only. |
 
 ## Single binary (no Docker)
@@ -80,13 +87,62 @@ cargo build --release --locked -p df-server -p df-api
 `df-server edge` creates and migrates the SQLite database on open.
 `df-api` runs no migrations — the database must already exist.
 
+### Local PostgreSQL (dev)
+
+On Ubuntu, the dev VM provisions PostgreSQL 16 from apt (verified
+Nov 26, 2026 — no workaround was needed despite an earlier apt
+issue):
+
+```sh
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-16
+pg_ctlcluster 16 main start
+# as the postgres superuser:
+CREATE ROLE decorpos LOGIN PASSWORD '<password>' CREATEDB;
+CREATE DATABASE decorpos_hq OWNER decorpos;
+```
+
+Connection URL shape: `postgres://decorpos:<password>@127.0.0.1:5432/decorpos_hq`
+(never commit a real password; the round-trip tests read the URL
+from an env/file outside the repo and skip cleanly when no live
+Postgres is reachable).
+
+### HQ against PostgreSQL (v1.2)
+
+```sh
+# 1. Apply the schema (first run only; a second run is a no-op).
+export DATABASE_URL='postgres://decor:<password>@127.0.0.1:5432/decorpos'
+./target/release/df-server migrate schema
+# → {"database": "postgres://***@127.0.0.1:5432/decorpos", "dialect": "postgres",
+#    "status": "migrated", "newly_applied": [1, 2, ...], "applied": [1, 2, ...]}
+
+# 2. Create the first admin (migrations run first, so this also works
+#    on a fresh database; password from DF_USERS_PASSWORD or stdin).
+export DF_USERS_PASSWORD='correct horse battery staple'
+./target/release/df-server users create-admin --db "$DATABASE_URL" \
+  --org-id <uuid> --email admin@example.invalid --display-name "Admin"
+
+# 3. Start HQ. --db wins over DATABASE_URL when both are set.
+./target/release/df-server hq --db "$DATABASE_URL" \
+  --org-id <uuid> --listen 127.0.0.1:3000
+curl -s http://127.0.0.1:3000/health   # {"status":"ok","version":"1.2.0"}
+```
+
+`df-server hq` logs the redacted database URL, how many migrations
+are applied (and how many this start applied), then the listen
+address. Admin routes require a `Bearer dfp_...` token from
+`POST /api/v1/auth/login` — see `docs/auth.md` §7 for the full
+bootstrap and the role → route matrix.
+
 ## Helm (Kubernetes)
 
 A skeleton chart is in `deploy/helm/decor-pos/` (edge + API
 Deployments/Services, shared PVC, optional PostgreSQL
 StatefulSet). It is a skeleton: values are placeholders and the
 Services are `ClusterIP` only — no Ingress is defined, deliberately,
-because v1.0 has no authentication.
+because v1.0 had no authentication — since v1.1 the Phase 7 gate
+(see `docs/auth.md`) applies, so an Ingress still needs TLS plus
+the Bearer-token flow, not open access.
 
 ```sh
 # Build and push the image first (the chart references it by
@@ -111,8 +167,8 @@ Caveats:
   on the same node; for multi-node clusters use a `ReadWriteMany`
   storage class or pin the pods with affinity.
 - One edge replica only — the SQLite file is local to the pod.
-- Set `postgres.enabled=false` to skip the (unused in v1.0)
-  PostgreSQL StatefulSet.
+- Set `postgres.enabled=false` to skip the PostgreSQL StatefulSet
+  (only when HQ is not used).
 
 ## Validation status (honest)
 
@@ -139,3 +195,44 @@ What was actually run in the v1.0 VM, and what was not:
   Docker Hub; if it does not, use the closest newer
   `rust:<version>-bookworm` tag (the code needs ≥ 1.88 for
   let-chains).
+
+### v1.2 additions (HQ mode)
+
+- ✅ `df-server migrate schema` verified against SQLite: first run
+  applies migrations 1–12 (0008 does not exist) and reports them;
+  second run exits 0 with `"status": "already_up_to_date"` and no
+  changes. Covered by `crates/df-server/tests/migrate_schema.rs`
+  (also covers the `DATABASE_URL` fallback).
+- ✅ `df-server hq` verified against SQLite: starts, migrates,
+  answers `/health` with `{"status":"ok","version":"1.2.0"}`,
+  returns 401 on an admin route without a token (the Phase 7 gate
+  is live on HQ), and 200 with a real admin session
+  (`POST /api/v1/auth/login` → `Bearer dfp_...`). Covered by
+  `crates/df-server/tests/hq_mode.rs`.
+- ✅ Live-Postgres round-trip (PostgreSQL 16.15, local apt install —
+  see "Local PostgreSQL (dev)" below): `df-server migrate schema`
+  applies 12 migrations `[1,2,3,4,5,6,7,9,10,11,12,13]` (0008 does
+  not exist), second run `already_up_to_date`; `df-server hq`
+  answers `/health` 200 `{"status":"ok","version":"1.2.0"}` and
+  401s protected routes without a token; edge (SQLite) cash sale
+  2 gal (grand 173.2088) + charge sale 1 gal (grand 86.6044) pushed
+  via HTTP ingest `POST /api/v1/sync/ingest` (`applied=5
+  duplicates=0`) → HQ inventory −3 (edge −3), HQ AR 86.6044 (edge
+  86.6044); replay `applied=0 duplicates=5`, figures unchanged.
+  Covered by `crates/df-server/tests/postgres_hq_round_trip.rs`
+  (4/4, skips cleanly with a printed reason when no live Postgres
+  is reachable). The blocker found during this phase is fixed:
+  `payments.authorization` is a reserved word in PostgreSQL, so
+  the column is quoted (`"authorization"`) in the Postgres
+  migration and the repo INSERT.
+- ✅ Postgres parity (Phase 8): sqlx 0.8.6's `Any` driver does NOT
+  rewrite `?` → `$N` (it reaches Postgres literally, where `?` is
+  the JSONB operator) and cannot bind/decode native PG types — so
+  all queries now use `$N` placeholders and the Postgres
+  migrations use TEXT columns with the same encoding SQLite
+  already uses (ids hyphenated, money exact decimal strings,
+  timestamps RFC 3339, JSON verbatim). Native PG types
+  (UUID/NUMERIC/TIMESTAMPTZ) remain a future data-layer phase, not
+  a silent regression: the logical schema is identical.
+- ✅ Full workspace suite: 458 passed, 0 failed (Phase 7 baseline
+  439); fmt + clippy clean.
