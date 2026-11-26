@@ -1,0 +1,21 @@
+[package]
+name = "df-auth-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "HTTP auth enforcement shared by df-edge and df-api (Phase 7, v1.1): bearer session gate, RBAC rules, login response DTOs, test seeding"
+
+[dependencies]
+axum = { workspace = true }
+chrono = { workspace = true }
+df-auth = { workspace = true }
+df-db = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+utoipa = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

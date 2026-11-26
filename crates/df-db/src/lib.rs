@@ -51,6 +51,15 @@
 //! shift templates, staff shifts and timeclock entries
 //! (migration `0011_phase6`).
 //!
+//! Phase 7 adds the auth-core repositories in [`auth`]: users
+//! (create / lookup / credential-hash setters / portal-customer
+//! link) and sessions (insert / lookup by token hash / revoke /
+//! list), plus the DB-backed login services (`login_with_password`,
+//! `login_with_pin`, `login_with_badge`, `login_portal`,
+//! `verify_manager_override`, `validate_session_token`) built on
+//! the pure verification in `df-auth` (migration `0012_phase7`:
+//! `roles` seed, `users.portal_customer_id`, `sessions`).
+//!
 //! SQLite (edge) FK note: the edge schema deliberately omits FOREIGN
 //! KEY references to HQ reference data (stores, users, customers,
 //! jobs, products) — the edge must keep selling when that data has
@@ -62,6 +71,7 @@
 //! `physical_counts`) are still enforced in SQLite.
 
 pub mod ar;
+pub mod auth;
 pub mod codec;
 pub mod crm;
 pub mod crm_reports;
@@ -77,6 +87,7 @@ pub mod tint;
 pub mod transactions;
 
 pub use ar::*;
+pub use auth::*;
 pub use crm::*;
 pub use crm_reports::*;
 pub use delivery::*;

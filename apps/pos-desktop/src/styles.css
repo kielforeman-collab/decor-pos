@@ -39,3 +39,15 @@ td small { color: #666; }
 .layaway label { flex: 1; min-width: 140px; }
 footer { font-size: 0.85rem; color: #555; margin-top: 8px; }
 kbd { background: #eee; border: 1px solid #999; border-radius: 3px; padding: 0 5px; font-family: inherit; }
+
+/* Phase 7 login / override — plain, dense, monospace (agreed POS
+   direction: white bg, black text, no teal, no gradients). */
+.login-main { display: block; }
+.login { max-width: 480px; margin: 24px auto; background: #fff; border: 1px solid #1c1c1c; border-radius: 6px; padding: 16px; font-family: 'Courier New', Courier, monospace; }
+.login h2 { font-size: 1.05rem; }
+.login h3 { font-size: 0.95rem; margin: 16px 0 6px; }
+.login label { font-family: 'Courier New', Courier, monospace; }
+.login input { font-family: 'Courier New', Courier, monospace; }
+.login .actions { display: flex; gap: 8px; margin-top: 4px; }
+.login .actions button { font-family: 'Courier New', Courier, monospace; }
+.login .error { font-family: 'Courier New', Courier, monospace; }

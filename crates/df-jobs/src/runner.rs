@@ -203,6 +203,21 @@ impl JobRunner {
     /// bad job never takes down a batch; `UnknownJob` is the only
     /// error, for a name that was never registered).
     pub async fn run_now(&self, ctx: &JobContext, job_name: &str) -> Result<JobRun, JobError> {
+        self.run_now_at(ctx, job_name, Utc::now()).await
+    }
+
+    /// Run one job by name, stamped at `now` instead of the wall
+    /// clock. `run_due` uses this so a run recorded for a simulated
+    /// instant does not poison the due check with real time (a
+    /// `run_now` stamp of "today, real clock" made the next day's
+    /// 06:00 run look already-run — the test only passed while real
+    /// time was before that 06:00).
+    pub async fn run_now_at(
+        &self,
+        ctx: &JobContext,
+        job_name: &str,
+        now: DateTime<Utc>,
+    ) -> Result<JobRun, JobError> {
         let run_fn = {
             let jobs = self.jobs.lock().expect("jobs lock");
             match jobs.get(job_name) {
@@ -210,7 +225,7 @@ impl JobRunner {
                 None => return Err(JobError::UnknownJob(job_name.to_string())),
             }
         };
-        let ran_at = Utc::now();
+        let ran_at = now;
         let run = match run_fn(ctx).await {
             Ok((summary, output)) => JobRun {
                 id: Uuid::now_v7(),
@@ -290,7 +305,7 @@ impl JobRunner {
             if last.is_some_and(|last| last >= scheduled) {
                 continue;
             }
-            if let Ok(run) = self.run_now(ctx, definition.name).await {
+            if let Ok(run) = self.run_now_at(ctx, definition.name, now).await {
                 runs.push(run);
             }
         }

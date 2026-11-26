@@ -18,27 +18,28 @@ import type {
   Transaction,
 } from './types'
 import { customerDisplayName, fmtDecimal, fmtMoney } from './types'
+import { getSession, logout, type AuthSession } from './auth'
+import Login from './Login'
 
-// The customer id IS the portal scope: there is no separate portal
-// login, and every call re-checks `portal_enabled` server-side
-// (403 otherwise).
-const STORAGE_KEY = 'portal-customer-id'
-const DEMO_CUSTOMER_ID = '00000000-0000-7000-8000-000000000101'
+// Phase 7: the portal no longer accepts a bare customer id — not from
+// the `?customer=` URL parameter (removed), not from localStorage
+// (the old `portal-customer-id` key is dead), not typed in by hand.
+// Identity is the login session: POST /pos/auth/login returns the
+// contractor's customer id, and that session-derived id is the only
+// scope used below. The backend scopes portal data to the logged-in
+// contractor server-side; `portal_enabled` is still re-checked
+// server-side (403 otherwise).
 
 type Tab = 'overview' | 'invoices' | 'statements' | 'formulas' | 'billpay'
 
-function readInitialCustomerId(): string | null {
-  const param = new URLSearchParams(window.location.search).get('customer')
-  if (param) {
-    window.localStorage.setItem(STORAGE_KEY, param)
-    return param
-  }
-  return window.localStorage.getItem(STORAGE_KEY)
-}
-
 export default function App() {
-  const [customerId, setCustomerId] = useState<string | null>(readInitialCustomerId)
-  const [signInInput, setSignInInput] = useState('')
+  // Phase 7: session restored from localStorage on reload; a 401 from
+  // any API call clears it (api.ts) and the listener below returns to
+  // the login screen. customerId is derived from the session only.
+  const [session, setSession] = useState<AuthSession | null>(() => getSession())
+  const [customerId, setCustomerId] = useState<string | null>(
+    () => getSession()?.user.customer_id ?? null,
+  )
   const [view, setView] = useState<PortalCustomerView | null>(null)
   const [tab, setTab] = useState<Tab>('overview')
   const [error, setError] = useState<string | null>(null)
@@ -78,7 +79,6 @@ export default function App() {
         const v = await getPortalCustomer(id)
         setView(v)
         setCustomerId(id)
-        window.localStorage.setItem(STORAGE_KEY, id)
         say(null)
       } catch (err) {
         fail(err)
@@ -89,24 +89,49 @@ export default function App() {
     [fail, say],
   )
 
-  // Sign in automatically when an id comes from ?customer= or storage.
+  // A 401 from any portal call clears the session (api.ts) and drops
+  // back to the login screen.
+  useEffect(() => {
+    const onUnauthorized = () => {
+      setSession(null)
+      setCustomerId(null)
+      setView(null)
+      setError('Session expired — sign in again.')
+    }
+    window.addEventListener('decor-pos-unauthorized', onUnauthorized)
+    return () => window.removeEventListener('decor-pos-unauthorized', onUnauthorized)
+  }, [])
+
+  // Load the portal view once the session (and its customer id) exist.
   useEffect(() => {
     if (customerId && !view) {
       void loadCustomer(customerId)
     }
   }, [customerId, view, loadCustomer])
 
-  const signIn = async () => {
-    const id = signInInput.trim()
+  // Called by the login screen. The session is already saved by
+  // login(); the customer id comes from that session, never from the
+  // URL or typed input.
+  const signIn = async (next: AuthSession) => {
+    const id = next.user.customer_id
     if (!id) {
-      setError('Enter a customer id.')
+      await logout()
+      setSession(null)
+      setCustomerId(null)
+      setError(
+        'This account is not linked to a contractor customer — ask the store to link it before signing in to the portal.',
+      )
       return
     }
-    await loadCustomer(id)
+    setSession(next)
+    setCustomerId(id)
+    setError(null)
+    setNotice(null)
   }
 
-  const signOut = () => {
-    window.localStorage.removeItem(STORAGE_KEY)
+  const signOut = async () => {
+    await logout()
+    setSession(null)
     setCustomerId(null)
     setView(null)
     setInvoices(null)
@@ -115,7 +140,6 @@ export default function App() {
     setPayments(null)
     setReorders([])
     setLastPayment(null)
-    setSignInInput('')
     setTab('overview')
     say(null)
   }
@@ -212,46 +236,18 @@ export default function App() {
         <header>
           <h1>Contractor Portal</h1>
           <div className="status">
-            <span>Decor POS — 24/7 contractor portal (v0.6)</span>
+            <span>Decor POS — 24/7 contractor portal (v1.1)</span>
           </div>
         </header>
-        <main>
-          <section>
-            <h2>Sign in with your customer id</h2>
-            <p className="hint">
-              There is no separate portal login: your customer id is the
-              scope. Every request re-checks that portal access is enabled
-              for that customer — a customer without portal access is
-              refused (403).
-            </p>
-            <div className="entry">
-              <input
-                value={signInInput}
-                onChange={(e) => setSignInInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void signIn()
-                }}
-                placeholder="00000000-0000-7000-8000-000000000101"
-                aria-label="Customer id"
-              />
-              <button onClick={() => void signIn()} disabled={busy}>
-                Sign in
-              </button>
-            </div>
-            <p className="hint">
-              Demo contractor (portal-enabled, seeded):{' '}
-              <button
-                className="linklike"
-                onClick={() => setSignInInput(DEMO_CUSTOMER_ID)}
-              >
-                {DEMO_CUSTOMER_ID}
-              </button>{' '}
-              — or open the portal with{' '}
-              <code>?customer={DEMO_CUSTOMER_ID}</code>
-            </p>
-            {error && <div className="error">{error}</div>}
-            {notice && <div className="notice">{notice}</div>}
-          </section>
+        <main className="login-main">
+          <Login
+            title="Sign in — Contractor Portal"
+            subtitle="Sign in with your email + password. The portal shows only your own account — a customer id from the URL is never accepted as identity."
+            allowPin={false}
+            onLoggedIn={(next) => void signIn(next)}
+          />
+          {error && <div className="error">{error}</div>}
+          {notice && <div className="notice">{notice}</div>}
         </main>
         <footer>
           24/7 self-serve: invoices, statements, formula reorders and bill
@@ -280,7 +276,7 @@ export default function App() {
           <span>
             Open balance: <strong>{fmtMoney(open_balance)}</strong>
           </span>
-          <button onClick={signOut}>Sign out</button>
+          <button onClick={() => void signOut()}>Sign out</button>
         </div>
       </header>
       <nav className="tabs">
@@ -609,8 +605,8 @@ export default function App() {
         )}
       </main>
       <footer>
-        Contractor Portal v0.6 — scoped by customer id; every call
-        re-checks portal access server-side.
+        Contractor Portal v1.1 — scoped to your signed-in account; every
+        call re-checks portal access server-side.
       </footer>
     </div>
   )

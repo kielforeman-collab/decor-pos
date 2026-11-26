@@ -177,7 +177,7 @@ fn store_from_row(row: &AnyRow) -> Result<Store, DbError> {
     })
 }
 
-fn user_from_row(row: &AnyRow) -> Result<UserRow, DbError> {
+pub(crate) fn user_from_row(row: &AnyRow) -> Result<UserRow, DbError> {
     Ok(UserRow {
         id: uuid_col(row, "id")?,
         org_id: uuid_col(row, "org_id")?,
@@ -188,6 +188,7 @@ fn user_from_row(row: &AnyRow) -> Result<UserRow, DbError> {
         counter_pin_hash: opt_text_col(row, "counter_pin_hash")?,
         badge_token_hash: opt_text_col(row, "badge_token_hash")?,
         role_id: uuid_col(row, "role_id")?,
+        portal_customer_id: opt_uuid_col(row, "portal_customer_id")?,
         active: bool_col(row, "active")?,
     })
 }
@@ -374,7 +375,7 @@ pub async fn list_stores_for_org(pool: &AnyPool, org_id: Uuid) -> Result<Vec<Sto
 
 pub async fn insert_user(pool: &AnyPool, user: &UserRow) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO users (id, org_id, email, display_name, password_hash, oidc_subject, counter_pin_hash, badge_token_hash, role_id, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO users (id, org_id, email, display_name, password_hash, oidc_subject, counter_pin_hash, badge_token_hash, role_id, portal_customer_id, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(uuid_str(user.id))
     .bind(uuid_str(user.org_id))
@@ -385,6 +386,7 @@ pub async fn insert_user(pool: &AnyPool, user: &UserRow) -> Result<(), DbError> 
     .bind(&user.counter_pin_hash)
     .bind(&user.badge_token_hash)
     .bind(uuid_str(user.role_id))
+    .bind(opt_uuid_str(user.portal_customer_id))
     .bind(user.active)
     .execute(pool)
     .await?;

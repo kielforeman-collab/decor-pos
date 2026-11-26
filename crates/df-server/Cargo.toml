@@ -10,6 +10,7 @@ description = "Unified df-server CLI binary (edge live; reports + jobs run in Ph
 chrono = { workspace = true }
 clap = { workspace = true }
 df-accounting = { workspace = true }
+df-auth = { workspace = true }
 df-db = { workspace = true }
 df-domain = { workspace = true }
 df-edge = { workspace = true }

@@ -32,3 +32,15 @@ td small { color: #666; }
 .card h3 { margin-top: 0; }
 pre { background: #f4f4f2; border: 1px solid #ccc; padding: 10px; white-space: pre-wrap; font-size: 0.8rem; max-height: 320px; overflow: auto; }
 footer { font-size: 0.85rem; color: #555; margin-top: 8px; }
+
+/* Phase 7 login — plain, dense, monospace (agreed POS direction:
+   white bg, black text, no teal, no gradients). */
+.login-main { display: block; }
+.login { max-width: 480px; margin: 24px auto; background: #fff; border: 1px solid #1c1c1c; border-radius: 6px; padding: 16px; font-family: 'Courier New', Courier, monospace; }
+.login h2 { font-size: 1.05rem; }
+.login h3 { font-size: 0.95rem; margin: 16px 0 6px; }
+.login label { font-family: 'Courier New', Courier, monospace; }
+.login input { font-family: 'Courier New', Courier, monospace; }
+.login .actions { display: flex; gap: 8px; margin-top: 4px; }
+.login .actions button { font-family: 'Courier New', Courier, monospace; }
+.login .error { font-family: 'Courier New', Courier, monospace; }

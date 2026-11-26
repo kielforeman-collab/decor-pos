@@ -13,7 +13,9 @@
 //! The pool is opened read/write but this binary runs no migrations —
 //! the database must already exist (created by `df-server edge` or a
 //! migration run); a missing table surfaces as a 500 from the
-//! handler, not a startup failure.
+//! handler, not a startup failure. Phase 7 (v1.1): every route
+//! except `/health`, `/api-docs/openapi.json` and the auth login
+//! endpoints requires a `Bearer dfp_...` session token.
 
 use clap::Parser;
 use df_api::{ApiState, create_router};
@@ -37,9 +39,10 @@ struct Cli {
     store_id: Option<Uuid>,
     /// Address to listen on. Defaults to loopback; pass
     /// `0.0.0.0:3000` when running inside Docker (see
-    /// `docs/self-hosting.md`). NOTE: this API has no authentication
-    /// yet (auth routes return 501) — do not expose it beyond a
-    /// trusted network; see `docs/security-review-v1.0.md`.
+    /// `docs/self-hosting.md`). Phase 7 (v1.1): every route except
+    /// `/health`, `/api-docs/openapi.json` and the auth login
+    /// endpoints requires a `Bearer dfp_...` session token — see
+    /// `docs/security-review-v1.0.md` and `docs/auth.md`.
     #[arg(long, default_value = "127.0.0.1:3000")]
     listen: std::net::SocketAddr,
 }

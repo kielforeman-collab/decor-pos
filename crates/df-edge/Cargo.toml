@@ -11,6 +11,8 @@ axum = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 df-ar = { workspace = true }
+df-auth = { workspace = true }
+df-auth-http = { workspace = true }
 df-crm = { workspace = true }
 df-db = { workspace = true }
 df-delivery = { workspace = true }
@@ -34,6 +36,7 @@ tokio = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+df-auth-http = { workspace = true }
 df-db = { workspace = true }
 df-domain = { workspace = true }
 df-sync = { workspace = true }

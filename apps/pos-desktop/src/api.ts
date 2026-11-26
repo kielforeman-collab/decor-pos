@@ -11,6 +11,12 @@
 //   the receipt preview is rendered from the checkout response.
 
 import { DEMO_CATALOG, findByBarcode } from './catalog'
+import {
+  UnauthorizedError,
+  authHeaders,
+  clearSession,
+  notifyUnauthorized,
+} from './auth'
 import { parseScannerInput } from './scan'
 import type {
   ApplyReport,
@@ -42,11 +48,20 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 async function http<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: { 'content-type': 'application/json' },
+    // Phase 7: every call carries the session token. In Tauri mode the
+    // invoke() calls below cannot carry a Bearer token (local IPC, not
+    // HTTP) — enforcement for those is the Tauri command layer's job,
+    // not this wrapper's; the login screen still gates the UI.
+    headers: { 'content-type': 'application/json', ...authHeaders() },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const json = await res.json()
   if (!res.ok) {
+    if (res.status === 401) {
+      clearSession()
+      notifyUnauthorized()
+      throw new UnauthorizedError()
+    }
     throw new Error(typeof json?.error === 'string' ? json.error : `HTTP ${res.status}`)
   }
   return json as T

@@ -10,6 +10,7 @@ description = "sqlx repositories & migrations (PostgreSQL HQ + SQLite Edge) for 
 anyhow = { workspace = true }
 chrono = { workspace = true }
 df-ar = { workspace = true }
+df-auth = { workspace = true }
 df-domain = { workspace = true }
 df-crm = { workspace = true }
 df-delivery = { workspace = true }

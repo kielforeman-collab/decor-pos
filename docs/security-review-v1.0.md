@@ -22,14 +22,24 @@ a trusted network until F1–F3 are closed. Two real defects found in
 this pass (credentials in logs; sync marking unapplied entries
 synced) are fixed with tests.
 
+**Phase 7 addendum (2026-11-26):** F1–F4 are now FIXED — the
+`df-auth-http` gate enforces `Bearer dfp_...` sessions with
+per-route RBAC on both surfaces, portal login replaces the
+customer-UUID scope, and the login endpoints are implemented
+(see §2 and `docs/auth.md` §6). Ports 8080/3000 are no longer
+open to any LAN host, but the loopback/trusted-network posture
+still applies as defence in depth: F9 (no TLS/mTLS) and F10 (no
+CORS, no rate limiting — including no login throttling) remain
+OPEN, so do not expose either listener publicly yet.
+
 ## Findings
 
 | # | Severity | Status | Finding |
 |---|----------|--------|---------|
-| F1 | High | OPEN | `df-api` has no authentication — every route is open |
-| F2 | High | OPEN | Edge HTTP API has no authentication — any LAN host can transact as any cashier |
-| F3 | Medium | OPEN | RBAC model defined but never enforced |
-| F4 | Medium | OPEN | Portal scope is the customer id — no separate portal login (known Phase 5 limit) |
+| F1 | High | **FIXED** (Phase 7, 2026-11-26) | `df-api` has no authentication — every route is open |
+| F2 | High | **FIXED** (Phase 7, 2026-11-26) | Edge HTTP API has no authentication — any LAN host can transact as any cashier |
+| F3 | Medium | **FIXED** (Phase 7, 2026-11-26) | RBAC model defined but never enforced |
+| F4 | Medium | **FIXED** (Phase 7, 2026-11-26) | Portal scope is the customer id — no separate portal login (known Phase 5 limit) |
 | F5 | Medium | **FIXED** | Database URLs (incl. Postgres password) printed to logs |
 | F6 | Medium | **FIXED** | `sync_now` marked a whole batch synced even if the sink applied only part of it |
 | F7 | Medium | **FIXED** | One conflicting transaction entry blocked a whole store's sync forever |
@@ -80,7 +90,7 @@ schema test. Verified by grep **and** by tests (run them with
 
 ## 2. Authentication & authorization
 
-### F1 — OPEN (High): `df-api` has no authentication
+### F1 — FIXED in Phase 7 (High): `df-api` has no authentication
 
 `crates/df-api/src/lib.rs` builds its router with no auth middleware
 or layer (grep `middleware|layer` finds only state extraction). All
@@ -96,7 +106,20 @@ at a public interface until auth lands. The compose file and Helm
 chart keep the API on ClusterIP / host-mapped ports for local use
 only, and both say so in comments.
 
-### F2 — OPEN (High): edge HTTP API has no authentication
+**Fixed 2026-11-26 (Phase 7, v1.1):** `create_router` applies the
+`df-auth-http` gate (`crates/df-auth-http/src/lib.rs`) per route
+group via `route_layer`. Every route except `GET /health`, `GET
+/api-docs/openapi.json` and the auth login endpoints requires a
+`Bearer dfp_...` session validated against the `sessions` table
+(unknown/expired/revoked/inactive → 401). The login endpoints are
+implemented over `df-db::auth` (`POST /api/v1/auth/login`,
+`/auth/counter-switch`, `/auth/logout`, `/auth/override-verify`;
+passkey/OIDC stay honest 501 stubs). The OpenAPI document stays
+public but is verified by test to contain no data rows
+(`hq_unauthenticated_is_401_health_and_openapi_public`,
+`openapi_document_is_3_1`). Full matrix: `docs/auth.md` §6.
+
+### F2 — FIXED in Phase 7 (High): edge HTTP API has no authentication
 
 `crates/df-edge/src/http.rs` has no auth check on any route:
 `POST /pos/transactions` (checkout), `/pos/tills/open`,
@@ -109,7 +132,22 @@ security boundary: **the edge API trusts the LAN**. Deployments must
 keep the edge on an isolated store network/VLAN, never on a guest or
 public network.
 
-### F3 — OPEN (Medium): RBAC defined, never enforced
+**Fixed 2026-11-26 (Phase 7, v1.1):** the same `df-auth-http`
+gate is applied to every edge route except `GET /health`, the
+`POST /pos/auth/*` login endpoints, and the public BOPIS
+storefront (`GET /catalog/products`, `POST /bopis/orders`, `GET
+/bopis/orders/{id}`). `cashier_id` in the open-till body is now
+ignored — the till's cashier is the session's user. Login/logout
+live on the edge itself (`POST /pos/auth/login`,
+`/counter-switch`, `/portal-login`, `/logout`,
+`/override-verify`) so the POS frontend needs no HQ API.
+Tests: `crates/df-edge/tests/phase7_http_auth.rs`
+(`unauthenticated_protected_edge_routes_are_401`,
+`expired_token_is_401_and_logout_revokes`). The LAN-trust note
+above still applies as defence in depth (F9/F10 remain open),
+but an unauthenticated LAN host can no longer transact.
+
+### F3 — FIXED in Phase 7 (Medium): RBAC defined, never enforced
 
 `crates/df-auth/src/rbac.rs` defines roles (`Cashier`,
 `SalesAssociate`, `Warehouse`, `Driver`, `Manager`, `Admin`,
@@ -119,7 +157,25 @@ authorize function (grep across all three crates: no matches). The
 model is ready; the enforcement wiring is a post-v1.0 item. Do not
 treat "role exists in the code" as "access is controlled".
 
-### F4 — OPEN (Medium): portal scope is the customer id
+**Fixed 2026-11-26 (Phase 7, v1.1):** every route group on both
+surfaces carries an `AuthRule::AnyOf(...)` gate built from
+`Role::has_permission` (`crates/df-auth-http/src/lib.rs`, groups
+in `df-edge/src/http.rs` `router()` and
+`df-api/src/lib.rs` `create_router`). A valid token with the
+wrong role gets 403; no token gets 401, never 403. Full
+role→route matrix: `docs/auth.md` §6. Tests:
+`cashier_forbidden_manager_allowed_on_reorder_points` (edge),
+`hq_cashier_forbidden_manager_allowed_on_colorant_levels` (HQ).
+Two follow-on gaps found during Phase 7 verification are also
+fixed in Phase 7: scheduling routes now carry real permissions
+(`SchedulingView` / `SchedulingManage` in `rbac.rs`, read vs
+manage groups in `df-edge/src/http.rs`), and `PortalContractor`
+holds no staff permissions at all (its `ArView` was removed, so
+a contractor session cannot read staff AR routes). Tests:
+`portal_contractor_holds_no_staff_permissions`,
+`scheduling_permissions` (`df-auth/src/rbac.rs`).
+
+### F4 — FIXED in Phase 7 (Medium): portal scope is the customer id
 
 `crates/df-edge/src/portal.rs:109-116` gates every portal call on
 `portal_enabled`, and `portal_reorder` additionally checks the
@@ -129,6 +185,24 @@ UUID can view their invoices, statements, formulas and pay their
 bills (known Phase 5 limit, restated here). UUIDs are unguessable in
 practice but they are bearer tokens, not credentials — do not put
 portal URLs in logs or shared links.
+
+**Fixed 2026-11-26 (Phase 7, v1.1):** portal routes now require
+a `PortalContractor` session (`POST /pos/auth/portal-login`,
+`df_db::login_portal`, session carries the linked
+`customer_id`), and every portal handler additionally checks the
+session's customer equals the requested customer — another
+contractor's id returns 403, never 404. `portal_enabled`
+remains a second gate. The public BOPIS storefront stays
+unauthenticated by design (catalog + order placement/status
+only); counter pickup completion requires staff auth
+(`PosCheckout`). Test:
+`portal_login_scopes_contractor_to_own_customer`
+(`crates/df-edge/tests/phase7_http_auth.rs`). The remaining gap
+noted here during the build — `PortalContractor` holding `ArView`
+in `rbac.rs`, which let a contractor read unscoped staff AR
+routes — is fixed in Phase 7 verification: the role now holds no
+staff permissions (`docs/auth.md` §9, test
+`portal_contractor_holds_no_staff_permissions`).
 
 ### What is good here
 

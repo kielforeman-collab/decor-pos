@@ -782,15 +782,28 @@ async fn balances_and_transfer_create_over_http() {
     use tower::ServiceExt;
 
     let edge = test_edge().await;
+    let users =
+        df_auth_http::test_support::seed_test_users(edge.pool(), Uuid::from_u128(ORG_ID)).await;
+    let manager = users.manager.token.as_str();
     let product = seed_paint(&edge).await;
     let store_a = Uuid::from_u128(STORE_A);
     let store_b = Uuid::from_u128(STORE_B);
     seed_on_hand(&edge, store_a, product, "10").await;
     let router = edge.router();
 
-    async fn get_json(router: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
+    async fn get_json(
+        router: axum::Router,
+        uri: &str,
+        token: &str,
+    ) -> (StatusCode, serde_json::Value) {
         let response = router
-            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let status = response.status();
@@ -804,6 +817,7 @@ async fn balances_and_transfer_create_over_http() {
         router: axum::Router,
         uri: &str,
         body: serde_json::Value,
+        token: &str,
     ) -> (StatusCode, serde_json::Value) {
         let response = router
             .oneshot(
@@ -811,6 +825,7 @@ async fn balances_and_transfer_create_over_http() {
                     .uri(uri)
                     .method("POST")
                     .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
                     .body(Body::from(body.to_string()))
                     .unwrap(),
             )
@@ -826,6 +841,7 @@ async fn balances_and_transfer_create_over_http() {
     let (status, body) = get_json(
         router.clone(),
         &format!("/inventory/balances?store_id={store_a}"),
+        manager,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -841,6 +857,7 @@ async fn balances_and_transfer_create_over_http() {
             "to_store_id": store_b.to_string(),
             "lines": [{"product_id": product.to_string(), "qty": "5", "unit_cost": "50.0000"}],
         }),
+        manager,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -851,6 +868,7 @@ async fn balances_and_transfer_create_over_http() {
         router.clone(),
         &format!("/inventory/transfers/{transfer_id}/ship"),
         serde_json::json!({}),
+        manager,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -859,6 +877,7 @@ async fn balances_and_transfer_create_over_http() {
     let (status, body) = get_json(
         router.clone(),
         &format!("/inventory/shelf-tags?product_id={product}"),
+        manager,
     )
     .await;
     assert_eq!(status, StatusCode::OK);

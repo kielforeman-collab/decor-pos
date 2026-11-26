@@ -3,10 +3,23 @@
 // the real edge API. Request shapes match
 // apps/web-backoffice/src/api.ts exactly where the endpoint is shared.
 //
+// Phase 7: every call carries `Authorization: Bearer <token>` from
+// localStorage key `df-pos-token` (same key in all four Phase 7 apps).
+// A 401 clears the session and notifies the app (see src/auth.ts),
+// which returns to the login screen. Queued outbox mutations are
+// replayed with the token too (see src/offline.ts) — and never while
+// logged out.
+//
 // Writes go through `mutate()`: while offline (or when the network
 // fails) the mutation is queued in the localStorage outbox instead
 // of being lost; see src/offline.ts for the idempotency caveat.
 
+import {
+  UnauthorizedError,
+  authHeaders,
+  clearSession,
+  notifyUnauthorized,
+} from './auth'
 import { addToOutbox } from './offline'
 import type {
   CrmActivity,
@@ -21,11 +34,16 @@ import type {
 async function http<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...authHeaders() },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const json = await res.json()
   if (!res.ok) {
+    if (res.status === 401) {
+      clearSession()
+      notifyUnauthorized()
+      throw new UnauthorizedError()
+    }
     throw new Error(typeof json?.error === 'string' ? json.error : `HTTP ${res.status}`)
   }
   return json as T

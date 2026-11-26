@@ -5,6 +5,7 @@ members = [
     "crates/df-domain",
     "crates/df-db",
     "crates/df-auth",
+    "crates/df-auth-http",
     "crates/df-api",
     "crates/df-sync",
     "crates/df-edge",
@@ -26,7 +27,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0 OR MIT"
@@ -43,6 +44,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 clap = { version = "4", features = ["derive"] }
 df-ar = { path = "crates/df-ar" }
 df-auth = { path = "crates/df-auth" }
+df-auth-http = { path = "crates/df-auth-http" }
 df-crm = { path = "crates/df-crm" }
 df-delivery = { path = "crates/df-delivery" }
 df-accounting = { path = "crates/df-accounting" }

@@ -4,6 +4,8 @@ import Driver from './Driver'
 import Sales from './Sales'
 import Warehouse from './Warehouse'
 import { loadOutbox, replayOutbox } from './offline'
+import { getSession, getToken, logout, type AuthSession } from './auth'
+import Login from './Login'
 
 type Tab = 'warehouse' | 'sales' | 'driver'
 
@@ -16,6 +18,10 @@ const TABS: { id: Tab; label: string }[] = [
 const STORE_KEY = 'decor-pos-mobile-store-id'
 
 export default function App() {
+  // Phase 7: no session → login screen. Restored from localStorage on
+  // reload; a 401 from any API call (or outbox replay) clears it and
+  // the 'decor-pos-unauthorized' listener below returns here.
+  const [session, setSession] = useState<AuthSession | null>(() => getSession())
   const [tab, setTab] = useState<Tab>('warehouse')
   const [online, setOnline] = useState(navigator.onLine)
   const [storeId, setStoreId] = useState(
@@ -58,6 +64,7 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false
+    if (!session) return
     getHealth()
       .then((h) => {
         if (!cancelled) setHealth(`edge ${h.status} · store ${h.store_id.slice(0, 8)}`)
@@ -68,9 +75,37 @@ export default function App() {
     return () => {
       cancelled = true
     }
+  }, [session])
+
+  useEffect(() => {
+    const onUnauthorized = () => {
+      setSession(null)
+      setSyncMsg('Session expired — sign in again to sync.')
+    }
+    window.addEventListener('decor-pos-unauthorized', onUnauthorized)
+    return () => window.removeEventListener('decor-pos-unauthorized', onUnauthorized)
   }, [])
 
+  async function doLogout() {
+    await logout()
+    setSession(null)
+    setSyncMsg(null)
+    // Phase 7 choice: the outbox is KEPT on logout — queued work is
+    // never deleted. It cannot sync until someone signs in again
+    // (replayOutbox refuses while logged out), and there is no
+    // background sync in this app, so nothing keeps running.
+  }
+
+  function handleLoggedIn(next: AuthSession) {
+    setSession(next)
+    setSyncMsg(null)
+  }
+
   async function sync() {
+    if (!getToken()) {
+      setSyncMsg('Not signed in — sign in to sync the outbox.')
+      return
+    }
     if (!navigator.onLine) {
       setSyncMsg('Still offline — nothing to sync yet.')
       return
@@ -104,16 +139,60 @@ export default function App() {
         )
       }
       setSyncMsg(parts.join(' · ') || 'Outbox is empty.')
+    } catch {
+      // replayOutbox throws only on a 401 (session expired): the
+      // listener already cleared the session, the entries stay queued.
+      refreshPending()
+      setSyncMsg('Session expired — sign in again to sync.')
     } finally {
       setSyncing(false)
     }
+  }
+
+  // Phase 7: login screen replaces the whole PWA until a session
+  // exists. The outbox count is still shown on the login screen when
+  // work is queued — it is kept, not deleted, and waits for sign-in.
+  if (!session) {
+    return (
+      <div>
+        <header className="app-header">
+          <h1>Decor POS — Mobile</h1>
+          <div className="sub">PWA v1.1</div>
+        </header>
+        <main>
+          <Login
+            title="Sign in — Mobile"
+            subtitle="Sign in with your email + password, or quick-switch with a counter PIN / badge (driver / warehouse)."
+            allowPin
+            onLoggedIn={handleLoggedIn}
+          />
+          {pending > 0 && (
+            <div className="outbox-bar">
+              <span>
+                Outbox: <span className="count">{pending}</span> pending — kept,
+                syncs after you sign in.
+              </span>
+            </div>
+          )}
+          {syncMsg && <div className="outbox-bar">{syncMsg}</div>}
+        </main>
+      </div>
+    )
   }
 
   return (
     <div>
       <header className="app-header">
         <h1>Decor POS — Mobile</h1>
-        <div className="sub">{health ?? 'checking edge…'} · PWA v0.6.0</div>
+        <div className="sub">
+          {health ?? 'checking edge…'} · PWA v1.1 ·{' '}
+          {session.user.display_name ?? session.user.email} ({session.user.role})
+        </div>
+        <div className="row" style={{ marginTop: 6 }}>
+          <button className="btn small secondary" onClick={() => void doLogout()}>
+            Log out
+          </button>
+        </div>
       </header>
 
       {online ? (

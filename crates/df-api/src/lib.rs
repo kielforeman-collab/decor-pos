@@ -1,9 +1,15 @@
 //! `df-api` — Axum REST API with utoipa OpenAPI 3.1 (Phase 2, v0.3).
 //!
-//! Working: `/health` and the OpenAPI document. Auth routes still
-//! return `501 Not Implemented` — there is no auth database wired in
-//! Phase 2, and no credential is ever accepted, logged, or stored
-//! here.
+//! Working: `/health` and the OpenAPI document. Phase 7 (v1.1)
+//! implements the auth endpoints (`POST /api/v1/auth/login`,
+//! `/auth/counter-switch`, `/auth/logout`,
+//! `/auth/override-verify`) over the `df-auth` + `df-db::auth`
+//! session primitives, and gates every other route on a `Bearer
+//! dfp_...` session token with per-route RBAC (see `docs/auth.md`).
+//! Passkey/OIDC stay 501 stubs — no credential is ever accepted,
+//! logged, or stored here beyond the login handlers' credential
+//! check (passwords/PINs are verified against Argon2id hashes and
+//! never persisted or logged).
 //!
 //! Phase 2 admin surface (spec §6.1), backed by `df-db` repos over
 //! the pool in [`ApiState`]: color search, tint formulas
@@ -34,11 +40,17 @@
 
 use std::str::FromStr;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
+use axum::middleware;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::NaiveDate;
+use df_auth::{OverrideCredential, Permission};
+use df_auth_http::{
+    AuthRule, AuthSession, ErrorBody, Gate, LoginResponse, LogoutResponse, OverrideVerifyResponse,
+    login_error,
+};
 use df_db::AnyPool;
 use df_db::InventoryBalance;
 use df_db::models::{ColorCatalogEntry, ColorantLevelRow, TintFormula};
@@ -66,7 +78,7 @@ pub struct ApiState {
 impl Default for ApiState {
     fn default() -> Self {
         Self {
-            version: "1.0.0",
+            version: "1.1.0",
             pool: None,
             org_id: None,
             store_id: None,
@@ -91,10 +103,18 @@ pub struct ErrorResponse {
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
+    /// Portal remember-me (30-day session) — only meaningful for a
+    /// `PortalContractor`; staff sessions are always 8 hours.
+    #[serde(default)]
+    pub remember_me: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CounterSwitchRequest {
+    /// Identifies the user: an Argon2id hash cannot be searched,
+    /// so a bare PIN/badge cannot name its user (see
+    /// `df_auth::login` docs).
+    pub email: String,
     /// 4–6 digit counter PIN, or a badge token.
     pub pin: Option<String>,
     pub badge_token: Option<String>,
@@ -316,29 +336,105 @@ pub async fn health() -> Json<HealthResponse> {
     })
 }
 
+/// The configured pool for an auth handler, or a 503 in the auth
+/// error shape (`ErrorBody`, not the admin `ErrorResponse`).
+fn api_pool(state: &ApiState) -> Result<AnyPool, (StatusCode, Json<ErrorBody>)> {
+    state.pool.clone().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorBody {
+                error: "no database configured for this API instance — restart df-api with --db <url> --org-id <uuid>".to_string(),
+            }),
+        )
+    })
+}
+
+type AuthResult<T> = Result<Json<T>, (StatusCode, Json<ErrorBody>)>;
+
 #[utoipa::path(
     post,
     path = "/api/v1/auth/login",
     request_body = LoginRequest,
     responses(
-        (status = 501, description = "Not implemented in Phase 0", body = ErrorResponse),
-        (status = 200, description = "Authenticated (future)", body = ErrorResponse)
+        (status = 200, description = "Authenticated — token + role + expiry", body = LoginResponse),
+        (status = 401, description = "Invalid credentials", body = ErrorBody),
+        (status = 503, description = "No database configured", body = ErrorBody)
     )
 )]
-pub async fn login(Json(_body): Json<LoginRequest>) -> (StatusCode, Json<ErrorResponse>) {
-    not_implemented("password login")
+pub async fn login(
+    State(state): State<ApiState>,
+    Json(body): Json<LoginRequest>,
+) -> AuthResult<LoginResponse> {
+    let pool = api_pool(&state)?;
+    df_db::login_with_password(
+        &pool,
+        &body.email,
+        &body.password,
+        body.remember_me.unwrap_or(false),
+    )
+    .await
+    .map(|outcome| Json(LoginResponse::from_outcome(&outcome)))
+    .map_err(login_error)
 }
 
 #[utoipa::path(
     post,
     path = "/api/v1/auth/counter-switch",
     request_body = CounterSwitchRequest,
-    responses((status = 501, description = "Not implemented in Phase 0", body = ErrorResponse))
+    responses(
+        (status = 200, description = "Authenticated — token + role + expiry", body = LoginResponse),
+        (status = 400, description = "Neither a PIN nor a badge token was given", body = ErrorBody),
+        (status = 401, description = "Invalid credentials", body = ErrorBody),
+        (status = 503, description = "No database configured", body = ErrorBody)
+    )
 )]
 pub async fn counter_switch(
-    Json(_body): Json<CounterSwitchRequest>,
-) -> (StatusCode, Json<ErrorResponse>) {
-    not_implemented("counter PIN/badge switch")
+    State(state): State<ApiState>,
+    Json(body): Json<CounterSwitchRequest>,
+) -> AuthResult<LoginResponse> {
+    let pool = api_pool(&state)?;
+    if let Some(pin) = &body.pin {
+        return df_db::login_with_pin(&pool, &body.email, pin)
+            .await
+            .map(|outcome| Json(LoginResponse::from_outcome(&outcome)))
+            .map_err(login_error);
+    }
+    if let Some(badge) = &body.badge_token {
+        return df_db::login_with_badge(&pool, &body.email, badge)
+            .await
+            .map(|outcome| Json(LoginResponse::from_outcome(&outcome)))
+            .map_err(login_error);
+    }
+    Err((
+        StatusCode::BAD_REQUEST,
+        Json(ErrorBody {
+            error: "counter-switch needs a pin or a badge_token".to_string(),
+        }),
+    ))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/logout",
+    responses(
+        (status = 200, description = "Session revoked", body = LogoutResponse),
+        (status = 401, description = "Invalid or expired session", body = ErrorBody)
+    )
+)]
+pub async fn logout(
+    State(state): State<ApiState>,
+    Extension(auth): Extension<AuthSession>,
+) -> AuthResult<LogoutResponse> {
+    let pool = api_pool(&state)?;
+    match df_db::revoke_session(&pool, auth.session_id).await {
+        Ok(()) => Ok(Json(LogoutResponse { revoked: true })),
+        Err(_) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: "logout failed".to_string(),
+            }),
+        )),
+    }
 }
 
 #[utoipa::path(
@@ -366,12 +462,42 @@ pub async fn oidc_callback() -> (StatusCode, Json<ErrorResponse>) {
     post,
     path = "/api/v1/auth/override-verify",
     request_body = OverrideVerifyRequest,
-    responses((status = 501, description = "Not implemented in Phase 0", body = ErrorResponse))
+    responses(
+        (status = 200, description = "Override approved — audit fields", body = OverrideVerifyResponse),
+        (status = 401, description = "Invalid credentials", body = ErrorBody),
+        (status = 403, description = "Approver is not a Manager or Admin", body = ErrorBody),
+        (status = 503, description = "No database configured", body = ErrorBody)
+    )
 )]
 pub async fn override_verify(
-    Json(_body): Json<OverrideVerifyRequest>,
-) -> (StatusCode, Json<ErrorResponse>) {
-    not_implemented("manager override verification")
+    State(state): State<ApiState>,
+    Json(body): Json<OverrideVerifyRequest>,
+) -> AuthResult<OverrideVerifyResponse> {
+    let pool = api_pool(&state)?;
+    if body.reason_code.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "reason_code is required".to_string(),
+            }),
+        ));
+    }
+    let user_id = Uuid::parse_str(&body.user_id).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: format!("user_id is not a UUID: {:?}", body.user_id),
+            }),
+        )
+    })?;
+    // Unknown approver id is a generic 401, like an unknown email.
+    let user = df_db::get_user_by_id(&pool, user_id)
+        .await
+        .map_err(|_| login_error(df_auth::AuthError::InvalidCredentials))?;
+    df_db::verify_manager_override(&pool, &user.email, &OverrideCredential::Pin(body.pin))
+        .await
+        .map(|approval| Json(OverrideVerifyResponse::from_approval(&approval)))
+        .map_err(login_error)
 }
 
 // --- Phase 2 tinting admin (spec §6.1) --------------------------------------
@@ -872,6 +998,7 @@ pub async fn edi_documents(
         health,
         login,
         counter_switch,
+        logout,
         passkey_verify,
         oidc_callback,
         override_verify,
@@ -886,10 +1013,14 @@ pub async fn edi_documents(
     components(schemas(
         HealthResponse,
         ErrorResponse,
+        ErrorBody,
         LoginRequest,
+        LoginResponse,
+        LogoutResponse,
         CounterSwitchRequest,
         PasskeyVerifyRequest,
         OverrideVerifyRequest,
+        OverrideVerifyResponse,
         ColorantLevelResponse,
         SetColorantLevelRequest
     )),
@@ -911,35 +1042,82 @@ pub async fn openapi_json() -> Json<serde_json::Value> {
 
 /// Build the router. Admin handlers read their pool/org/store from
 /// the passed [`ApiState`]; with the default state they 503.
+///
+/// Phase 7 (v1.1): every route except `GET /health`,
+/// `GET /api-docs/openapi.json` and the `/api/v1/auth/*` login
+/// endpoints requires a `Bearer dfp_...` session token (see
+/// `df_auth_http::gate` + `docs/auth.md` for the role → route
+/// matrix). The gate answers 401 for a missing / invalid / expired
+/// / revoked token and 403 for a valid token with the wrong role.
 pub fn create_router(state: ApiState) -> Router {
-    Router::new()
+    let pool = state.pool.clone();
+    let gate = |rule: AuthRule| {
+        middleware::from_fn_with_state(Gate::new(pool.clone(), rule), df_auth_http::gate)
+    };
+    let authenticated_gate = gate(AuthRule::Authenticated);
+    let inventory_view_gate = gate(AuthRule::AnyOf(vec![Permission::InventoryView]));
+    let inventory_adjust_gate = gate(AuthRule::AnyOf(vec![Permission::InventoryAdjust]));
+    let reports_gate = gate(AuthRule::AnyOf(vec![Permission::ReportView]));
+    let ar_view_gate = gate(AuthRule::AnyOf(vec![Permission::ArView]));
+    let customer_gate = gate(AuthRule::AnyOf(vec![Permission::CustomerManage]));
+
+    // Public by design: health, the OpenAPI document (shapes only —
+    // no data rows), and the login endpoints (how a session is
+    // obtained). Passkey/OIDC stay 501 stubs.
+    let public = Router::new()
         .route("/health", get(health))
         .route("/api-docs/openapi.json", get(openapi_json))
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/counter-switch", post(counter_switch))
         .route("/api/v1/auth/passkey/verify", post(passkey_verify))
         .route("/api/v1/auth/oidc/callback", get(oidc_callback))
-        .route("/api/v1/auth/override-verify", post(override_verify))
+        .route("/api/v1/auth/override-verify", post(override_verify));
+
+    let logout_routes = Router::new()
+        .route("/api/v1/auth/logout", post(logout))
+        .route_layer(authenticated_gate);
+
+    let inventory_view_routes = Router::new()
         .route("/api/v1/colors/search", get(search_colors))
-        .route(
-            "/api/v1/tinting/formulas",
-            get(list_formulas).post(create_formula),
-        )
+        .route("/api/v1/tinting/formulas", get(list_formulas))
         .route("/api/v1/tinting/colorants", get(list_colorants))
+        .route("/api/v1/inventory/balances", get(inventory_balances))
+        .route("/api/v1/deliveries/dispatch", get(delivery_dispatch))
+        .route_layer(inventory_view_gate);
+
+    let inventory_adjust_routes = Router::new()
+        .route("/api/v1/tinting/formulas", post(create_formula))
         .route("/api/v1/tinting/colorants/levels", post(set_colorant_level))
+        .route_layer(inventory_adjust_gate);
+
+    let report_routes = Router::new()
         .route("/api/v1/reports/daily-usage", get(daily_usage))
         .route("/api/v1/reports/low-stock", get(low_stock))
         .route("/api/v1/reports/shortage-alerts", get(shortage_alerts))
-        .route("/api/v1/inventory/balances", get(inventory_balances))
+        .route("/api/v1/edi/documents", get(edi_documents))
+        .route_layer(reports_gate);
+
+    let ar_routes = Router::new()
         .route(
             "/api/v1/ar/customers/{id}/summary",
             get(ar_customer_summary),
         )
         .route("/api/v1/ar/aging", get(ar_aging))
+        .route_layer(ar_view_gate);
+
+    let crm_routes = Router::new()
         .route("/api/v1/crm/activities", get(crm_activities))
         .route("/api/v1/crm/appointments", get(crm_appointments))
-        .route("/api/v1/deliveries/dispatch", get(delivery_dispatch))
-        .route("/api/v1/edi/documents", get(edi_documents))
+        .route_layer(customer_gate);
+
+    Router::new()
+        .merge(public)
+        .merge(logout_routes)
+        .merge(inventory_view_routes)
+        .merge(inventory_adjust_routes)
+        .merge(report_routes)
+        .merge(ar_routes)
+        .merge(crm_routes)
         .with_state(state)
 }
 
@@ -958,7 +1136,7 @@ mod tests {
         Decimal::from_str(s).unwrap()
     }
 
-    async fn seeded_state() -> ApiState {
+    async fn seeded_state() -> (ApiState, df_auth_http::test_support::SeededUsers) {
         let pool = df_db::connect("sqlite::memory:").await.unwrap();
         df_db::migrate(&pool, df_db::Dialect::Sqlite).await.unwrap();
         let org_id = Uuid::from_u128(0x2000);
@@ -1067,17 +1245,29 @@ mod tests {
         )
         .await
         .unwrap();
-        ApiState {
-            version: "1.0.0",
-            pool: Some(pool),
-            org_id: Some(org_id),
-            store_id: Some(store_id),
-        }
+        let users = df_auth_http::test_support::seed_test_users(&pool, org_id).await;
+        (
+            ApiState {
+                version: "1.1.0",
+                pool: Some(pool),
+                org_id: Some(org_id),
+                store_id: Some(store_id),
+            },
+            users,
+        )
     }
 
-    async fn get_json(router: Router, uri: &str) -> (StatusCode, serde_json::Value) {
+    async fn get_json(
+        router: Router,
+        uri: &str,
+        token: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut builder = Request::builder().uri(uri);
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
         let response = router
-            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .oneshot(builder.body(Body::empty()).unwrap())
             .await
             .unwrap();
         let status = response.status();
@@ -1091,16 +1281,17 @@ mod tests {
         router: Router,
         uri: &str,
         body: serde_json::Value,
+        token: Option<&str>,
     ) -> (StatusCode, serde_json::Value) {
+        let mut builder = Request::builder()
+            .uri(uri)
+            .method("POST")
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
         let response = router
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
+            .oneshot(builder.body(Body::from(body.to_string())).unwrap())
             .await
             .unwrap();
         let status = response.status();
@@ -1128,7 +1319,7 @@ mod tests {
             .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["status"], "ok");
-        assert_eq!(value["version"], "1.0.0");
+        assert_eq!(value["version"], "1.1.0");
     }
 
     #[tokio::test]
@@ -1153,17 +1344,31 @@ mod tests {
         assert!(value["paths"]["/api/v1/auth/login"].is_object());
         assert!(value["paths"]["/api/v1/tinting/formulas"].is_object());
         assert!(value["paths"]["/api/v1/reports/daily-usage"].is_object());
+        // The public document describes shapes only: it must not
+        // contain any data rows (no product SKU, no user email, no
+        // token, no seeded account number).
+        let text = serde_json::to_string(&value).unwrap();
+        for leak in [
+            "BM-REGAL-1G",
+            "example.invalid",
+            "dfp_",
+            "C-PORTAL-A",
+            "C-100",
+        ] {
+            assert!(!text.contains(leak), "openapi doc leaks {leak}");
+        }
     }
 
     #[tokio::test]
     async fn inventory_and_ar_reads() {
         use df_db::models::{ArLedgerEntry, Customer, InventoryLedgerEntry};
 
-        let state = seeded_state().await;
+        let (state, users) = seeded_state().await;
         let pool = state.pool.clone().unwrap();
         let store_id = state.store_id.unwrap();
         let org_id = state.org_id.unwrap();
         let router = create_router(state);
+        let admin = Some(users.admin.token.as_str());
 
         // 10 units received against the seeded Regal product.
         df_db::insert_inventory_delta(
@@ -1189,6 +1394,7 @@ mod tests {
         let (status, body) = get_json(
             router.clone(),
             &format!("/api/v1/inventory/balances?store_id={store_id}"),
+            admin,
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -1261,6 +1467,7 @@ mod tests {
         let (status, body) = get_json(
             router.clone(),
             &format!("/api/v1/ar/customers/{customer_id}/summary"),
+            admin,
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -1269,6 +1476,7 @@ mod tests {
         let (status, body) = get_json(
             router.clone(),
             &format!("/api/v1/ar/aging?store_id={store_id}&as_of=2026-11-25"),
+            admin,
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -1280,22 +1488,143 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auth_routes_are_501_in_phase_0() {
-        let router = create_router(ApiState::default());
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .uri("/api/v1/auth/login")
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"email":"a@example.invalid","password":"not-a-real-password"}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    async fn hq_login_logout_flow() {
+        use df_auth_http::test_support::{TEST_PASSWORD, TEST_PIN};
+
+        let (state, users) = seeded_state().await;
+        let store_id = state.store_id.unwrap();
+        let router = create_router(state);
+
+        // Wrong password: generic 401.
+        let (status, body) = post_json(
+            router.clone(),
+            "/api/v1/auth/login",
+            serde_json::json!({"email": "admin@example.invalid", "password": "wrong password"}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "invalid credentials");
+
+        // Right password: a dfp_ token, role + expiry in the body.
+        let (status, body) = post_json(
+            router.clone(),
+            "/api/v1/auth/login",
+            serde_json::json!({"email": "admin@example.invalid", "password": TEST_PASSWORD}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let token = body["token"].as_str().unwrap().to_string();
+        assert!(token.starts_with("dfp_"));
+        assert_eq!(body["role"], "Admin");
+        assert!(body["expires_at"].is_string());
+
+        // The token works on a protected route…
+        let (status, _) = get_json(
+            router.clone(),
+            &format!("/api/v1/inventory/balances?store_id={store_id}"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // …logout revokes it…
+        let (status, body) = post_json(
+            router.clone(),
+            "/api/v1/auth/logout",
+            serde_json::json!({}),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["revoked"], true);
+
+        // …and the revoked token is a 401 from then on.
+        let (status, _) = get_json(
+            router.clone(),
+            &format!("/api/v1/inventory/balances?store_id={store_id}"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Counter-switch by PIN for the cashier, and a manager
+        // override approval by the manager's PIN.
+        let (status, body) = post_json(
+            router.clone(),
+            "/api/v1/auth/counter-switch",
+            serde_json::json!({"email": "cashier@example.invalid", "pin": TEST_PIN}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["role"], "Cashier");
+
+        let (status, body) = post_json(
+            router.clone(),
+            "/api/v1/auth/override-verify",
+            serde_json::json!({"user_id": users.manager.id().to_string(), "pin": TEST_PIN, "reason_code": "price_below_floor"}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["approved"], true);
+        assert_eq!(body["approver_role"], "Manager");
+    }
+
+    #[tokio::test]
+    async fn hq_unauthenticated_is_401() {
+        let (state, _) = seeded_state().await;
+        let store_id = state.store_id.unwrap();
+        let router = create_router(state);
+        // No token on a protected HQ route: 401, never 403.
+        let (status, _) = get_json(
+            router.clone(),
+            &format!("/api/v1/inventory/balances?store_id={store_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = get_json(router.clone(), "/api/v1/crm/activities", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        // Health and the OpenAPI document stay public.
+        let (status, _) = get_json(router.clone(), "/health", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = get_json(router, "/api-docs/openapi.json", None).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn hq_cashier_cannot_set_colorant_level_but_manager_can() {
+        let (state, users) = seeded_state().await;
+        let store_id = state.store_id.unwrap();
+        let router = create_router(state);
+        let body = serde_json::json!({
+            "colorant_id": Uuid::from_u128(0x5001).to_string(),
+            "store_id": store_id.to_string(),
+            "on_hand_fl_oz": "10",
+            "low_threshold_fl_oz": "2",
+        });
+        // Setting a colorant level needs InventoryAdjust: the
+        // cashier gets 403, the manager succeeds.
+        let (status, _) = post_json(
+            router.clone(),
+            "/api/v1/tinting/colorants/levels",
+            body.clone(),
+            Some(&users.cashier.token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, body) = post_json(
+            router.clone(),
+            "/api/v1/tinting/colorants/levels",
+            body,
+            Some(&users.manager.token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["on_hand_fl_oz"], "10");
     }
 
     #[tokio::test]
@@ -1304,6 +1633,7 @@ mod tests {
         let (status, body) = get_json(
             router,
             "/api/v1/reports/shortage-alerts?store_id=00000000-0000-7000-8000-000000000001",
+            None,
         )
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -1312,16 +1642,18 @@ mod tests {
 
     #[tokio::test]
     async fn tinting_admin_round_trip() {
-        let state = seeded_state().await;
+        let (state, users) = seeded_state().await;
         let store_id = state.store_id.unwrap();
         let org_id = state.org_id.unwrap();
         let router = create_router(state);
         let _ = org_id;
+        let admin = Some(users.admin.token.as_str());
 
         // Color search finds White Dove.
         let (status, body) = get_json(
             router.clone(),
             "/api/v1/colors/search?manufacturer=Benjamin%20Moore&query=dove",
+            admin,
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -1355,6 +1687,7 @@ mod tests {
                 "external_formula_ref": null,
                 "dispensed_at": Utc::now().to_rfc3339(),
             }),
+            admin,
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -1362,6 +1695,7 @@ mod tests {
         let (status, body) = get_json(
             router.clone(),
             &format!("/api/v1/tinting/formulas?customer_id={customer_id}"),
+            admin,
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -1369,6 +1703,7 @@ mod tests {
         let (status, body) = get_json(
             router.clone(),
             "/api/v1/tinting/formulas?query=white%20dove",
+            admin,
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -1378,6 +1713,7 @@ mod tests {
         let (status, body) = get_json(
             router.clone(),
             &format!("/api/v1/tinting/colorants?store_id={store_id}"),
+            admin,
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -1396,6 +1732,7 @@ mod tests {
                 "on_hand_fl_oz": "10",
                 "low_threshold_fl_oz": "2",
             }),
+            admin,
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -1403,6 +1740,7 @@ mod tests {
         let (status, body) = get_json(
             router.clone(),
             &format!("/api/v1/reports/shortage-alerts?store_id={store_id}"),
+            admin,
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -1412,6 +1750,7 @@ mod tests {
         let (status, body) = get_json(
             router.clone(),
             &format!("/api/v1/reports/daily-usage?store_id={store_id}"),
+            admin,
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -1419,6 +1758,7 @@ mod tests {
         let (status, body) = get_json(
             router.clone(),
             &format!("/api/v1/reports/low-stock?store_id={store_id}"),
+            admin,
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");

@@ -50,6 +50,10 @@ pub struct UserRow {
     pub counter_pin_hash: Option<String>,
     pub badge_token_hash: Option<String>,
     pub role_id: Uuid,
+    /// Contractor customer this user may access in the portal
+    /// (`users.portal_customer_id`, migration `0012_phase7`).
+    /// `Some` only for `PortalContractor` users; `None` for staff.
+    pub portal_customer_id: Option<Uuid>,
     pub active: bool,
 }
 

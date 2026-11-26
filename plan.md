@@ -166,7 +166,8 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ clippy clean (`-D warnings`), fmt clean, web-backoffice `npm run build` clean (297.79 kB JS)
 - ✅ Live checks by the coordinator: `df-server migrate import` end-to-end on real SQLite files; release `df-server`/`df-api` binaries smoke-tested (`/health` ok)
 ### GitHub
-- ⬜ NOT pushed yet (local only; main still at `e4ae658`) — push via connector in one commit once Kiel asks; tag v1.0
+- ✅ Pushed Nov 26 via connector in ONE commit `a553a19` (329 files, 52 new; 2 binary PWA icons excluded — connector cannot carry binaries)
+- ✅ Tag v1.0 created Nov 26 via browser release page (connector has no tag tool), commit `a553a19`, marked Latest
 ### Known limits
 - PG round-trip still untested (SQLite only in this VM); Postgres migrations compile-checked only.
 - No native `.xlsx` — scheduled "Excel" artifact is CSV + PDF.
@@ -175,3 +176,32 @@ only its own section, ticking items as they are verified — not when code merel
 - `df-api` and edge HTTP have no auth (F1/F2); RBAC defined but never enforced (F3); portal scope is the customer UUID (F4).
 - Docker image layers / compose runtime / Helm templates unverified until run on a Docker host (no daemon in VM).
 - `df-server hq` / `migrate` (standalone mode) / `standalone` are unimplemented — Postgres is provisioned only in compose.
+
+## Phase 7 — Authentication (v1.1) — ✅ DONE Nov 26, 2026
+### Scope
+- ✅ Auth core — opaque session tokens (`dfp_` + 32 random bytes, SHA-256 hash stored server-side, never the raw token), 8h staff TTL / 30d portal remember-me (explicit only), migration `0012_phase7` (`roles` seed with fixed UUIDs, `users.portal_customer_id`, `sessions`), user + session repos, `df-server users create-admin` / `create` / `list` / `revoke-sessions` CLI (no hardcoded default password; second admin needs `--force` + typed `YES`)
+- ✅ HTTP enforcement — valid token required on ALL df-api + df-edge routes except GET /health (+ public OpenAPI doc, verified data-free); 401 unauthenticated, 403 wrong role; RBAC enforced per route from df-auth roles (role→route matrix in docs/auth.md §6); login/counter-switch/override-verify implemented on both surfaces (were 501); logout revokes; actor identity comes from the session (`cashier_id` in request bodies ignored)
+- ✅ Portal login (F4) — real contractor login (`POST /pos/auth/portal-login`) replaces customer-UUID-as-scope; session carries the linked `customer_id`; another contractor's id → 403; `portal_enabled` remains a second gate; BOPIS catalog/order placement/status stay public by design, pickup completion requires staff auth
+- ✅ Frontend login screens — pos-desktop (password + PIN/badge counter-switch, manager override prompts for void/price-below-cost), web-backoffice (role-gated tabs, UI-only), web-portal (`?customer=` identity removed — customer id comes only from the login response), mobile-pwa (outbox kept on logout, replay refuses while logged out); token key `df-pos-token`, `Authorization: Bearer`, 401 → login; public BOPIS storefront untouched
+- ✅ Security review update — F1–F4 marked FIXED with mechanism in docs/security-review-v1.0.md; F8/F9/F10 stay OPEN (not in this phase)
+- ✅ Coordinator fixes during verification — df-jobs wall-clock time-bomb fixed (`run_now_at` stamps the simulated instant; `run_due` uses it); `run_users_create` 10-arg clippy error fixed by bundling into `CreateUserArgs`; two RBAC holes found by the HTTP worker and closed: scheduling now has real permissions (`SchedulingView` every staff role, `SchedulingManage` Manager/Admin) and `PortalContractor` holds no staff permissions (its `ArView` removed — it had leaked other customers' AR summaries through the unscoped staff AR routes); docs/auth.md §6/§9 + security review updated to match
+### Exit tests
+- ✅ (a) Unauthenticated → 401 on protected edge + HQ routes; GET /health → 200 without a token on both; OpenAPI → 200 with no data rows
+- ✅ (b) Cashier token → 403 on manager-only routes (edge reorder-points, HQ colorant levels); manager token → 200
+- ✅ (c) Portal login as contractor A → 200 + token with `customer_id` = A; B's statements → 403; A's own → 200; reorder for A → 200, for B → 403
+- ✅ (d) Expired token (minted −1s TTL) → 401 on both surfaces; logout → 200 `{revoked: true}`, token then → 401
+- ✅ (e) All prior phases' exit tests re-run green by the coordinator: 26 df-edge exit tests + 9 df-sync chaos + 1 migrator fixture, 0 failed
+### Verification
+- ✅ `cargo test --workspace` — 439/439 passing, 0 failed (Phase 6 baseline: 402; Phase 7 added 37)
+- ✅ clippy clean (`-D warnings`, workspace-wide), fmt clean, `npm run build` clean in pos-desktop (253 kB), web-backoffice (304 kB), web-portal (241 kB), mobile-pwa (262 kB)
+- ✅ Exit-test files re-run by the coordinator: `df-edge/tests/phase7_http_auth.rs` 4/4, `df-api/tests/phase7_http_auth.rs` 3/3
+### GitHub
+- ⬜ NOT pushed yet (local only) — push via connector in one commit once Kiel asks (connector writes currently refused — local work only)
+### Known limits
+- Tokens live in localStorage (`df-pos-token`), readable by any script on the origin — httpOnly cookies are the follow-up before exposing the POS beyond the store network.
+- No login rate limiting/lockout; no refresh/sliding sessions (8h is hard); no expired-session janitor (expired rows rejected on read, never deleted).
+- PIN/badge login identifies by email — a bare PIN/badge cannot name its user (hashes can't be searched); badge-only tap-to-switch needs a non-secret badge identifier column.
+- Audit actor columns: void/return record no actor; override `reason_code` accepted but not persisted.
+- EDI vendor config has no separate permission (all `/edi/*` is `ReportView`-gated).
+- Tauri `invoke()` calls cannot carry a Bearer token (local IPC) — login gates the UI in Tauri mode, but in-process command enforcement belongs to the Tauri layer.
+- PG round-trip still untested; F8/F9/F10 stay OPEN (dead-letter, TLS/mTLS, CORS/rate limiting).

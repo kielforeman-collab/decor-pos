@@ -137,12 +137,25 @@
 //!
 //! Handlers are thin wrappers over [`Edge`](crate::edge::Edge)
 //! methods; all the rules live there.
+//!
+//! Phase 7 (v1.1): every route except `GET /health`, the
+//! `/pos/auth/*` login endpoints, and the public BOPIS storefront
+//! routes (`GET /catalog/products`, `POST /bopis/orders`,
+//! `GET /bopis/orders/{id}`) requires a `Bearer dfp_...` session
+//! token (see `df_auth_http::gate` + `docs/auth.md` for the role →
+//! route matrix). The gate answers 401 for a missing / invalid /
+//! expired / revoked token and 403 for a valid token with the wrong
+//! role. `POST /pos/tills/open` takes its cashier from the session,
+//! ignoring the body's `cashier_id`; portal routes additionally
+//! require the session's linked customer to match the requested
+//! customer.
 
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{Path, Query, State, WebSocketUpgrade};
+use axum::extract::{Extension, Path, Query, State, WebSocketUpgrade};
 use axum::http::StatusCode;
+use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -187,6 +200,10 @@ use crate::scheduling::{
 };
 use crate::tinting::{ColorantsResponse, DispenseTintRequest, DispenseTintResponse};
 use crate::types::{CompletedSale, PricePreview, ReturnLineInput, SaleInput, TenderInput, ZReport};
+use df_auth::{OverrideCredential, Permission};
+use df_auth_http::{
+    AuthRule, AuthSession, Gate, LoginResponse, LogoutResponse, OverrideVerifyResponse, login_error,
+};
 use df_db::InventoryBalance;
 use df_db::models::{
     Appointment, ColorCatalogEntry, CrmActivity, CrmSavedView, DeliveryPod, PortalPaymentRow,
@@ -300,9 +317,15 @@ async fn health(State(edge): State<Arc<Edge>>) -> Json<HealthResponse> {
 
 async fn open_till(
     State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
     Json(body): Json<OpenTillRequest>,
 ) -> HandlerResult<TillSession> {
-    edge.open_till(body.cashier_id, body.opening_float)
+    // The session's user is the cashier: the caller-supplied
+    // `cashier_id` is accepted for wire compatibility but ignored,
+    // so a till can never be opened as another user. Checkout
+    // inherits the till's cashier (see `Edge::checkout`), so the
+    // sale's `cashier_id` is the session user too. See docs/auth.md.
+    edge.open_till(auth.user_id, body.opening_float)
         .await
         .map(Json)
         .map_err(err_response)
@@ -1493,10 +1516,31 @@ async fn handle_ws(edge: Arc<Edge>, socket: WebSocket) {
 
 // --- contractor portal / BOPIS / mobile KPIs (Phase 5, v0.6) -------------
 /// Build the edge router. The caller passes an `Arc<Edge>` as state.
+/// Portal scope (F4): the session may access exactly the
+/// contractor customer it was issued for. Anything else is a 403 —
+/// never a 404, so the check does not leak which customers exist.
+fn check_portal_scope(
+    auth: &AuthSession,
+    customer_id: Uuid,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if auth.may_access_customer(customer_id) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "portal session is scoped to a different customer".to_string(),
+            }),
+        ))
+    }
+}
+
 async fn portal_customer(
     State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
     Path(id): Path<Uuid>,
 ) -> HandlerResult<PortalCustomerView> {
+    check_portal_scope(&auth, id)?;
     edge.portal_customer(id)
         .await
         .map(Json)
@@ -1505,8 +1549,10 @@ async fn portal_customer(
 
 async fn portal_invoices(
     State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
     Path(id): Path<Uuid>,
 ) -> HandlerResult<Vec<Transaction>> {
+    check_portal_scope(&auth, id)?;
     edge.portal_invoices(id)
         .await
         .map(Json)
@@ -1515,8 +1561,10 @@ async fn portal_invoices(
 
 async fn portal_statements(
     State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
     Path(id): Path<Uuid>,
 ) -> HandlerResult<Vec<StatementRow>> {
+    check_portal_scope(&auth, id)?;
     edge.portal_statements(id)
         .await
         .map(Json)
@@ -1525,8 +1573,10 @@ async fn portal_statements(
 
 async fn portal_formulas(
     State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
     Path(id): Path<Uuid>,
 ) -> HandlerResult<Vec<TintFormula>> {
+    check_portal_scope(&auth, id)?;
     edge.portal_formulas(id)
         .await
         .map(Json)
@@ -1535,8 +1585,10 @@ async fn portal_formulas(
 
 async fn portal_payments_list(
     State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
     Path(id): Path<Uuid>,
 ) -> HandlerResult<Vec<PortalPaymentRow>> {
+    check_portal_scope(&auth, id)?;
     edge.portal_payments(id)
         .await
         .map(Json)
@@ -1545,8 +1597,10 @@ async fn portal_payments_list(
 
 async fn portal_reorder(
     State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
     Json(body): Json<ReorderRequest>,
 ) -> HandlerResult<PortalReorderResponse> {
+    check_portal_scope(&auth, body.customer_id)?;
     edge.portal_reorder(body)
         .await
         .map(Json)
@@ -1555,8 +1609,10 @@ async fn portal_reorder(
 
 async fn portal_pay_bill(
     State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
     Json(body): Json<BillPayIntent>,
 ) -> HandlerResult<BillPayResult> {
+    check_portal_scope(&auth, body.customer_id)?;
     edge.portal_pay_bill(body)
         .await
         .map(Json)
@@ -1736,15 +1792,199 @@ async fn labor_coverage(
         .map_err(err_response)
 }
 
+// --- auth endpoints (Phase 7, v1.1) ---------------------------------------
+// Public by design: these are how a session is obtained. Login
+// failures are a generic 401 (see `df_auth_http::login_error`) —
+// the boundary must not reveal which emails exist or which
+// accounts are active.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeLoginRequest {
+    pub email: String,
+    pub password: String,
+    /// Portal remember-me (30-day session) — only meaningful for a
+    /// `PortalContractor`; staff sessions are always 8 hours.
+    pub remember_me: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeCounterSwitchRequest {
+    /// Identifies the user: an Argon2id hash cannot be searched,
+    /// so a bare PIN/badge cannot name its user (see
+    /// `df_auth::login` docs).
+    pub email: String,
+    pub pin: Option<String>,
+    pub badge_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeOverrideVerifyRequest {
+    pub user_id: String,
+    pub pin: String,
+    pub reason_code: String,
+}
+
+type AuthResult<T> = Result<Json<T>, (StatusCode, Json<df_auth_http::ErrorBody>)>;
+
+async fn edge_login(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<EdgeLoginRequest>,
+) -> AuthResult<LoginResponse> {
+    df_db::login_with_password(
+        edge.pool(),
+        &body.email,
+        &body.password,
+        body.remember_me.unwrap_or(false),
+    )
+    .await
+    .map(|outcome| Json(LoginResponse::from_outcome(&outcome)))
+    .map_err(login_error)
+}
+
+async fn edge_counter_switch(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<EdgeCounterSwitchRequest>,
+) -> AuthResult<LoginResponse> {
+    if let Some(pin) = &body.pin {
+        return df_db::login_with_pin(edge.pool(), &body.email, pin)
+            .await
+            .map(|outcome| Json(LoginResponse::from_outcome(&outcome)))
+            .map_err(login_error);
+    }
+    if let Some(badge) = &body.badge_token {
+        return df_db::login_with_badge(edge.pool(), &body.email, badge)
+            .await
+            .map(|outcome| Json(LoginResponse::from_outcome(&outcome)))
+            .map_err(login_error);
+    }
+    Err((
+        StatusCode::BAD_REQUEST,
+        Json(df_auth_http::ErrorBody {
+            error: "counter-switch needs a pin or a badge_token".to_string(),
+        }),
+    ))
+}
+
+async fn edge_portal_login(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<EdgeLoginRequest>,
+) -> AuthResult<LoginResponse> {
+    df_db::login_portal(
+        edge.pool(),
+        &body.email,
+        &body.password,
+        body.remember_me.unwrap_or(false),
+    )
+    .await
+    .map(|outcome| Json(LoginResponse::from_outcome(&outcome)))
+    .map_err(login_error)
+}
+
+async fn edge_logout(
+    State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
+) -> HandlerResult<LogoutResponse> {
+    match df_db::revoke_session(edge.pool(), auth.session_id).await {
+        Ok(()) => Ok(Json(LogoutResponse { revoked: true })),
+        Err(err) => Err(err_response(err.into())),
+    }
+}
+
+async fn edge_override_verify(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<EdgeOverrideVerifyRequest>,
+) -> AuthResult<OverrideVerifyResponse> {
+    if body.reason_code.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(df_auth_http::ErrorBody {
+                error: "reason_code is required".to_string(),
+            }),
+        ));
+    }
+    let user_id = Uuid::parse_str(&body.user_id).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(df_auth_http::ErrorBody {
+                error: format!("user_id is not a UUID: {:?}", body.user_id),
+            }),
+        )
+    })?;
+    // Unknown approver id is a generic 401, like an unknown email.
+    let user = df_db::get_user_by_id(edge.pool(), user_id)
+        .await
+        .map_err(|_| login_error(df_auth::AuthError::InvalidCredentials))?;
+    df_db::verify_manager_override(edge.pool(), &user.email, &OverrideCredential::Pin(body.pin))
+        .await
+        .map(|approval| Json(OverrideVerifyResponse::from_approval(&approval)))
+        .map_err(login_error)
+}
+
 pub fn router(edge: Edge) -> Router {
     let state = Arc::new(edge);
-    Router::new()
+    let pool = state.pool().clone();
+
+    // One gate per rule. `from_fn_with_state` carries the pool +
+    // rule separately from the router state; each sub-router gets
+    // the gate for its routes. The full role → route matrix lives
+    // in docs/auth.md; the group names below mirror it.
+    let gate = |rule: AuthRule| {
+        middleware::from_fn_with_state(Gate::new(Some(pool.clone()), rule), df_auth_http::gate)
+    };
+    let authenticated_gate = gate(AuthRule::Authenticated);
+    let checkout_gate = gate(AuthRule::AnyOf(vec![Permission::PosCheckout]));
+    let till_gate = gate(AuthRule::AnyOf(vec![Permission::PosTillManage]));
+    let void_gate = gate(AuthRule::AnyOf(vec![Permission::PosVoid]));
+    let reports_gate = gate(AuthRule::AnyOf(vec![Permission::ReportView]));
+    let inventory_view_gate = gate(AuthRule::AnyOf(vec![Permission::InventoryView]));
+    let inventory_adjust_gate = gate(AuthRule::AnyOf(vec![Permission::InventoryAdjust]));
+    let po_create_gate = gate(AuthRule::AnyOf(vec![Permission::PoCreate]));
+    let po_receive_gate = gate(AuthRule::AnyOf(vec![Permission::PoReceive]));
+    let pricing_gate = gate(AuthRule::AnyOf(vec![Permission::PricingManage]));
+    let ar_view_gate = gate(AuthRule::AnyOf(vec![Permission::ArView]));
+    let customer_gate = gate(AuthRule::AnyOf(vec![Permission::CustomerManage]));
+    let delivery_gate = gate(AuthRule::AnyOf(vec![
+        Permission::PosCheckout,
+        Permission::InventoryView,
+    ]));
+    let tint_reads_gate = gate(AuthRule::AnyOf(vec![
+        Permission::PosCheckout,
+        Permission::InventoryView,
+    ]));
+    let suggest_gate = gate(AuthRule::AnyOf(vec![
+        Permission::PoCreate,
+        Permission::InventoryView,
+    ]));
+    let kpis_gate = gate(AuthRule::AnyOf(vec![
+        Permission::PosCheckout,
+        Permission::InventoryView,
+        Permission::ArView,
+    ]));
+    let edi_gate = gate(AuthRule::AnyOf(vec![Permission::ReportView]));
+    let portal_gate = gate(AuthRule::Portal);
+    let scheduling_view_gate = gate(AuthRule::AnyOf(vec![Permission::SchedulingView]));
+    let scheduling_manage_gate = gate(AuthRule::AnyOf(vec![Permission::SchedulingManage]));
+
+    // Public by design: health, the login endpoints (how a session
+    // is obtained), the public BOPIS storefront catalog + order
+    // placement/status. Everything else below is gated.
+    let public = Router::new()
         .route("/health", get(health))
-        .route("/pos/tills/open", post(open_till))
-        .route("/pos/tills/{id}/close", post(close_till))
+        .route("/pos/auth/login", post(edge_login))
+        .route("/pos/auth/counter-switch", post(edge_counter_switch))
+        .route("/pos/auth/portal-login", post(edge_portal_login))
+        .route("/pos/auth/override-verify", post(edge_override_verify))
+        .route("/catalog/products", get(catalog_products))
+        .route("/bopis/orders", post(bopis_order_create))
+        .route("/bopis/orders/{id}", get(bopis_order_get));
+
+    let logout = Router::new()
+        .route("/pos/auth/logout", post(edge_logout))
+        .route_layer(authenticated_gate.clone());
+
+    let checkout_routes = Router::new()
         .route("/pos/carts/price-preview", post(price_preview))
         .route("/pos/transactions", post(checkout))
-        .route("/pos/transactions/{id}/void", post(void_transaction))
         .route("/pos/transactions/{id}/return", post(return_transaction))
         .route("/pos/holds", post(park_hold).get(list_holds))
         .route("/pos/holds/{id}/resume", post(resume_hold))
@@ -1755,45 +1995,83 @@ pub fn router(edge: Edge) -> Router {
         .route("/pos/tinting/dispense", post(dispense_tint))
         .route("/pos/tinting/formulas", get(list_formulas))
         .route("/pos/tinting/colors", get(list_colors))
+        .route(
+            "/bopis/orders/{id}/complete-pickup",
+            post(bopis_pickup_complete),
+        )
+        .route_layer(checkout_gate);
+
+    let till_routes = Router::new()
+        .route("/pos/tills/open", post(open_till))
+        .route("/pos/tills/{id}/close", post(close_till))
+        .route_layer(till_gate);
+
+    let void_routes = Router::new()
+        .route("/pos/transactions/{id}/void", post(void_transaction))
+        .route_layer(void_gate);
+
+    let tint_read_routes = Router::new()
         .route("/pos/tinting/colorants", get(list_colorants))
+        .route_layer(tint_reads_gate);
+
+    let report_routes = Router::new()
         .route("/pos/reports/daily-usage", get(daily_usage))
         .route("/pos/reports/low-stock", get(low_stock))
-        .route("/pos/reports/low-stock/thresholds", post(set_thresholds))
         .route("/bi/kpi", get(bi_kpi))
         .route("/bi/eco", get(bi_eco))
         .route("/bi/inquiry", get(bi_inquiry))
         .route("/bi/email-outbox", get(bi_email_outbox))
+        .route_layer(reports_gate);
+
+    let pricing_routes = Router::new()
+        .route("/pos/reports/low-stock/thresholds", post(set_thresholds))
+        .route("/pricing/rules", get(list_pricing_rules).post(bulk_pricing))
+        .route_layer(pricing_gate);
+
+    let inventory_view_routes = Router::new()
         .route("/inventory/balances", get(get_balances))
-        .route(
-            "/inventory/reorder-points",
-            get(list_reorder_points).post(set_reorder_point),
-        )
-        .route(
-            "/inventory/transfers",
-            post(create_transfer).get(list_transfers),
-        )
+        .route("/inventory/reorder-points", get(list_reorder_points))
+        .route("/inventory/transfers", get(list_transfers))
+        .route("/inventory/counts", get(list_counts))
+        .route("/inventory/shelf-tags", get(shelf_tag))
+        .route("/purchasing/orders", get(list_purchase_orders))
+        .route_layer(inventory_view_gate);
+
+    let inventory_adjust_routes = Router::new()
+        .route("/inventory/reorder-points", post(set_reorder_point))
+        .route("/inventory/transfers", post(create_transfer))
         .route("/inventory/transfers/{id}/ship", post(ship_transfer))
         .route("/inventory/transfers/{id}/receive", post(receive_transfer))
-        .route("/inventory/counts", post(start_count).get(list_counts))
+        .route("/inventory/counts", post(start_count))
         .route("/inventory/counts/{id}/scan", post(scan_count))
         .route("/inventory/counts/{id}/reconcile", post(reconcile_count))
-        .route("/inventory/shelf-tags", get(shelf_tag))
-        .route(
-            "/purchasing/replenishment/suggest",
-            post(suggest_replenishment),
-        )
-        .route(
-            "/purchasing/orders",
-            post(create_purchase_order).get(list_purchase_orders),
-        )
+        .route_layer(inventory_adjust_gate);
+
+    let purchasing_routes = Router::new()
+        .route("/purchasing/orders", post(create_purchase_order))
+        .route_layer(po_create_gate);
+
+    let receive_routes = Router::new()
         .route(
             "/purchasing/orders/{id}/receive",
             post(receive_purchase_order),
         )
-        .route("/pricing/rules", get(list_pricing_rules).post(bulk_pricing))
+        .route_layer(po_receive_gate);
+
+    let suggest_routes = Router::new()
+        .route(
+            "/purchasing/replenishment/suggest",
+            post(suggest_replenishment),
+        )
+        .route_layer(suggest_gate);
+
+    let ar_routes = Router::new()
         .route("/ar/customers/{id}/summary", get(ar_customer_summary))
         .route("/ar/aging", get(ar_aging))
         .route("/ar/collections", get(ar_collections))
+        .route_layer(ar_view_gate);
+
+    let crm_routes = Router::new()
         .route(
             "/crm/activities",
             post(create_activity).get(list_activities),
@@ -1824,6 +2102,9 @@ pub fn router(edge: Edge) -> Router {
         )
         .route("/crm/saved-views/{id}/delete", post(delete_saved_view))
         .route("/crm/reports/lapsed", get(lapsed_report))
+        .route_layer(customer_gate);
+
+    let delivery_routes = Router::new()
         .route("/deliveries", post(create_delivery))
         .route("/deliveries/dispatch", get(list_deliveries))
         .route("/deliveries/{id}", get(get_delivery))
@@ -1831,6 +2112,9 @@ pub fn router(edge: Edge) -> Router {
         .route("/deliveries/{id}/status", post(set_delivery_status))
         .route("/deliveries/{id}/packing-slip", get(get_packing_slip))
         .route("/deliveries/{id}/pod", post(submit_pod).get(get_pod))
+        .route_layer(delivery_gate);
+
+    let edi_routes = Router::new()
         .route("/edi/purchase-orders/{id}/send", post(send_purchase_order))
         .route("/edi/intake", post(intake_edi))
         .route("/edi/documents", get(list_edi_documents))
@@ -1848,6 +2132,9 @@ pub fn router(edge: Edge) -> Router {
         )
         .route("/edi/transport", get(list_transport_records))
         .route("/edi/catalog/import", post(import_catalog))
+        .route_layer(edi_gate);
+
+    let portal_routes = Router::new()
         .route("/portal/customers/{id}", get(portal_customer))
         .route("/portal/customers/{id}/invoices", get(portal_invoices))
         .route("/portal/customers/{id}/statements", get(portal_statements))
@@ -1855,29 +2142,58 @@ pub fn router(edge: Edge) -> Router {
         .route("/portal/customers/{id}/payments", get(portal_payments_list))
         .route("/portal/reorders", post(portal_reorder))
         .route("/portal/payments", post(portal_pay_bill))
-        .route("/catalog/products", get(catalog_products))
-        .route("/bopis/orders", post(bopis_order_create))
-        .route("/bopis/orders/{id}", get(bopis_order_get))
-        .route(
-            "/bopis/orders/{id}/complete-pickup",
-            post(bopis_pickup_complete),
-        )
+        .route_layer(portal_gate);
+
+    let kpi_routes = Router::new()
         .route("/mobile/kpis", get(mobile_kpis))
-        .route(
-            "/scheduling/templates",
-            post(create_shift_template).get(list_shift_templates),
-        )
-        .route(
-            "/scheduling/shifts",
-            post(create_staff_shift).get(list_staff_shifts),
-        )
-        .route("/scheduling/shifts/{id}/status", post(set_shift_status))
+        .route_layer(kpis_gate);
+
+    // Scheduling reads + timeclock need SchedulingView (every staff
+    // role); template/shift management needs SchedulingManage
+    // (Manager/Admin). Phase 7: PortalContractor holds neither, so
+    // contractors cannot reach scheduling at all.
+    let scheduling_read_routes = Router::new()
+        .route("/scheduling/templates", get(list_shift_templates))
+        .route("/scheduling/shifts", get(list_staff_shifts))
         .route("/scheduling/timeclock/clock-in", post(clock_in))
         .route("/scheduling/timeclock/clock-out", post(clock_out))
         .route("/scheduling/timeclock", get(list_timeclock))
         .route("/scheduling/forecast", get(labor_forecast))
         .route("/scheduling/coverage", get(labor_coverage))
+        .route_layer(scheduling_view_gate);
+    let scheduling_manage_routes = Router::new()
+        .route("/scheduling/templates", post(create_shift_template))
+        .route("/scheduling/shifts", post(create_staff_shift))
+        .route("/scheduling/shifts/{id}/status", post(set_shift_status))
+        .route_layer(scheduling_manage_gate);
+
+    let ws_routes = Router::new()
         .route("/ws/v1/store/{store_id}", get(ws_handler))
+        .route_layer(authenticated_gate);
+
+    Router::new()
+        .merge(public)
+        .merge(logout)
+        .merge(checkout_routes)
+        .merge(till_routes)
+        .merge(void_routes)
+        .merge(tint_read_routes)
+        .merge(report_routes)
+        .merge(pricing_routes)
+        .merge(inventory_view_routes)
+        .merge(inventory_adjust_routes)
+        .merge(purchasing_routes)
+        .merge(receive_routes)
+        .merge(suggest_routes)
+        .merge(ar_routes)
+        .merge(crm_routes)
+        .merge(delivery_routes)
+        .merge(edi_routes)
+        .merge(portal_routes)
+        .merge(kpi_routes)
+        .merge(scheduling_read_routes)
+        .merge(scheduling_manage_routes)
+        .merge(ws_routes)
         .with_state(state)
 }
 
@@ -1913,55 +2229,79 @@ mod tests {
         })
     }
 
+    /// Seed one user per role + two portal contractors and return
+    /// their live tokens (see `df_auth_http::test_support`).
+    async fn seeded_users(edge: &Edge) -> df_auth_http::test_support::SeededUsers {
+        df_auth_http::test_support::seed_test_users(edge.pool(), edge.config().org_id).await
+    }
+
+    /// Parse a response body as JSON; an empty body (axum default
+    /// 404/405) becomes `Null` instead of panicking.
+    async fn body_json(response: axum::response::Response) -> (StatusCode, serde_json::Value) {
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value = if bytes.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap()
+        };
+        (status, value)
+    }
+
     async fn post_json(
         router: Router,
         uri: &str,
         body: serde_json::Value,
+        token: Option<&str>,
     ) -> (StatusCode, serde_json::Value) {
+        let mut builder = Request::builder()
+            .uri(uri)
+            .method("POST")
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
         let response = router
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
+            .oneshot(builder.body(Body::from(body.to_string())).unwrap())
             .await
             .unwrap();
-        let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap())
+        body_json(response).await
     }
 
-    async fn get_json(router: Router, uri: &str) -> (StatusCode, serde_json::Value) {
+    async fn get_json(
+        router: Router,
+        uri: &str,
+        token: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut builder = Request::builder().uri(uri);
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
         let response = router
-            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .oneshot(builder.body(Body::empty()).unwrap())
             .await
             .unwrap();
-        let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap())
+        body_json(response).await
     }
 
     #[tokio::test]
     async fn health_and_price_preview_over_http() {
         let edge = test_edge().await;
         let product_id = seed_product(&edge).await;
+        let users = seeded_users(&edge).await;
         let router = edge.router();
-        let (status, body) = get_json(router.clone(), "/health").await;
+        let (status, body) = get_json(router.clone(), "/health", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ok");
-        assert_eq!(body["version"], "1.0.0");
+        assert_eq!(body["version"], "1.1.0");
 
         let (status, body) = post_json(
             router,
             "/pos/carts/price-preview",
             sale_body(product_id, "Cash"),
+            Some(&users.cashier.token),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -1981,12 +2321,14 @@ mod tests {
         edge.set_hq(Arc::new(MemoryHq::new()));
         let printer = Arc::new(CapturingPrinter::default());
         edge.set_printer(printer.clone());
+        let users = seeded_users(&edge).await;
         let router = edge.router();
 
         let (status, body) = post_json(
             router.clone(),
             "/pos/transactions",
             sale_body(product_id, "Card"),
+            Some(&users.cashier.token),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -1997,25 +2339,51 @@ mod tests {
         assert_eq!(printer.prints.lock().unwrap().len(), 1);
         let tx_id = body["transaction_id"].as_str().unwrap().to_string();
 
-        let (status, body) = get_json(router.clone(), "/pos/sync/state").await;
+        let (status, body) = get_json(
+            router.clone(),
+            "/pos/sync/state",
+            Some(&users.cashier.token),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["pending_count"], 2); // transaction + inventory
 
-        let (status, body) =
-            post_json(router.clone(), "/pos/sync/run", serde_json::json!({})).await;
+        let (status, body) = post_json(
+            router.clone(),
+            "/pos/sync/run",
+            serde_json::json!({}),
+            Some(&users.cashier.token),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["applied"], 2);
         assert_eq!(body["duplicates"], 0);
 
-        let (status, body) = get_json(router.clone(), "/pos/sync/state").await;
+        let (status, body) = get_json(
+            router.clone(),
+            "/pos/sync/state",
+            Some(&users.cashier.token),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["pending_count"], 0);
         assert!(body["last_batch_id"].is_string());
+
+        // Void is manager-only: the cashier gets 403, the manager voids.
+        let (status, _) = post_json(
+            router.clone(),
+            &format!("/pos/transactions/{tx_id}/void"),
+            serde_json::json!({}),
+            Some(&users.cashier.token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
 
         let (status, body) = post_json(
             router.clone(),
             &format!("/pos/transactions/{tx_id}/void"),
             serde_json::json!({}),
+            Some(&users.manager.token),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -2027,20 +2395,28 @@ mod tests {
         let edge = test_edge().await;
         let product_id = seed_product(&edge).await;
         edge.set_payment_provider(Arc::new(MockTerminal::new()));
+        let users = seeded_users(&edge).await;
         let router = edge.router();
+        let cashier = Some(users.cashier.token.as_str());
 
         // Park a hold, list it, resume it.
-        let (status, body) =
-            post_json(router.clone(), "/pos/holds", sale_body(product_id, "Cash")).await;
+        let (status, body) = post_json(
+            router.clone(),
+            "/pos/holds",
+            sale_body(product_id, "Cash"),
+            cashier,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         let hold_id = body["hold_id"].as_str().unwrap().to_string();
-        let (status, body) = get_json(router.clone(), "/pos/holds").await;
+        let (status, body) = get_json(router.clone(), "/pos/holds", cashier).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["hold_ids"], serde_json::json!([hold_id]));
         let (status, body) = post_json(
             router.clone(),
             &format!("/pos/holds/{hold_id}/resume"),
             serde_json::json!({}),
+            cashier,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -2050,16 +2426,22 @@ mod tests {
             router.clone(),
             &format!("/pos/holds/{hold_id}/resume"),
             serde_json::json!({}),
+            cashier,
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
 
         // A quote persists as an open transaction with no outbox.
-        let (status, body) =
-            post_json(router.clone(), "/pos/quotes", sale_body(product_id, "Cash")).await;
+        let (status, body) = post_json(
+            router.clone(),
+            "/pos/quotes",
+            sale_body(product_id, "Cash"),
+            cashier,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert!(body["transaction_id"].is_string());
-        let (status, body) = get_json(router.clone(), "/pos/sync/state").await;
+        let (status, body) = get_json(router.clone(), "/pos/sync/state", cashier).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["pending_count"], 0);
 
@@ -2073,6 +2455,7 @@ mod tests {
                 "sale": layaway,
                 "deposit": {"kind": "Cash", "amount": money_json("50.0000")},
             }),
+            cashier,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -2090,8 +2473,15 @@ mod tests {
     #[tokio::test]
     async fn sync_run_without_hq_is_503() {
         let edge = test_edge().await;
+        let users = seeded_users(&edge).await;
         let router = edge.router();
-        let (status, body) = post_json(router, "/pos/sync/run", serde_json::json!({})).await;
+        let (status, body) = post_json(
+            router,
+            "/pos/sync/run",
+            serde_json::json!({}),
+            Some(&users.cashier.token),
+        )
+        .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(body["error"].as_str().unwrap().contains("no HQ sink"));
     }
@@ -2105,6 +2495,7 @@ mod tests {
         let edge = test_edge().await;
         let product_id = seed_product(&edge).await;
         edge.set_payment_provider(Arc::new(MockTerminal::new()));
+        let users = seeded_users(&edge).await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let router = edge.router();
@@ -2112,9 +2503,11 @@ mod tests {
             axum::serve(listener, router).await.unwrap();
         });
         let store_id = edge.config().store_id;
-        let (mut ws, _) = connect_async(format!("ws://{addr}/ws/v1/store/{store_id}"))
-            .await
-            .unwrap();
+        let token = users.cashier.token.clone();
+        let (mut ws, _) =
+            connect_async(format!("ws://{addr}/ws/v1/store/{store_id}?token={token}"))
+                .await
+                .unwrap();
         // Hello event.
         let hello = ws.next().await.unwrap().unwrap();
         let hello: serde_json::Value = match hello {
@@ -2141,22 +2534,29 @@ mod tests {
         let edge = test_edge().await;
         let product_id = seed_product(&edge).await;
         edge.set_payment_provider(Arc::new(MockTerminal::new()));
+        let users = seeded_users(&edge).await;
         let router = edge.router();
-        let cashier = Uuid::now_v7();
+        let cashier = Some(users.cashier.token.as_str());
+        // The body's cashier_id is ignored: the till belongs to the
+        // session user. Send a different id on purpose.
+        let stranger = Uuid::now_v7();
         let (status, body) = post_json(
             router.clone(),
             "/pos/tills/open",
-            serde_json::json!({"cashier_id": cashier.to_string(), "opening_float": money_json("150.0000")}),
+            serde_json::json!({"cashier_id": stranger.to_string(), "opening_float": money_json("150.0000")}),
+            cashier,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["cashier_id"], users.cashier.id().to_string());
         let till_id = body["id"].as_str().unwrap().to_string();
 
         // A second open till is a conflict.
         let (status, _) = post_json(
             router.clone(),
             "/pos/tills/open",
-            serde_json::json!({"cashier_id": cashier.to_string(), "opening_float": money_json("0.0000")}),
+            serde_json::json!({"cashier_id": stranger.to_string(), "opening_float": money_json("0.0000")}),
+            cashier,
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
@@ -2165,6 +2565,7 @@ mod tests {
             router.clone(),
             "/pos/transactions",
             sale_body(product_id, "Cash"),
+            cashier,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -2173,6 +2574,7 @@ mod tests {
             router.clone(),
             &format!("/pos/tills/{till_id}/close"),
             serde_json::json!({"counted_cash": money_json("370.0000")}),
+            cashier,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -2188,13 +2590,17 @@ mod tests {
         let edge = test_edge().await;
         let product_id = seed_product(&edge).await;
         edge.set_payment_provider(Arc::new(MockTerminal::new()));
+        let users = seeded_users(&edge).await;
         let router = edge.router();
+        let cashier = Some(users.cashier.token.as_str());
+        let manager = Some(users.manager.token.as_str());
         // One cash sale today: 2 x $100 = $200 subtotal, eco
         // $1.50, tax $14.6088, grand $216.1088.
         let (status, _) = post_json(
             router.clone(),
             "/pos/transactions",
             sale_body(product_id, "Cash"),
+            cashier,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -2203,6 +2609,7 @@ mod tests {
         let (status, body) = get_json(
             router.clone(),
             &format!("/bi/kpi?start={today}&end={today}&as_of={today}"),
+            manager,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -2225,6 +2632,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri(format!("/bi/eco?start={today}&end={today}&format=csv"))
+                    .header("authorization", format!("Bearer {}", users.manager.token))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2242,6 +2650,7 @@ mod tests {
         let (status, body) = get_json(
             router.clone(),
             &format!("/bi/inquiry?start={today}&end={today}&product_id={product_id}"),
+            manager,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -2250,6 +2659,7 @@ mod tests {
         let (status, body) = get_json(
             router.clone(),
             &format!("/bi/inquiry?start={today}&end={today}&doc_type=return"),
+            manager,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -2257,8 +2667,253 @@ mod tests {
 
         // No outbox directory configured on this edge: 404, not
         // an empty list.
-        let (status, body) = get_json(router.clone(), "/bi/email-outbox").await;
+        let (status, body) = get_json(router.clone(), "/bi/email-outbox", manager).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(body["error"].as_str().unwrap().contains("no email outbox"));
+    }
+
+    // --- Phase 7 exit tests (a)–(d) -------------------------------------
+
+    #[tokio::test]
+    async fn unauthenticated_protected_routes_are_401() {
+        let edge = test_edge().await;
+        let product_id = seed_product(&edge).await;
+        let router = edge.router();
+        // No token at all, and a garbage token: both 401, never 403.
+        for token in [None, Some("dfp_not-a-real-token")] {
+            let (status, body) = get_json(router.clone(), "/pos/sync/state", token).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert!(body["error"].as_str().unwrap().contains("session"));
+            let (status, _) = post_json(
+                router.clone(),
+                "/pos/transactions",
+                sale_body(product_id, "Cash"),
+                token,
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            let (status, _) = post_json(
+                router.clone(),
+                "/pos/tills/open",
+                serde_json::json!({"cashier_id": Uuid::now_v7().to_string(), "opening_float": money_json("0.0000")}),
+                token,
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+        // Health stays public.
+        let (status, _) = get_json(router, "/health", None).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn edge_login_logout_flow() {
+        use df_auth_http::test_support::{TEST_PASSWORD, seed_test_users};
+
+        let edge = test_edge().await;
+        let _ = seed_test_users(edge.pool(), edge.config().org_id).await;
+        let router = edge.router();
+
+        // Wrong password: generic 401, no hint about the account.
+        let (status, body) = post_json(
+            router.clone(),
+            "/pos/auth/login",
+            serde_json::json!({"email": "cashier@example.invalid", "password": "wrong password"}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "invalid credentials");
+
+        // Right password: a dfp_ token, role + expiry in the body.
+        let (status, body) = post_json(
+            router.clone(),
+            "/pos/auth/login",
+            serde_json::json!({"email": "cashier@example.invalid", "password": TEST_PASSWORD}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let token = body["token"].as_str().unwrap().to_string();
+        assert!(token.starts_with("dfp_"));
+        assert_eq!(body["role"], "Cashier");
+        assert!(body["expires_at"].is_string());
+        assert!(body["customer_id"].is_null());
+
+        // The token works on a protected route…
+        let product_id = seed_product(&edge).await;
+        let (status, _) = post_json(
+            router.clone(),
+            "/pos/carts/price-preview",
+            sale_body(product_id, "Cash"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // …logout revokes it…
+        let (status, body) = post_json(
+            router.clone(),
+            "/pos/auth/logout",
+            serde_json::json!({}),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["revoked"], true);
+
+        // …and the revoked token is a 401 from then on.
+        let (status, _) = post_json(
+            router.clone(),
+            "/pos/carts/price-preview",
+            sale_body(product_id, "Cash"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn edge_counter_switch_and_override_verify() {
+        use df_auth_http::test_support::{TEST_PIN, seed_test_users};
+
+        let edge = test_edge().await;
+        let users = seed_test_users(edge.pool(), edge.config().org_id).await;
+        let router = edge.router();
+
+        // PIN switch for the cashier: a live session, same role.
+        let (status, body) = post_json(
+            router.clone(),
+            "/pos/auth/counter-switch",
+            serde_json::json!({"email": "cashier@example.invalid", "pin": TEST_PIN}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["token"].as_str().unwrap().starts_with("dfp_"));
+        assert_eq!(body["role"], "Cashier");
+
+        // Wrong PIN: 401. No PIN at all: 400.
+        let (status, _) = post_json(
+            router.clone(),
+            "/pos/auth/counter-switch",
+            serde_json::json!({"email": "cashier@example.invalid", "pin": "9999"}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = post_json(
+            router.clone(),
+            "/pos/auth/counter-switch",
+            serde_json::json!({"email": "cashier@example.invalid"}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // Manager override with the manager's PIN: approved.
+        let (status, body) = post_json(
+            router.clone(),
+            "/pos/auth/override-verify",
+            serde_json::json!({"user_id": users.manager.id().to_string(), "pin": TEST_PIN, "reason_code": "price_below_floor"}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["approved"], true);
+        assert_eq!(body["approver_role"], "Manager");
+        assert_eq!(body["method"], "pin");
+
+        // A cashier cannot approve, even with a correct PIN.
+        let (status, _) = post_json(
+            router.clone(),
+            "/pos/auth/override-verify",
+            serde_json::json!({"user_id": users.cashier.id().to_string(), "pin": TEST_PIN, "reason_code": "price_below_floor"}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // Manager with a wrong PIN: generic 401.
+        let (status, _) = post_json(
+            router.clone(),
+            "/pos/auth/override-verify",
+            serde_json::json!({"user_id": users.manager.id().to_string(), "pin": "9999", "reason_code": "price_below_floor"}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn expired_token_is_401() {
+        let edge = test_edge().await;
+        let users = seeded_users(&edge).await;
+        let product_id = seed_product(&edge).await;
+        // Mint a session that expired a second ago.
+        let (token, _) = df_db::create_session(
+            edge.pool(),
+            &users.cashier.user,
+            chrono::Duration::seconds(-1),
+            None,
+        )
+        .await
+        .unwrap();
+        let (status, _) = post_json(
+            edge.router(),
+            "/pos/carts/price-preview",
+            sale_body(product_id, "Cash"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn portal_scope_is_enforced() {
+        let edge = test_edge().await;
+        let users = seeded_users(&edge).await;
+        let router = edge.router();
+        let a = users.customer_a;
+        let b = users.customer_b;
+
+        // Contractor A sees their own portal…
+        let (status, body) = get_json(
+            router.clone(),
+            &format!("/portal/customers/{a}"),
+            Some(&users.contractor_a.token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["customer"]["id"], a.to_string());
+
+        // …but not contractor B's (403, not 404)…
+        let (status, _) = get_json(
+            router.clone(),
+            &format!("/portal/customers/{b}"),
+            Some(&users.contractor_a.token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = get_json(
+            router.clone(),
+            &format!("/portal/customers/{b}/statements"),
+            Some(&users.contractor_a.token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // …and staff may not use portal routes at all.
+        let (status, _) = get_json(
+            router.clone(),
+            &format!("/portal/customers/{a}"),
+            Some(&users.cashier.token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // No token: 401, never 403.
+        let (status, _) = get_json(router, &format!("/portal/customers/{a}"), None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }

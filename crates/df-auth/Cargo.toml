@@ -8,7 +8,10 @@ description = "Argon2id, WebAuthn/Passkeys, OIDC/SSO, RBAC, counter PIN/badge au
 
 [dependencies]
 argon2 = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }

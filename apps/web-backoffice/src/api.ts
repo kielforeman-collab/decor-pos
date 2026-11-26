@@ -2,7 +2,18 @@
 // `/api/*` to a `df-server edge` on 127.0.0.1:8080). No mocks —
 // every call hits the real edge API against the same SQLite edge
 // database the counter POS uses.
+//
+// Phase 7: every call carries `Authorization: Bearer <token>` from
+// localStorage key `df-pos-token` (same key in all four Phase 7 apps).
+// A 401 clears the session and notifies the app (see src/auth.ts),
+// which returns to the login screen.
 
+import {
+  UnauthorizedError,
+  authHeaders,
+  clearSession,
+  notifyUnauthorized,
+} from './auth'
 import type {
   AgingView,
   Appointment,
@@ -45,11 +56,16 @@ import type {
 async function http<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...authHeaders() },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const json = await res.json()
   if (!res.ok) {
+    if (res.status === 401) {
+      clearSession()
+      notifyUnauthorized()
+      throw new UnauthorizedError()
+    }
     throw new Error(typeof json?.error === 'string' ? json.error : `HTTP ${res.status}`)
   }
   return json as T
@@ -430,8 +446,13 @@ export async function getEcoRemittance(start: string, end: string): Promise<EcoR
 
 export async function getEcoRemittanceCsv(start: string, end: string): Promise<string> {
   const q = new URLSearchParams({ start, end, format: 'csv' })
-  const res = await fetch(`/api/bi/eco?${q}`)
+  const res = await fetch(`/api/bi/eco?${q}`, { headers: { ...authHeaders() } })
   if (!res.ok) {
+    if (res.status === 401) {
+      clearSession()
+      notifyUnauthorized()
+      throw new UnauthorizedError()
+    }
     const json = await res.json().catch(() => null)
     throw new Error(typeof json?.error === 'string' ? json.error : `HTTP ${res.status}`)
   }

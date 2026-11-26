@@ -111,6 +111,38 @@ import type {
   TransportRecord,
 } from './types'
 import { fmtMoney, fmtQty } from './types'
+import {
+  authHeaders,
+  clearSession,
+  getSession,
+  logout,
+  notifyUnauthorized,
+  UnauthorizedError,
+  type AuthSession,
+} from './auth'
+import Login from './Login'
+
+// Phase 7 — UI-only role gating. Which tabs each role sees (from
+// df-auth RBAC permissions). The backend still enforces every call;
+// hiding a tab here only keeps the UI honest, it grants nothing.
+const TAB_ROLES: Record<Tab, string[]> = {
+  inventory: ['SalesAssociate', 'Warehouse', 'Driver', 'Manager', 'Admin'],
+  purchasing: ['Warehouse', 'Manager', 'Admin'],
+  transfers: ['Warehouse', 'Manager', 'Admin'],
+  counts: ['Warehouse', 'Manager', 'Admin'],
+  tags: ['SalesAssociate', 'Warehouse', 'Driver', 'Manager', 'Admin'],
+  pricing: ['Manager', 'Admin'],
+  ar: ['SalesAssociate', 'Manager', 'Admin'],
+  crm: ['Cashier', 'SalesAssociate', 'Manager', 'Admin'],
+  delivery: ['Warehouse', 'Driver', 'Manager', 'Admin'],
+  bi: ['Manager', 'Admin'],
+  scheduling: ['Manager', 'Admin'],
+}
+
+function tabVisible(tab: Tab, role: string): boolean {
+  const r = role.trim().toLowerCase()
+  return TAB_ROLES[tab].some((allowed) => allowed.toLowerCase() === r)
+}
 
 type Tab = 'inventory' | 'purchasing' | 'transfers' | 'counts' | 'tags' | 'pricing' | 'ar' | 'crm' | 'delivery' | 'bi' | 'scheduling'
 
@@ -131,6 +163,10 @@ const TABS: { id: Tab; label: string }[] = [
 const CALC_METHODS = ['fixed', 'pct_off_list', 'markup_cost', 'target_gm']
 
 export default function App() {
+  // Phase 7: no session → login screen. Restored from localStorage on
+  // reload; a 401 from any API call clears it (api.ts) and the
+  // 'decor-pos-unauthorized' listener below returns here.
+  const [session, setSession] = useState<AuthSession | null>(() => getSession())
   const [storeId, setStoreId] = useState('')
   const [tab, setTab] = useState<Tab>('inventory')
   const [notice, setNotice] = useState<string | null>(null)
@@ -215,6 +251,20 @@ export default function App() {
   const fail = (e: unknown) => {
     setError(e instanceof Error ? e.message : String(e))
     setNotice(null)
+  }
+
+  async function doLogout() {
+    await logout()
+    setSession(null)
+    setStoreId('')
+    setNotice(null)
+    setError(null)
+  }
+
+  function handleLoggedIn(next: AuthSession) {
+    setSession(next)
+    setNotice(null)
+    setError(null)
   }
 
   const refreshInventory = useCallback(async () => {
@@ -369,10 +419,21 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!session) return
     getHealth()
       .then((health) => setStoreId(health.store_id))
       .catch(fail)
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session])
+
+  useEffect(() => {
+    const onUnauthorized = () => {
+      setSession(null)
+      setStoreId('')
+      setError('Session expired — sign in again.')
+    }
+    window.addEventListener('decor-pos-unauthorized', onUnauthorized)
+    return () => window.removeEventListener('decor-pos-unauthorized', onUnauthorized)
   }, [])
 
   useEffect(() => {
@@ -1086,22 +1147,56 @@ export default function App() {
 
   const selectedCount = counts.find((c) => c.id === selectedCountId) ?? null
 
+  // Phase 7: login screen replaces the whole back office until a
+  // session exists. Role-gated tabs are computed below (UI-only).
+  if (!session) {
+    return (
+      <div className="app">
+        <header>
+          <h1>Decor POS — Back Office</h1>
+        </header>
+        <main className="login-main">
+          <Login
+            title="Sign in — Back Office"
+            subtitle="Sign in with your email + password. Tabs you cannot use are hidden for your role."
+            allowPin={false}
+            onLoggedIn={handleLoggedIn}
+          />
+        </main>
+      </div>
+    )
+  }
+
+  // Phase 7: UI-only role gating — tabs the role cannot use are hidden
+  // (the backend still enforces RBAC on every call). If the current tab
+  // is not visible for this role, fall back to the first visible tab.
+  const visibleTabs = TABS.filter((t) => tabVisible(t.id, session.user.role))
+  const effectiveTab: Tab | null = visibleTabs.some((t) => t.id === tab)
+    ? tab
+    : (visibleTabs[0]?.id ?? null)
+
   return (
     <div className="app">
       <header>
         <h1>Decor POS — Back Office</h1>
         <div className="status">
+          <span>
+            {session.user.display_name ?? session.user.email} ({session.user.role})
+          </span>
           <span>Store: {storeId ? storeId.slice(0, 8) : '…'}</span>
           <span>Edge: 127.0.0.1:8080 (dev proxy)</span>
+          <button type="button" onClick={() => void doLogout()}>
+            Log out
+          </button>
         </div>
       </header>
 
       <nav className="tabs">
-        {TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <button
             key={t.id}
             type="button"
-            className={tab === t.id ? 'active' : ''}
+            className={effectiveTab === t.id ? 'active' : ''}
             onClick={() => setTab(t.id)}
           >
             {t.label}
@@ -1109,11 +1204,19 @@ export default function App() {
         ))}
       </nav>
 
+      {visibleTabs.length === 0 && (
+        <p className="hint" role="alert">
+          Your role ({session.user.role}) has no back-office tabs. Ask a
+          manager or admin for access — this is a UI gate only; the
+          backend enforces roles on every call.
+        </p>
+      )}
+
       {error && <div className="error" role="alert">{error}</div>}
       {notice && <div className="notice">{notice}</div>}
 
       <main>
-        {tab === 'inventory' && (
+        {effectiveTab === 'inventory' && (
           <section>
             <h2>Inventory — {balances.length} product(s)</h2>
             <button type="button" onClick={() => void refreshInventory().catch(fail)}>Refresh</button>
@@ -1158,7 +1261,7 @@ export default function App() {
           </section>
         )}
 
-        {tab === 'purchasing' && (
+        {effectiveTab === 'purchasing' && (
           <section>
             <h2>Purchasing</h2>
             <div className="actions">
@@ -1405,7 +1508,7 @@ export default function App() {
           </section>
         )}
 
-        {tab === 'transfers' && (
+        {effectiveTab === 'transfers' && (
           <section>
             <h2>Inter-store transfers</h2>
             <label>
@@ -1458,7 +1561,7 @@ export default function App() {
           </section>
         )}
 
-        {tab === 'counts' && (
+        {effectiveTab === 'counts' && (
           <section>
             <h2>Physical counts</h2>
             <div className="actions">
@@ -1520,7 +1623,7 @@ export default function App() {
           </section>
         )}
 
-        {tab === 'tags' && (
+        {effectiveTab === 'tags' && (
           <section>
             <h2>Shelf tags (ZPL)</h2>
             <div className="entry">
@@ -1541,7 +1644,7 @@ export default function App() {
           </section>
         )}
 
-        {tab === 'pricing' && (
+        {effectiveTab === 'pricing' && (
           <section>
             <h2>Bulk matrix pricing</h2>
             <p className="hint">Edit the calculation of any rule, then save all. A rule whose computed price falls below its min-margin floor is rejected — the whole batch is refused and nothing changes.</p>
@@ -1589,7 +1692,7 @@ export default function App() {
           </section>
         )}
 
-        {tab === 'crm' && (
+        {effectiveTab === 'crm' && (
           <section>
             <h2>CRM — activities, tickler, appointments, saved views</h2>
             <div className="actions">
@@ -1792,7 +1895,7 @@ export default function App() {
           </section>
         )}
 
-        {tab === 'delivery' && (
+        {effectiveTab === 'delivery' && (
           <section>
             <h2>Delivery — dispatch board, packing slips, proof of delivery</h2>
             <div className="actions">
@@ -1938,7 +2041,7 @@ export default function App() {
           </section>
         )}
 
-        {tab === 'ar' && (
+        {effectiveTab === 'ar' && (
           <section>
             <h2>Contractor AR (read-only)</h2>
             <div className="entry">
@@ -2003,7 +2106,7 @@ export default function App() {
             )}
           </section>
         )}
-        {tab === 'bi' && (
+        {effectiveTab === 'bi' && (
           <section>
             <h2>BI — KPI dashboard, eco remittance, ad-hoc inquiry</h2>
             <div className="entry">
@@ -2159,7 +2262,7 @@ export default function App() {
             )}
           </section>
         )}
-        {tab === 'scheduling' && (
+        {effectiveTab === 'scheduling' && (
           <section>
             <h2>Scheduling+ — shifts, timeclock, labor forecast</h2>
             <div className="entry">

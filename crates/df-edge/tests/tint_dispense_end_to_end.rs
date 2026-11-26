@@ -259,6 +259,7 @@ async fn post_json(
     edge: &Edge,
     uri: &str,
     body: serde_json::Value,
+    token: &str,
 ) -> (StatusCode, serde_json::Value) {
     let response = edge
         .router()
@@ -267,6 +268,7 @@ async fn post_json(
                 .uri(uri)
                 .method("POST")
                 .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(body.to_string()))
                 .unwrap(),
         )
@@ -279,10 +281,16 @@ async fn post_json(
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 
-async fn get_json(edge: &Edge, uri: &str) -> (StatusCode, serde_json::Value) {
+async fn get_json(edge: &Edge, uri: &str, token: &str) -> (StatusCode, serde_json::Value) {
     let response = edge
         .router()
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let status = response.status();
@@ -299,6 +307,9 @@ fn money_json(amount: &str) -> serde_json::Value {
 #[tokio::test]
 async fn tint_dispense_end_to_end() {
     let edge = seeded_edge().await;
+    let users = df_auth_http::test_support::seed_test_users(edge.pool(), org_id()).await;
+    let cashier = users.cashier.token.as_str();
+    let manager = users.manager.token.as_str();
     edge.set_payment_provider(Arc::new(MockTerminal::new()));
     seed_formula(&edge, Uuid::from_u128(FORMULA_ID), "1").await;
     let today = Utc::now().date_naive();
@@ -322,6 +333,7 @@ async fn tint_dispense_end_to_end() {
             "tenders": [{"kind": "Cash", "amount": null}],
             "po_number": null,
         }),
+        cashier,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{sale}");
@@ -333,6 +345,7 @@ async fn tint_dispense_end_to_end() {
     let (status, formulas) = get_json(
         &edge,
         &format!("/pos/tinting/formulas?customer_id={}", customer_id()),
+        cashier,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{formulas}");
@@ -354,6 +367,7 @@ async fn tint_dispense_end_to_end() {
             "line_no": 1,
             "dispenser": null,
         }),
+        cashier,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{dispensed}");
@@ -393,7 +407,12 @@ async fn tint_dispense_end_to_end() {
     assert_eq!(jobs[0].line_no, Some(1));
 
     // 6. The daily usage report shows the consumption + the sale.
-    let (status, report) = get_json(&edge, &format!("/pos/reports/daily-usage?date={today}")).await;
+    let (status, report) = get_json(
+        &edge,
+        &format!("/pos/reports/daily-usage?date={today}"),
+        manager,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{report}");
     assert_eq!(report["tints_dispensed"], 1);
     assert_eq!(report["tints_failed"], 0);
@@ -408,7 +427,7 @@ async fn tint_dispense_end_to_end() {
     assert_eq!(report["sales"]["grand_total"]["amount"], "108.0544");
 
     // 7. R1 dropped to exactly its threshold: shortage alert fires.
-    let (status, colorants) = get_json(&edge, "/pos/tinting/colorants").await;
+    let (status, colorants) = get_json(&edge, "/pos/tinting/colorants", cashier).await;
     assert_eq!(status, StatusCode::OK, "{colorants}");
     let alerts = colorants["alerts"].as_array().unwrap();
     assert_eq!(alerts.len(), 1);
@@ -425,8 +444,12 @@ async fn tint_dispense_end_to_end() {
     );
 
     // 8. The low-stock report carries the same alert.
-    let (status, low_stock) =
-        get_json(&edge, &format!("/pos/reports/low-stock?date={today}")).await;
+    let (status, low_stock) = get_json(
+        &edge,
+        &format!("/pos/reports/low-stock?date={today}"),
+        manager,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{low_stock}");
     assert_eq!(low_stock["colorants"].as_array().unwrap().len(), 1);
     assert_eq!(low_stock["colorants"][0]["code"], "R1");
@@ -435,6 +458,9 @@ async fn tint_dispense_end_to_end() {
 #[tokio::test]
 async fn failed_dispense_decrements_nothing() {
     let edge = seeded_edge().await;
+    let users = df_auth_http::test_support::seed_test_users(edge.pool(), org_id()).await;
+    let cashier = users.cashier.token.as_str();
+    let manager = users.manager.token.as_str();
     edge.set_payment_provider(Arc::new(MockTerminal::new()));
     // This formula needs 6 fl oz of R1; only 5 are on hand.
     let formula_id = Uuid::from_u128(0x7001);
@@ -452,6 +478,7 @@ async fn failed_dispense_decrements_nothing() {
             "line_no": null,
             "dispenser": null,
         }),
+        cashier,
     )
     .await;
     // Shortage: 409, and the error names the short colorant.
@@ -480,7 +507,12 @@ async fn failed_dispense_decrements_nothing() {
 
     // ...and the daily usage report counts the failure, not a tint.
     let today = Utc::now().date_naive();
-    let (status, report) = get_json(&edge, &format!("/pos/reports/daily-usage?date={today}")).await;
+    let (status, report) = get_json(
+        &edge,
+        &format!("/pos/reports/daily-usage?date={today}"),
+        manager,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{report}");
     assert_eq!(report["tints_dispensed"], 0);
     assert_eq!(report["tints_failed"], 1);

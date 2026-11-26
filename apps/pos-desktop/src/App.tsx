@@ -21,6 +21,15 @@ import {
   voidTransaction,
 } from './api'
 import { DEMO_CATALOG, findBySku } from './catalog'
+import {
+  canPriceOverride,
+  canVoid,
+  getSession,
+  logout,
+  type AuthSession,
+} from './auth'
+import Login from './Login'
+import OverridePrompt from './OverridePrompt'
 import type {
   CompletedSale,
   Money,
@@ -92,6 +101,23 @@ function cartToSaleInput(
 }
 
 export default function App() {
+  // Phase 7: no session → login screen. The session is restored from
+  // localStorage on reload; a 401 from any API call clears it (see
+  // api.ts) and the 'decor-pos-unauthorized' listener below returns
+  // here.
+  const [session, setSession] = useState<AuthSession | null>(() => getSession())
+  const [switching, setSwitching] = useState(false)
+  const [overrideRequest, setOverrideRequest] = useState<{
+    reason: 'void' | 'price_override'
+    label: string
+  } | null>(null)
+  const [pendingEntry, setPendingEntry] = useState<{
+    sku: string
+    description: string
+    qty: string
+    unit_price: string
+    unit_cost: string
+  } | null>(null)
   const [storeName, setStoreName] = useState('Decor POS')
   const [provider, setProviderState] = useState('mock')
   const [sync, setSync] = useState<SyncState | null>(null)
@@ -136,12 +162,23 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!session) return
     refreshStatus()
-  }, [refreshStatus])
+  }, [refreshStatus, session])
+
+  useEffect(() => {
+    const onUnauthorized = () => {
+      setSession(null)
+      setError('Session expired — sign in again.')
+    }
+    window.addEventListener('decor-pos-unauthorized', onUnauthorized)
+    return () => window.removeEventListener('decor-pos-unauthorized', onUnauthorized)
+  }, [])
 
   // Live totals: preview with no tenders (surcharge is computed at
   // charge time from the selected tenders; the server is authoritative).
   useEffect(() => {
+    if (!session) return
     if (lines.length === 0) {
       setPreview(null)
       return
@@ -153,7 +190,7 @@ export default function App() {
         .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
     }, 250)
     return () => clearTimeout(handle)
-  }, [lines])
+  }, [lines, session])
 
   // Keyboard-first: `/` focuses the scanner, Ctrl+Enter charges.
   useEffect(() => {
@@ -217,6 +254,24 @@ export default function App() {
     scanRef.current?.focus()
   }
 
+  function commitEntry(
+    known: ReturnType<typeof findBySku>,
+    snapshot: { sku: string; description: string; qty: string; unit_price: string; unit_cost: string },
+  ) {
+    addLine(
+      {
+        product_id: known?.product_id ?? `00000000-0000-7000-8000-${snapshot.sku.slice(0, 12).padEnd(12, '0')}`,
+        sku: snapshot.sku,
+        description: snapshot.description,
+        uom: known?.uom ?? 'ea',
+        unit_price: snapshot.unit_price,
+        unit_cost: snapshot.unit_cost,
+      },
+      snapshot.qty,
+    )
+    setEntry({ sku: '', description: '', qty: '1', unit_price: '', unit_cost: '' })
+  }
+
   function doAddEntry() {
     const sku = entry.sku.trim()
     if (!sku || !entry.description.trim() || !entry.unit_price) {
@@ -224,18 +279,26 @@ export default function App() {
       return
     }
     const known = findBySku(sku)
-    addLine(
-      {
-        product_id: known?.product_id ?? `00000000-0000-7000-8000-${sku.slice(0, 12).padEnd(12, '0')}`,
-        sku,
-        description: entry.description.trim(),
-        uom: known?.uom ?? 'ea',
-        unit_price: entry.unit_price,
-        unit_cost: entry.unit_cost || '0.0000',
-      },
-      entry.qty || '1',
-    )
-    setEntry({ sku: '', description: '', qty: '1', unit_price: '', unit_cost: '' })
+    const unitCost = entry.unit_cost || known?.unit_cost || '0.0000'
+    const snapshot = {
+      sku,
+      description: entry.description.trim(),
+      qty: entry.qty || '1',
+      unit_price: entry.unit_price,
+      unit_cost: unitCost,
+    }
+    // Below-cost price on a known product: manager override, unless
+    // the signed-in user already holds PosPriceOverride.
+    if (
+      known &&
+      Number(unitCost) > 0 &&
+      Number(entry.unit_price) < Number(unitCost) &&
+      !canPriceOverride(session?.user.role ?? '')
+    ) {
+      requestPriceOverride(snapshot)
+      return
+    }
+    commitEntry(known, snapshot)
   }
 
   async function doCheckout() {
@@ -352,9 +415,9 @@ export default function App() {
 
   async function doOpenTill() {
     try {
-      // Demo cashier id: a real deployment signs the cashier in
-      // (PIN/badge) and passes their user id here.
-      const cashierId = '00000000-0000-7000-8000-000000000099'
+      // Phase 7: the signed-in operator opens the till under their own
+      // user id (was a fixed demo id before login existed).
+      const cashierId = session?.user.id ?? '00000000-0000-7000-8000-000000000099'
       const till = await openTill(cashierId, usd(openingFloat || '0.0000'))
       setTillId(till.id)
       say(`Till open — float ${fmtMoney(usd(openingFloat || '0.0000'))}.`)
@@ -385,6 +448,88 @@ export default function App() {
     }
   }
 
+  async function doLogout() {
+    await logout()
+    setSession(null)
+    setTillId(null)
+    setLastSale(null)
+    setLines([])
+    setPreview(null)
+    setNotice(null)
+    setError(null)
+  }
+
+  function handleLoggedIn(next: AuthSession) {
+    setSession(next)
+    setSwitching(false)
+    setNotice(null)
+    setError(null)
+  }
+
+  // Phase 7: voiding needs PosVoid (Manager/Admin). Anyone else gets
+  // the manager override prompt instead of a direct void. The prompt
+  // is UI-side only — the backend still enforces the void permission.
+  async function doVoidSale() {
+    if (!lastSale) return
+    if (canVoid(session?.user.role ?? '')) {
+      try {
+        await voidTransaction(lastSale.transaction_id)
+        say(`Sale ${lastSale.doc_number} voided.`)
+      } catch (e) {
+        fail(e)
+      }
+      return
+    }
+    setOverrideRequest({
+      reason: 'void',
+      label: `Void sale ${lastSale.doc_number}. Your role (${session?.user.role ?? 'unknown'}) cannot void — a manager must verify with their PIN.`,
+    })
+  }
+
+  // Phase 7: a line price entered below its unit cost is a price
+  // override (below margin). Managers/admins apply it directly; anyone
+  // else must pass the manager override prompt, and the line is not
+  // added until the override verifies.
+  function requestPriceOverride(entry: {
+    sku: string
+    description: string
+    qty: string
+    unit_price: string
+    unit_cost: string
+  }) {
+    setPendingEntry(entry)
+    setOverrideRequest({
+      reason: 'price_override',
+      label: `Price ${entry.unit_price} for ${entry.description} is below cost ${entry.unit_cost}. A manager must verify the override with their PIN.`,
+    })
+  }
+
+  function applyOverride() {
+    if (!overrideRequest) return
+    if (overrideRequest.reason === 'void') {
+      const sale = lastSale
+      setOverrideRequest(null)
+      if (sale) {
+        void voidTransaction(sale.transaction_id)
+          .then(() => say(`Sale ${sale.doc_number} voided (manager override).`))
+          .catch(fail)
+      }
+      return
+    }
+    if (pendingEntry) {
+      const known = findBySku(pendingEntry.sku)
+      commitEntry(known, pendingEntry)
+    }
+    setPendingEntry(null)
+    setOverrideRequest(null)
+    say('Price override verified by manager.')
+  }
+
+  function cancelOverride() {
+    setOverrideRequest(null)
+    setPendingEntry(null)
+  }
+
   async function doSwitchProvider(name: string) {
     try {
       const current = await setProvider(name)
@@ -393,6 +538,57 @@ export default function App() {
     } catch (e) {
       fail(e)
     }
+  }
+
+  // Phase 7: login / operator-switch / override screens replace the
+  // till UI (the till itself is untouched underneath).
+  if (!session || switching) {
+    return (
+      <div className="app">
+        <header>
+          <h1>{storeName} — Counter POS</h1>
+        </header>
+        <main className="login-main">
+          <Login
+            title={switching ? 'Switch operator' : 'Sign in — Counter POS'}
+            subtitle={
+              switching
+                ? 'The new operator signs in with email + password, or with their counter PIN / badge.'
+                : 'Sign in with your email + password, or switch operator with a counter PIN / badge.'
+            }
+            allowPin
+            onLoggedIn={handleLoggedIn}
+            onCancel={switching ? () => setSwitching(false) : undefined}
+          />
+        </main>
+        <footer>
+          <p>Sales work offline against the local edge; sync when HQ is reachable.</p>
+        </footer>
+      </div>
+    )
+  }
+
+  if (overrideRequest) {
+    return (
+      <div className="app">
+        <header>
+          <h1>{storeName} — Counter POS</h1>
+          <div className="status">
+            <span>
+              {session.user.display_name ?? session.user.email} ({session.user.role})
+            </span>
+          </div>
+        </header>
+        <main className="login-main">
+          <OverridePrompt
+            label={overrideRequest.label}
+            reasonCode={overrideRequest.reason}
+            onVerified={applyOverride}
+            onCancel={cancelOverride}
+          />
+        </main>
+      </div>
+    )
   }
 
   const money = (v: string, onChange: (v: string) => void, placeholder = '0.0000') => (
@@ -404,10 +600,19 @@ export default function App() {
       <header>
         <h1>{storeName} — Counter POS</h1>
         <div className="status">
+          <span>
+            {session.user.display_name ?? session.user.email} ({session.user.role})
+          </span>
           <span>Till: {tillId ? `open (${tillId.slice(0, 8)})` : 'closed'}</span>
           <span>Pending sync: {sync?.pending_count ?? '?'}</span>
           <span>Provider: {provider}</span>
           <span>Mode: {isTauri ? 'Tauri app' : 'dev (HTTP → df-server edge)'}</span>
+          <button type="button" onClick={() => setSwitching(true)}>
+            Switch operator
+          </button>
+          <button type="button" onClick={() => void doLogout()}>
+            Log out
+          </button>
         </div>
       </header>
 
@@ -544,7 +749,7 @@ export default function App() {
                 <p className="hint">Printed: {lastSale.receipt_printed ? 'yes' : 'no printer attached'}</p>
               </div>
               {receiptText && <pre>{receiptText}</pre>}
-              <button type="button" onClick={() => void voidTransaction(lastSale.transaction_id).then(() => say(`Sale ${lastSale.doc_number} voided.`)).catch(fail)}>
+              <button type="button" onClick={() => void doVoidSale()}>
                 Void this sale
               </button>
             </section>

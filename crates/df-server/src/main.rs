@@ -68,6 +68,23 @@
 //! df-server edi catalog --db sqlite:edge.db --org-id <uuid> --store-id <uuid> --file ./catalog.csv --vendor-id VENDOR1
 //! df-server migrate import --db sqlite:edge.db --org-id <uuid> --store-id <uuid> --dir ./legacy [--out manifest.json]
 //! ```
+//!
+//! Phase 7 (v1.1) — auth core:
+//!
+//! ```text
+//! df-server users create-admin --db sqlite:edge.db --org-id <uuid> --email admin@example.invalid --display-name "Admin"
+//! df-server users create --db sqlite:edge.db --org-id <uuid> --email cashier@example.invalid --display-name "Cashier" --role Cashier --pin 4821
+//! df-server users list --db sqlite:edge.db --org-id <uuid>
+//! df-server users revoke-sessions --db sqlite:edge.db --email cashier@example.invalid
+//! ```
+//!
+//! The password comes from the `DF_USERS_PASSWORD` env var (or the
+//! var named by `--password-env`) when set, otherwise it is read
+//! from stdin at a prompt. It is never logged and never printed.
+//! `create-admin` refuses when an Admin already exists for the org
+//! unless `--force` is passed AND the operator types `YES` at the
+//! confirmation prompt. See `docs/auth.md` for the full bootstrap
+//! procedure.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -76,6 +93,7 @@ use std::sync::Arc;
 
 use chrono::{Datelike, NaiveDate};
 use clap::{Parser, Subcommand};
+use df_auth::{Role, hash_password, hash_pin};
 use df_domain::Currency;
 use df_edge::{Edge, EdgeConfig, MockTerminal};
 use df_jobs::{
@@ -185,6 +203,13 @@ enum Command {
     Edi {
         #[command(subcommand)]
         command: EdiCommand,
+    },
+    /// User administration (Phase 7, v1.1): create the first admin,
+    /// create users, list users, revoke sessions. Runs migrations
+    /// first, so it works on a fresh database.
+    Users {
+        #[command(subcommand)]
+        command: UsersCommand,
     },
 }
 
@@ -430,6 +455,103 @@ enum EdiCommand {
         /// currency, then USD.
         #[arg(long)]
         currency: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum UsersCommand {
+    /// Create the first Admin for an org. Refuses when an Admin
+    /// already exists unless `--force` is passed AND the operator
+    /// confirms by typing `YES` at the prompt. The password comes
+    /// from the env var named by `--password-env` (default
+    /// `DF_USERS_PASSWORD`) when set, otherwise from stdin at a
+    /// prompt; it is never logged. No default password exists.
+    CreateAdmin {
+        /// sqlx database URL, e.g. `sqlite:edge.db`.
+        #[arg(long)]
+        db: String,
+        /// Organization UUID the admin belongs to.
+        #[arg(long)]
+        org_id: Uuid,
+        /// Name for the org row when it does not exist yet
+        /// (default `Decor POS`).
+        #[arg(long)]
+        org_name: Option<String>,
+        /// Admin email (login name).
+        #[arg(long)]
+        email: String,
+        /// Admin display name.
+        #[arg(long)]
+        display_name: String,
+        /// Allow creating a second admin for the org (still needs
+        /// the `YES` confirmation at the prompt).
+        #[arg(long)]
+        force: bool,
+        /// Env var to read the password from (default
+        /// `DF_USERS_PASSWORD`).
+        #[arg(long, default_value = "DF_USERS_PASSWORD")]
+        password_env: String,
+    },
+    /// Create a user with any role. At least one of a password or
+    /// `--pin` is required; `--no-password` creates a PIN-only user
+    /// (cashier counter login). `--customer-id` is required for
+    /// `--role PortalContractor` and rejected for other roles.
+    Create {
+        /// sqlx database URL, e.g. `sqlite:edge.db`.
+        #[arg(long)]
+        db: String,
+        /// Organization UUID the user belongs to.
+        #[arg(long)]
+        org_id: Uuid,
+        /// Name for the org row when it does not exist yet
+        /// (default `Decor POS`).
+        #[arg(long)]
+        org_name: Option<String>,
+        /// User email (login name).
+        #[arg(long)]
+        email: String,
+        /// User display name.
+        #[arg(long)]
+        display_name: String,
+        /// Role: Cashier | SalesAssociate | Warehouse | Driver |
+        /// Manager | Admin | PortalContractor.
+        #[arg(long)]
+        role: String,
+        /// Counter PIN (4-6 digits) for counter switching and
+        /// manager overrides.
+        #[arg(long)]
+        pin: Option<String>,
+        /// Contractor customer id this portal user may access
+        /// (required for PortalContractor).
+        #[arg(long)]
+        customer_id: Option<Uuid>,
+        /// Do not set a password (PIN-only user). Without this the
+        /// password is read from `--password-env` or stdin.
+        #[arg(long)]
+        no_password: bool,
+        /// Env var to read the password from (default
+        /// `DF_USERS_PASSWORD`).
+        #[arg(long, default_value = "DF_USERS_PASSWORD")]
+        password_env: String,
+    },
+    /// List the users of an org as JSON (id, email, display name,
+    /// role, portal customer, active). Hashes are never printed.
+    List {
+        /// sqlx database URL, e.g. `sqlite:edge.db`.
+        #[arg(long)]
+        db: String,
+        /// Organization UUID to list.
+        #[arg(long)]
+        org_id: Uuid,
+    },
+    /// Revoke every live session of a user (logout everywhere).
+    RevokeSessions {
+        /// sqlx database URL, e.g. `sqlite:edge.db`.
+        #[arg(long)]
+        db: String,
+        /// Email of the user to log out everywhere.
+        #[arg(long)]
+        email: String,
     },
 }
 
@@ -1115,6 +1237,335 @@ async fn run_edi_catalog(
     }
 }
 
+/// Open a pool and run the Phase 7 migrations on it, so the `users`
+/// subcommands work on a fresh database. The database file must
+/// already exist for SQLite (a missing file is created by `connect`
+/// with `mode=rwc` — the same behaviour as `df-server edge`).
+async fn open_migrated_pool(db: &str) -> df_db::AnyPool {
+    let pool = open_pool(db).await;
+    let dialect = if db.starts_with("postgres") {
+        df_db::Dialect::Postgres
+    } else {
+        df_db::Dialect::Sqlite
+    };
+    if let Err(err) = df_db::migrate(&pool, dialect).await {
+        eprintln!("df-server users: migration failed: {err}");
+        std::process::exit(1);
+    }
+    pool
+}
+
+/// Insert the org row when it does not exist yet (bootstrap case:
+/// the first admin on a fresh database). The name is only a label;
+/// pass `--org-name` to set it.
+async fn ensure_org(pool: &df_db::AnyPool, org_id: Uuid, org_name: Option<String>) {
+    if df_db::get_organization(pool, org_id).await.is_ok() {
+        return;
+    }
+    let org = df_db::Organization {
+        id: org_id,
+        name: org_name.unwrap_or_else(|| "Decor POS".to_string()),
+        default_currency: "USD".to_string(),
+        enabled_modules: serde_json::json!({}),
+        settings_json: serde_json::json!({}),
+        created_at: chrono::Utc::now(),
+    };
+    if let Err(err) = df_db::insert_organization(pool, &org).await {
+        eprintln!("df-server users: cannot create organization {org_id}: {err}");
+        std::process::exit(1);
+    }
+}
+
+/// Read a password: the env var first (read once, never logged),
+/// otherwise a stdin prompt. Returns `None` when the prompt gets an
+/// empty line — the caller decides whether that is an error (a
+/// password is required) or fine (a PIN-only user).
+fn read_password(password_env: &str) -> Option<String> {
+    if let Ok(password) = std::env::var(password_env)
+        && !password.is_empty()
+    {
+        return Some(password);
+    }
+    eprint!("Password (min 8 characters): ");
+    use std::io::Write;
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    match std::io::stdin().read_line(&mut line) {
+        Ok(_) => {
+            let password = line.trim_end_matches(['\r', '\n']).to_string();
+            if password.is_empty() {
+                None
+            } else {
+                Some(password)
+            }
+        }
+        Err(err) => {
+            eprintln!("df-server users: cannot read password from stdin: {err}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Ask the operator to type `YES` (exactly) to confirm a dangerous
+/// step. Anything else aborts.
+fn confirm_yes(prompt: &str) -> bool {
+    eprint!("{prompt}");
+    use std::io::Write;
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    match std::io::stdin().read_line(&mut line) {
+        Ok(_) => line.trim() == "YES",
+        Err(_) => false,
+    }
+}
+
+fn hash_or_exit(password: &str, what: &str) -> String {
+    match hash_password(password) {
+        Ok(hash) => hash,
+        Err(err) => {
+            eprintln!("df-server users: {what}: {err}");
+            std::process::exit(2);
+        }
+    }
+}
+
+async fn run_users_create_admin(
+    db: String,
+    org_id: Uuid,
+    org_name: Option<String>,
+    email: String,
+    display_name: String,
+    force: bool,
+    password_env: String,
+) -> ! {
+    let pool = open_migrated_pool(&db).await;
+    ensure_org(&pool, org_id, org_name).await;
+    let existing = match df_db::count_users_with_role(&pool, org_id, Role::Admin).await {
+        Ok(n) => n,
+        Err(err) => {
+            eprintln!("df-server users create-admin: cannot count admins: {err}");
+            std::process::exit(1);
+        }
+    };
+    if existing > 0 && !force {
+        eprintln!(
+            "df-server users create-admin: org {org_id} already has {existing} admin(s) — pass --force and confirm with YES to add another"
+        );
+        std::process::exit(2);
+    }
+    if existing > 0
+        && !confirm_yes(&format!(
+            "org {org_id} already has {existing} admin(s); type YES to create another admin: "
+        ))
+    {
+        eprintln!("df-server users create-admin: aborted");
+        std::process::exit(2);
+    }
+    let Some(password) = read_password(&password_env) else {
+        eprintln!(
+            "df-server users create-admin: empty password — set the env var or type a password"
+        );
+        std::process::exit(2);
+    };
+    let hash = hash_or_exit(&password, "invalid password");
+    let user = match df_db::create_user(
+        &pool,
+        &df_db::NewUser {
+            org_id,
+            email: email.clone(),
+            display_name,
+            password_hash: Some(hash),
+            counter_pin_hash: None,
+            badge_token_hash: None,
+            role: Role::Admin,
+            portal_customer_id: None,
+            active: true,
+        },
+    )
+    .await
+    {
+        Ok(user) => user,
+        Err(err) => {
+            eprintln!("df-server users create-admin: cannot create admin {email}: {err}");
+            std::process::exit(1);
+        }
+    };
+    print_json(serde_json::json!({
+        "id": user.id,
+        "email": user.email,
+        "display_name": user.display_name,
+        "role": "Admin",
+        "org_id": org_id,
+    }));
+}
+
+/// Arguments for `df-server users create`, bundled so the
+/// function stays under clippy's too-many-arguments lint.
+struct CreateUserArgs {
+    db: String,
+    org_id: Uuid,
+    org_name: Option<String>,
+    email: String,
+    display_name: String,
+    role_text: String,
+    pin: Option<String>,
+    customer_id: Option<Uuid>,
+    no_password: bool,
+    password_env: String,
+}
+
+async fn run_users_create(args: CreateUserArgs) -> ! {
+    let CreateUserArgs {
+        db,
+        org_id,
+        org_name,
+        email,
+        display_name,
+        role_text,
+        pin,
+        customer_id,
+        no_password,
+        password_env,
+    } = args;
+    let role = match Role::from_str(&role_text) {
+        Ok(role) => role,
+        Err(err) => {
+            eprintln!("df-server users create: {err}");
+            std::process::exit(2);
+        }
+    };
+    if role == Role::PortalContractor && customer_id.is_none() {
+        eprintln!(
+            "df-server users create: --customer-id is required for --role PortalContractor (the customer the portal user may access)"
+        );
+        std::process::exit(2);
+    }
+    if role != Role::PortalContractor && customer_id.is_some() {
+        eprintln!("df-server users create: --customer-id is only for --role PortalContractor");
+        std::process::exit(2);
+    }
+    let pool = open_migrated_pool(&db).await;
+    ensure_org(&pool, org_id, org_name).await;
+    if let Some(customer) = customer_id
+        && let Err(err) = df_db::get_customer(&pool, customer).await
+    {
+        eprintln!("df-server users create: cannot read customer {customer}: {err}");
+        std::process::exit(1);
+    }
+    let pin_hash = match pin {
+        Some(pin) => match hash_pin(&pin) {
+            Ok(hash) => Some(hash),
+            Err(err) => {
+                eprintln!("df-server users create: invalid --pin: {err}");
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
+    let password_hash = if no_password {
+        None
+    } else {
+        match read_password(&password_env) {
+            Some(password) => Some(hash_or_exit(&password, "invalid password")),
+            None => {
+                if pin_hash.is_none() {
+                    eprintln!(
+                        "df-server users create: empty password — set the env var, type a password, pass --pin, or use --no-password for a PIN-only user"
+                    );
+                    std::process::exit(2);
+                }
+                None
+            }
+        }
+    };
+    if password_hash.is_none() && pin_hash.is_none() {
+        eprintln!(
+            "df-server users create: a user needs a password or a --pin (pass --no-password with --pin for a PIN-only user)"
+        );
+        std::process::exit(2);
+    }
+    let user = match df_db::create_user(
+        &pool,
+        &df_db::NewUser {
+            org_id,
+            email: email.clone(),
+            display_name,
+            password_hash,
+            counter_pin_hash: pin_hash,
+            badge_token_hash: None,
+            role,
+            portal_customer_id: customer_id,
+            active: true,
+        },
+    )
+    .await
+    {
+        Ok(user) => user,
+        Err(err) => {
+            eprintln!("df-server users create: cannot create user {email}: {err}");
+            std::process::exit(1);
+        }
+    };
+    print_json(serde_json::json!({
+        "id": user.id,
+        "email": user.email,
+        "display_name": user.display_name,
+        "role": role.as_str(),
+        "org_id": org_id,
+        "portal_customer_id": customer_id,
+    }));
+}
+
+async fn run_users_list(db: String, org_id: Uuid) -> ! {
+    let pool = open_migrated_pool(&db).await;
+    let users = match df_db::list_users_for_org(&pool, org_id).await {
+        Ok(users) => users,
+        Err(err) => {
+            eprintln!("df-server users list: cannot list users for org {org_id}: {err}");
+            std::process::exit(1);
+        }
+    };
+    let value: Vec<serde_json::Value> = users
+        .iter()
+        .map(|user| {
+            serde_json::json!({
+                "id": user.id,
+                "email": user.email,
+                "display_name": user.display_name,
+                "role": df_auth::role_from_id(user.role_id)
+                    .map(|role| role.as_str().to_string())
+                    .unwrap_or_else(|| format!("unknown({})", user.role_id)),
+                "portal_customer_id": user.portal_customer_id,
+                "active": user.active,
+            })
+        })
+        .collect();
+    print_json(serde_json::Value::Array(value));
+}
+
+async fn run_users_revoke_sessions(db: String, email: String) -> ! {
+    let pool = open_migrated_pool(&db).await;
+    let user = match df_db::get_user_by_email(&pool, &email).await {
+        Ok(user) => user,
+        Err(err) => {
+            eprintln!("df-server users revoke-sessions: cannot find user {email}: {err}");
+            std::process::exit(1);
+        }
+    };
+    let revoked = match df_db::revoke_sessions_for_user(&pool, user.id).await {
+        Ok(n) => n,
+        Err(err) => {
+            eprintln!("df-server users revoke-sessions: cannot revoke sessions: {err}");
+            std::process::exit(1);
+        }
+    };
+    print_json(serde_json::json!({
+        "email": email,
+        "user_id": user.id,
+        "sessions_revoked": revoked,
+    }));
+}
+
 async fn run_edge(
     db: String,
     store_id: Uuid,
@@ -1256,6 +1707,58 @@ async fn main() {
                 ledger,
                 out,
             } => run_accounting_export(db, org_id, store_id, kind, ledger, out).await,
+        },
+        Command::Users { command } => match command {
+            UsersCommand::CreateAdmin {
+                db,
+                org_id,
+                org_name,
+                email,
+                display_name,
+                force,
+                password_env,
+            } => {
+                run_users_create_admin(
+                    db,
+                    org_id,
+                    org_name,
+                    email,
+                    display_name,
+                    force,
+                    password_env,
+                )
+                .await
+            }
+            UsersCommand::Create {
+                db,
+                org_id,
+                org_name,
+                email,
+                display_name,
+                role,
+                pin,
+                customer_id,
+                no_password,
+                password_env,
+            } => {
+                run_users_create(CreateUserArgs {
+                    db,
+                    org_id,
+                    org_name,
+                    email,
+                    display_name,
+                    role_text: role,
+                    pin,
+                    customer_id,
+                    no_password,
+                    password_env,
+                })
+                .await
+            }
+            UsersCommand::List { db, org_id } => run_users_list(db, org_id).await,
+            UsersCommand::RevokeSessions { db, email } => {
+                run_users_revoke_sessions(db, email).await
+            }
         },
         Command::Edi { command } => match command {
             EdiCommand::Send {
