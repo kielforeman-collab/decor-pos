@@ -5,6 +5,8 @@ Repo: https://github.com/kielforeman-collab/decor-pos (public, `main`)
 Local: `~/workspace/decor-pos/` — Rust 1.99 (`~/.cargo/bin`), Rust 2024, Apache-2.0 OR MIT.
 
 Benjamin Moore COLORx is **deferred post-v1.0** (spec §9) — no COLORx code in any phase.
+Nov 26 rescope (Kiel): tinting is **formula tracking only** — the POS keeps track of
+formulas, it never drives a tint machine (no VirtualTinter, no dispense, no colorant inventory).
 Standing caveats: PostgreSQL round-trip never tested live (no PG server in this VM);
 tax/eco-fee presets are sample values; native Tauri shell build unverified in VM
 (`gdk-3.0` missing, apt broken on `libzstd-dev`) — verified dev path is
@@ -43,23 +45,32 @@ only its own section, ticking items as they are verified — not when code merel
 ### Known limits
 - Returns don't refund via provider; holds in-memory; card authorized before a failed commit isn't auto-voided; POS cashier sign-in not wired (fixed demo id).
 
-## Phase 2 — Paint Tinting & Decorating Verticals (v0.3) — ✅ DONE Nov 25, 2026
-### Scope
-- ✅ `df-tinter` — TinterPlugin trait + deterministic VirtualTinter, colorant inventory + shortage alerts, formula lookup by name/code and by customer colour history
+## Phase 2 — Formula Tracking & Vendor EDI (v0.3) — ✅ DONE Nov 25, 2026; rescoped Nov 26, 2026
+### Scope — kept (formula tracking only; Kiel, Nov 26: the POS tracks formulas, it never drives a tint machine)
+- ✅ Formula tracking — formula lookup by name/code and by customer colour history
 - ✅ `df-edi` — X12 850 PO generation, 856 ASN + 810 invoice intake, vendor catalog CSV import
 - ✅ `df-plugin-sdk` — real HTTP transport (spawns/manages plugin child process; gRPC/WASM honest NotSupported stubs)
-- ✅ `df-reports` — daily usage, low-stock, shortage alerts (JSON + text)
+- ✅ `df-reports` — daily usage, low-stock alerts (JSON + text)
 - ✅ `df-jobs` — daily 06:00 UTC registry, run_now/run_due, in-memory history
-- ✅ Edge tinting endpoints + HQ admin endpoints
+- ✅ Edge formula endpoints + HQ admin endpoints
+### Dropped Nov 26 (machine tinting — not needed)
+- ❌ `VirtualTinter` + deterministic dispense simulation
+- ❌ `TinterPlugin` machine interface + `HttpTinterPlugin`
+- ❌ Colorant inventory, shortage/threshold alerts, tint job lifecycle
+- ❌ Edge dispense endpoints
 ### Exit test
-- ✅ Past-colour lookup → virtual dispense (levels decrement exactly) → job on sale → usage report shows it → threshold alert fires; over-dispense 409s, decrements nothing, records failed job
+- ✅ Formula tracking — past-colour lookup returns the stored formula (exercised by the Phase 2 exit test's lookup step)
+- ❌ Old exit test's dispense leg (virtual dispense → levels decrement → threshold alert) — dropped with the machine scope
 ### Verification
 - ✅ `cargo test --workspace` — 209/209 passing
 - ✅ clippy clean, fmt clean
 ### GitHub
 - ✅ Pushed via connector in ONE commit `817d89f` (148 files, 37 new)
+### Note
+- The machine-tinting code (`df-tinter` dispense, `df-plugin-sdk/src/tinter.rs`, edge dispense endpoints) is still in the repo on `main` — it was built and pushed in Phase 2 before the rescope. Removing it from the codebase is a separate step, not done yet.
+- The `HttpTinterPlugin ↔ TinterPlugin unification` open item is closed by this rescope (moot — the whole machine interface is dropped).
 ### Known limits
-- PG round-trip still untested; no product min-level table (low-stock product thresholds caller-supplied); job history in-memory only; HttpTinterPlugin ↔ TinterPlugin unification not done; decorating verticals (flooring/window/wallpaper/sample loans) deliberately left out — flags only.
+- PG round-trip still untested; no product min-level table (low-stock product thresholds caller-supplied); job history in-memory only; decorating verticals (flooring/window/wallpaper/sample loans) deliberately left out — flags only.
 
 ## Phase 3 — Contractor AR, Inventory & Back-Office (v0.4) — ✅ DONE Nov 26, 2026
 ### Scope
@@ -79,9 +90,9 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ `cargo test --workspace` — 267/267 passing (cargo test + nextest)
 - ✅ clippy clean, fmt clean, back-office `npm run build` clean
 ### GitHub
-- ⬜ NOT pushed yet (local only; main still at `817d89f`) — Kiel's pick Nov 25: wait for Phase 4, then push 3 + 4 together in one commit
+- ✅ Pushed Nov 26 via connector in ONE commit `65e96f0` (224 files, Phases 3 + 4 together, per Kiel's pick)
 ### Known limits
-- PG round-trip still untested; job history still in-memory (job_runs table deferred again); unallocated payments count in closing but not aging; Typst CreationDate changes sha256 on re-render; charge for a customer with no edge row is not blocked (HQ enforces on sync); shelf-tag barcode is the SKU (no barcode repo wired); HttpTinterPlugin ↔ TinterPlugin unification still open.
+- PG round-trip still untested; job history still in-memory (job_runs table deferred again); unallocated payments count in closing but not aging; Typst CreationDate changes sha256 on re-render; charge for a customer with no edge row is not blocked (HQ enforces on sync); shelf-tag barcode is the SKU (no barcode repo wired).
 - Fixes folded in during verification: df-edi PO `created_at` now derives from the passed PO date (was wall-clock — date-rot test failure), df-edge `let...else` → `?`, test-helper arg bundling.
 
 ## Phase 4 — Vendor EDI, CRM & Delivery Logistics (v0.5) — ✅ DONE Nov 26, 2026
@@ -105,9 +116,9 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ `cargo test --workspace` — 327/327 passing (58 suites, 0 failed; `cargo nextest run --workspace` 325/325)
 - ✅ clippy clean (`-D warnings`), fmt clean, back-office `npm run build` clean (tsc + Vite, 32 modules, 278.60 kB JS)
 ### GitHub
-- ⬜ NOT pushed yet (local only; main still at `817d89f`) — Kiel's pick Nov 25: push 3 + 4 together in one commit once Phase 4 is verified
+- ✅ Pushed Nov 26 via connector in ONE commit `65e96f0` (224 files, Phases 3 + 4 together, per Kiel's pick)
 ### Known limits
-- SFTP is a local stand-in only (no SSH/remote/delivery confirmation); AS2 has no network/crypto; POD is bytes+hash over JSON, no camera hardware, no photo stored; ack application is a report, PO untouched; 832 mark-applied records review only, no repricing; lapsed report is edge-only (no df-api read); activity-filter endpoint parses leniently, so running it on a customer-dialect view matches every activity — use the customer endpoint for customer views; PG round-trip still untested; HttpTinterPlugin ↔ TinterPlugin unification still open.
+- SFTP is a local stand-in only (no SSH/remote/delivery confirmation); AS2 has no network/crypto; POD is bytes+hash over JSON, no camera hardware, no photo stored; ack application is a report, PO untouched; 832 mark-applied records review only, no repricing; lapsed report is edge-only (no df-api read); activity-filter endpoint parses leniently, so running it on a customer-dialect view matches every activity — use the customer endpoint for customer views; PG round-trip still untested.
 - Fixes folded in during verification: df-api version strings 0.4.0 → 0.5.0 (health test), df-edge re-exports/signatures aligned to the sibling crates (old 4-arg `assign_delivery` removed, 7-arg state-machine version kept), `Serialize` added to df-edi row types, df-server `run_edi_intake` refactored behind an `EdiCtx` struct (clippy too-many-arguments).
 
 ## Phase 5 — Mobile PWA/Tauri & Contractor Portal (v0.6) — ⬜ NOT STARTED
