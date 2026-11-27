@@ -96,6 +96,10 @@ export default function Login({
   }
 
   async function doSwitch() {
+    if (!email.trim()) {
+      setError("Enter the new operator's email, then their PIN or badge.")
+      return
+    }
     if (!pin.trim() && !badge.trim()) {
       setError('Enter a PIN or scan a badge to switch operator.')
       return
@@ -105,6 +109,7 @@ export default function Login({
     try {
       onLoggedIn(
         await counterSwitch({
+          email: email.trim(),
           pin: pin.trim() || undefined,
           badgeToken: badge.trim() || undefined,
         }),

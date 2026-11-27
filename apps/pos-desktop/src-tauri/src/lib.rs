@@ -610,6 +610,148 @@ mod commands {
         .await
         .map_err(cmd_err)
     }
+
+    // --- auth commands (Phase 7): the same login / setup / switch /
+    // logout / override surface as the edge HTTP `/pos/auth/*`
+    // endpoints, backed by the same `df_db` functions the HTTP
+    // handlers call. The frontend (`src/auth.ts`) uses these instead
+    // of HTTP when it runs inside the Tauri shell, where there is no
+    // Vite proxy and no HTTP edge to talk to. Login responses use
+    // the canonical flat `df_auth_http::LoginResponse` shape, so
+    // `normalizeSession` parses them exactly like the HTTP ones.
+
+    /// Map an auth failure to the same message the HTTP layer
+    /// returns (see `df_auth_http::login_error`): a generic 401
+    /// text for bad credentials, so the boundary cannot probe
+    /// which emails exist or which accounts are active.
+    fn auth_err(err: df_auth::AuthError) -> String {
+        use df_auth::AuthError;
+        match err {
+            AuthError::InvalidCredentials | AuthError::AccountInactive => {
+                "invalid credentials".to_string()
+            }
+            AuthError::PortalNotLinked => "portal user has no linked customer".to_string(),
+            AuthError::PermissionDenied(message) => message,
+            AuthError::InvalidSession => "invalid or expired session".to_string(),
+            _ => "login failed".to_string(),
+        }
+    }
+
+    #[tauri::command]
+    pub async fn auth_login(
+        app: State<'_, PosApp>,
+        email: String,
+        password: String,
+    ) -> Result<df_auth_http::LoginResponse, String> {
+        let outcome = df_db::login_with_password(app.edge().pool(), &email, &password, false)
+            .await
+            .map_err(auth_err)?;
+        Ok(df_auth_http::LoginResponse::from_outcome(&outcome))
+    }
+
+    #[tauri::command]
+    pub async fn auth_setup(
+        app: State<'_, PosApp>,
+        email: String,
+        display_name: Option<String>,
+        password: String,
+    ) -> Result<df_auth_http::LoginResponse, String> {
+        let outcome = df_db::setup_first_admin(
+            app.edge().pool(),
+            app.edge().config().org_id,
+            &email,
+            display_name.as_deref(),
+            &password,
+        )
+        .await
+        .map_err(|err| match err {
+            df_db::SetupError::AlreadySetup => {
+                "setup already complete — a user already exists".to_string()
+            }
+            df_db::SetupError::InvalidInput(message) => message,
+            df_db::SetupError::Database(_) => "setup failed".to_string(),
+        })?;
+        Ok(df_auth_http::LoginResponse::from_outcome(&outcome))
+    }
+
+    #[tauri::command]
+    pub async fn auth_setup_status(
+        app: State<'_, PosApp>,
+    ) -> Result<df_auth_http::SetupStatusResponse, String> {
+        let count = df_db::count_users(app.edge().pool())
+            .await
+            .map_err(|_| "setup status check failed".to_string())?;
+        Ok(df_auth_http::SetupStatusResponse {
+            needs_setup: count == 0,
+        })
+    }
+
+    #[tauri::command]
+    pub async fn auth_counter_switch(
+        app: State<'_, PosApp>,
+        email: String,
+        pin: Option<String>,
+        badge_token: Option<String>,
+    ) -> Result<df_auth_http::LoginResponse, String> {
+        let pool = app.edge().pool();
+        if let Some(pin) = pin.as_deref() {
+            let outcome = df_db::login_with_pin(pool, &email, pin)
+                .await
+                .map_err(auth_err)?;
+            return Ok(df_auth_http::LoginResponse::from_outcome(&outcome));
+        }
+        if let Some(badge) = badge_token.as_deref() {
+            let outcome = df_db::login_with_badge(pool, &email, badge)
+                .await
+                .map_err(auth_err)?;
+            return Ok(df_auth_http::LoginResponse::from_outcome(&outcome));
+        }
+        Err("counter-switch needs a pin or a badge_token".to_string())
+    }
+
+    #[tauri::command]
+    pub async fn auth_logout(
+        app: State<'_, PosApp>,
+        token: String,
+    ) -> Result<df_auth_http::LogoutResponse, String> {
+        // Best-effort, like the HTTP logout: the frontend clears its
+        // local session regardless, so an unknown/expired token is
+        // `revoked: false`, never an error.
+        let pool = app.edge().pool();
+        let revoked = match df_db::validate_session_token(pool, &token).await {
+            Ok(session) => df_db::revoke_session(pool, session.id).await.is_ok(),
+            Err(_) => false,
+        };
+        Ok(df_auth_http::LogoutResponse { revoked })
+    }
+
+    #[tauri::command]
+    pub async fn auth_override_verify(
+        app: State<'_, PosApp>,
+        user_id: String,
+        pin: String,
+        reason_code: String,
+    ) -> Result<df_auth_http::OverrideVerifyResponse, String> {
+        if reason_code.trim().is_empty() {
+            return Err("reason_code is required".to_string());
+        }
+        let user_id =
+            Uuid::parse_str(&user_id).map_err(|_| format!("user_id is not a UUID: {user_id:?}"))?;
+        let pool = app.edge().pool();
+        let user = df_db::get_user_by_id(pool, user_id)
+            .await
+            .map_err(|_| auth_err(df_auth::AuthError::InvalidCredentials))?;
+        let approval = df_db::verify_manager_override(
+            pool,
+            &user.email,
+            &df_auth::OverrideCredential::Pin(pin),
+        )
+        .await
+        .map_err(auth_err)?;
+        Ok(df_auth_http::OverrideVerifyResponse::from_approval(
+            &approval,
+        ))
+    }
 }
 
 /// Run the native Tauri shell around an already-opened [`PosApp`].
@@ -648,6 +790,12 @@ pub fn run(app: PosApp) {
             commands::list_tint_colorants,
             commands::list_tint_formulas,
             commands::create_tint_formula,
+            commands::auth_login,
+            commands::auth_setup,
+            commands::auth_setup_status,
+            commands::auth_counter_switch,
+            commands::auth_logout,
+            commands::auth_override_verify,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Decor POS application");

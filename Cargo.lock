@@ -3528,6 +3528,8 @@ name = "pos-desktop"
 version = "1.2.1"
 dependencies = [
  "chrono",
+ "df-auth",
+ "df-auth-http",
  "df-db",
  "df-domain",
  "df-edge",
