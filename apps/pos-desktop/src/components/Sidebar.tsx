@@ -1,6 +1,5 @@
 interface SidebarProps {
   activeNav: string
-  tillOpen: boolean
   currentThemeLabel: string
   onNavigate: (name: string) => void
   onCycleTheme: () => void
@@ -12,16 +11,11 @@ interface SidebarProps {
 const GROUPS: { title: string; items: { name: string; badge?: string }[] }[] = [
   {
     title: 'Point of sale',
-    items: [
-      { name: 'Transactions' },
-      { name: 'Accounts' },
-      { name: 'Cash drawers' },
-      { name: 'Deliveries', badge: '2' },
-    ],
+    items: [{ name: 'Transactions' }, { name: 'Deliveries', badge: '2' }],
   },
   {
     title: 'Inventory',
-    items: [{ name: 'Orders' }, { name: 'Transfers' }, { name: 'Counts' }],
+    items: [{ name: 'Orders' }, { name: 'Transfers' }],
   },
   {
     title: 'Store',
@@ -35,7 +29,6 @@ const GROUPS: { title: string; items: { name: string; badge?: string }[] }[] = [
 
 export default function Sidebar({
   activeNav,
-  tillOpen,
   currentThemeLabel,
   onNavigate,
   onCycleTheme,
@@ -49,8 +42,7 @@ export default function Sidebar({
         <div key={g.title} className="nav-group">
           <div className="nav-group-title">{g.title}</div>
           {g.items.map((item) => {
-            let badge = item.badge
-            if (item.name === 'Cash drawers') badge = tillOpen ? 'Open' : 'Closed'
+            const badge = item.badge
             return (
               <button
                 key={item.name}

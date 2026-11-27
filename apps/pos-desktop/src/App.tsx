@@ -914,10 +914,9 @@ export default function App() {
       />
       <Sidebar
         activeNav={activeNav}
-        tillOpen={!!tillId}
         currentThemeLabel={theme.themeDef.label}
         onNavigate={(name) => {
-          if (name === 'Transactions' || name === 'Orders' || name === 'Transfers' || name === 'Accounts') {
+          if (name === 'Transactions' || name === 'Orders' || name === 'Transfers' || name === 'Customers') {
             setActiveNav(name)
           } else {
             say(`${name} — not wired up in this build yet.`)
@@ -934,7 +933,7 @@ export default function App() {
           <OrdersScreen storeId={storeId} onToast={say} />
         ) : activeNav === 'Transfers' ? (
           <TransfersScreen storeId={storeId} onToast={say} />
-        ) : activeNav === 'Accounts' ? (
+        ) : activeNav === 'Customers' ? (
           <AccountsScreen storeId={storeId} onToast={say} />
         ) : (
           <>
