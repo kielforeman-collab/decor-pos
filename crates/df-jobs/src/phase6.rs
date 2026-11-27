@@ -463,6 +463,7 @@ mod tests {
                             0,
                         )
                         .unwrap(),
+                        job_name: None,
                     },
                 )
                 .await

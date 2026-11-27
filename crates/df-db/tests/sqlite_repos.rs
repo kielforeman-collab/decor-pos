@@ -97,6 +97,8 @@ async fn store_and_product_round_trip_with_exact_money() {
         tax_class_id: Uuid::now_v7(),
         prompt_template_id: None,
         is_active: true,
+        map: None,
+        msrp: None,
     };
     df_db::insert_product(&pool, &product).await.unwrap();
     let back = df_db::get_product_by_sku(&pool, org.id, "BM-REGAL-1G")
@@ -139,6 +141,8 @@ async fn color_and_tint_formula_round_trip() {
         tax_class_id: Uuid::now_v7(),
         prompt_template_id: None,
         is_active: true,
+        map: None,
+        msrp: None,
     };
     df_db::insert_product(&pool, &product).await.unwrap();
 

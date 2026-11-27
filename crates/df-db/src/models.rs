@@ -73,6 +73,14 @@ pub struct Product {
     pub list_price: Decimal,
     pub standard_cost: Decimal,
     pub avg_cost: Decimal,
+    /// The price list's MSRP, when the file supplied one
+    /// (`products.msrp`, migration `0014_counter_ui`). `None` when
+    /// the file left it blank (most BM rows) or the product predates
+    /// the import.
+    pub msrp: Option<Decimal>,
+    /// The price list's MAP, when the file supplied one
+    /// (`products.map`, migration `0014_counter_ui`).
+    pub map: Option<Decimal>,
     pub min_margin_pct: Option<Decimal>,
     pub sheen: Option<String>,
     pub paint_base_code: Option<String>,
@@ -379,6 +387,21 @@ pub struct BopisOrderRow {
     pub created_at: DateTime<Utc>,
 }
 
+/// One row of `price_levels` (migration `0014_counter_ui`): a
+/// contractor price level. `discount_pct` is a fraction, e.g.
+/// `0.20` for Gold's 20% off list; the matching matrix rule stores
+/// the same discount as percent points (`20`) because
+/// `df-domain::pricing::CalcMethod::PctOffList` takes percent — see
+/// [`crate::ensure_price_levels`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PriceLevel {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub code: String,
+    pub name: String,
+    pub discount_pct: Decimal,
+}
+
 /// One row of `transactions` (spec §5.5). Money is `Decimal` at scale 4;
 /// `doc_type` is `sale` | `return` | `quote` | `order` | `layaway`,
 /// `status` is `open` | `parked` | `completed` | `voided`.
@@ -394,6 +417,10 @@ pub struct Transaction {
     pub customer_id: Option<Uuid>,
     pub job_id: Option<Uuid>,
     pub po_number: Option<String>,
+    /// The counter-entered job name (`transactions.job_name`,
+    /// migration `0014_counter_ui`): free text shown on the invoice.
+    /// Distinct from `job_id`, which points at a `customer_jobs` row.
+    pub job_name: Option<String>,
     pub salesperson_id: Option<Uuid>,
     pub cashier_id: Option<Uuid>,
     pub currency: String,

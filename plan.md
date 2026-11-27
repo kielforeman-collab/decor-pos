@@ -267,6 +267,8 @@ only its own section, ticking items as they are verified — not when code merel
 - F8/F9/F10 stay OPEN. No COLORx code. No f32/f64 money code.
 
 ## GUI product import — ✅ DONE Nov 26, 2026 (pushed `240f386`, no version bump)
+
+**Follow-up fix Nov 26 (pushed `6b74934`):** the import failed live with `row not found: store <id>` because a fresh edge database has an empty `stores` table — `Edge::open` seeds nothing and no production path ever created the configured store. Fix: `Edge::ensure_configured_store()` (org + store from config, code `MAIN`, no-op when rows exist, never overwrites), called once in `df-server edge` startup. Country/region/postal/timezone are placeholders (no store-edit UI yet). Test `ensure_configured_store.rs` (seeds fresh DB, idempotent). Full `cargo test -p df-edge`: 62 passed, 0 failed; clippy/fmt clean.
 ### Scope
 - ✅ "Import products" button on the back-office Inventory tab (apps/web-backoffice, :1421): file picker accepts .xlsx and .csv; the spreadsheet is parsed IN THE BROWSER with SheetJS (`xlsx` 0.18.5, new dep) — the file itself is never uploaded, only parsed JSON rows are POSTed. Reads sheet "EXCEL" when present, else the first sheet; first row is the header.
 - ✅ Preview before anything is sent: row count, first ~5 ready rows (SKU, name, list price, net price), and every row that will be skipped with its reason (skipped list capped at 20 shown). Confirm button posts only the problem-free rows; result shows created / updated / failed plus a per-row failure table. Inventory refreshes after a successful import.

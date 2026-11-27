@@ -8,6 +8,15 @@
 //! * `POST /pos/tills/{id}/close` — `{counted_cash}`
 //! * `POST /pos/carts/price-preview` — [`SaleInput`](crate::types::SaleInput)
 //! * `POST /pos/transactions` — [`SaleInput`](crate::types::SaleInput) (checkout)
+//! * `GET /pos/transactions/{id}` — one transaction with lines + payments
+//! * `GET /pos/transactions/{id}/invoice` — letter-size invoice render data
+//! * `GET /pos/products/search?q=&sku=&barcode=&limit=` — counter product search (cap 50)
+//! * `GET /pos/customers/search?q=` — counter customer search
+//! * `GET /pos/customers/{id}` — one customer
+//! * `POST /pos/customers/{id}/price-level` — `{price_level_id: Uuid|null}`
+//! * `GET /pos/customers/{id}/transactions?limit=` — a customer's transactions, newest first,
+//!   each with lines + payments
+//! * `GET /pricing/levels` — the four seeded price levels
 //! * `POST /pos/transactions/{id}/void`
 //! * `POST /pos/transactions/{id}/return` — [`Vec<ReturnLineInput>`]
 //! * `POST /pos/holds` — [`SaleInput`](crate::types::SaleInput) (park; returns `{hold_id}`)
@@ -25,6 +34,8 @@
 //! * `GET /pos/tinting/formulas?query=&customer_id=&job_id=` —
 //!   search stored formulas by color name/code, or a customer's
 //!   colour history (newest first; `job_id` scopes to one job)
+//! * `POST /pos/tinting/formulas` — create a formula (formula
+//!   tracking only; colorant codes must exist, else 400)
 //! * `POST /pos/tinting/dispense` — [`DispenseTintRequest`](crate::tinting::DispenseTintRequest)
 //! * `GET /pos/tinting/colorants` — levels + shortage alerts
 //! * `GET /pos/tinting/colors?manufacturer=&query=` — color search
@@ -179,6 +190,7 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use uuid::Uuid;
 
+use crate::counter::{ProductSearchResult, TransactionView};
 use crate::crm::{
     CreateActivityRequest, CreateAppointmentRequest, CreateSavedViewRequest, LapsedReport,
     SavedViewCustomer, SnoozeActivityRequest, UpdateActivityRequest, UpdateAppointmentRequest,
@@ -200,6 +212,7 @@ use crate::inventory::{
     PurchaseOrderView, ReceivePurchaseOrderRequest, ReplenishmentSuggestRequest, ScanCountRequest,
     SetReorderPointRequest, ShelfTagResponse, StartCountRequest, SuggestedPurchaseOrder, Transfer,
 };
+use crate::invoice::InvoiceView;
 use crate::portal::{
     BopisOrderResponse, BopisOrderView, PortalCustomerView, PortalReorderResponse,
 };
@@ -207,7 +220,9 @@ use crate::scheduling::{
     ClockRequest, CreateShiftTemplateRequest, CreateStaffShiftRequest, SetShiftStatusRequest,
     parse_ratio,
 };
-use crate::tinting::{ColorantsResponse, DispenseTintRequest, DispenseTintResponse};
+use crate::tinting::{
+    ColorantsResponse, CreateTintFormulaRequest, DispenseTintRequest, DispenseTintResponse,
+};
 use crate::types::{CompletedSale, PricePreview, ReturnLineInput, SaleInput, TenderInput, ZReport};
 use df_auth::{OverrideCredential, Permission};
 use df_auth_http::{
@@ -216,9 +231,9 @@ use df_auth_http::{
 };
 use df_db::InventoryBalance;
 use df_db::models::{
-    Appointment, ColorCatalogEntry, CrmActivity, CrmSavedView, DeliveryPod, PortalPaymentRow,
-    PricingRuleRow, Product, ReorderPoint, ShiftTemplate, StaffShift, StatementRow, TillSession,
-    TimeclockEntry, TintFormula, Transaction,
+    Appointment, ColorCatalogEntry, CrmActivity, CrmSavedView, Customer, DeliveryPod,
+    PortalPaymentRow, PriceLevel, PricingRuleRow, Product, ReorderPoint, ShiftTemplate, StaffShift,
+    StatementRow, TillSession, TimeclockEntry, TintFormula, Transaction,
 };
 use df_domain::Money;
 use df_edi::EdiDocument;
@@ -503,6 +518,122 @@ async fn list_formulas(
     Query(query): Query<FormulaQuery>,
 ) -> HandlerResult<Vec<TintFormula>> {
     edge.search_tint_formulas(query.query.as_deref(), query.customer_id, query.job_id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn create_tint_formula(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<CreateTintFormulaRequest>,
+) -> Result<(StatusCode, Json<TintFormula>), (StatusCode, Json<ErrorResponse>)> {
+    edge.create_tint_formula(body)
+        .await
+        .map(|formula| (StatusCode::CREATED, Json(formula)))
+        .map_err(err_response)
+}
+
+// --- counter search / customers / transactions / invoice -----------
+
+#[derive(Debug, Deserialize)]
+pub struct ProductSearchQuery {
+    pub q: Option<String>,
+    pub sku: Option<String>,
+    pub barcode: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CustomerSearchQuery {
+    pub q: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LimitQuery {
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetPriceLevelRequest {
+    pub price_level_id: Option<Uuid>,
+}
+
+async fn search_products(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<ProductSearchQuery>,
+) -> HandlerResult<Vec<ProductSearchResult>> {
+    edge.search_products(
+        query.q.as_deref(),
+        query.sku.as_deref(),
+        query.barcode.as_deref(),
+        query.limit,
+    )
+    .await
+    .map(Json)
+    .map_err(err_response)
+}
+
+async fn search_customers(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<CustomerSearchQuery>,
+) -> HandlerResult<Vec<Customer>> {
+    edge.search_customers(query.q.as_deref())
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn get_customer(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<Customer> {
+    df_db::get_customer(edge.pool(), id)
+        .await
+        .map(Json)
+        .map_err(|err| err_response(err.into()))
+}
+
+async fn set_customer_price_level(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetPriceLevelRequest>,
+) -> HandlerResult<Customer> {
+    edge.set_customer_price_level(id, body.price_level_id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn customer_transactions(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<LimitQuery>,
+) -> HandlerResult<Vec<TransactionView>> {
+    edge.customer_transactions(id, query.limit)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn get_transaction(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<TransactionView> {
+    edge.transaction_view(id)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn get_invoice(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<InvoiceView> {
+    edge.invoice(id).await.map(Json).map_err(err_response)
+}
+
+async fn list_price_levels(State(edge): State<Arc<Edge>>) -> HandlerResult<Vec<PriceLevel>> {
+    edge.list_price_levels()
         .await
         .map(Json)
         .map_err(err_response)
@@ -2029,7 +2160,11 @@ pub fn router(edge: Edge) -> Router {
     let checkout_routes = Router::new()
         .route("/pos/carts/price-preview", post(price_preview))
         .route("/pos/transactions", post(checkout))
+        .route("/pos/transactions/{id}", get(get_transaction))
+        .route("/pos/transactions/{id}/invoice", get(get_invoice))
         .route("/pos/transactions/{id}/return", post(return_transaction))
+        .route("/pos/products/search", get(search_products))
+        .route("/pricing/levels", get(list_price_levels))
         .route("/pos/holds", post(park_hold).get(list_holds))
         .route("/pos/holds/{id}/resume", post(resume_hold))
         .route("/pos/quotes", post(record_quote))
@@ -2037,7 +2172,10 @@ pub fn router(edge: Edge) -> Router {
         .route("/pos/sync/state", get(sync_state))
         .route("/pos/sync/run", post(sync_run))
         .route("/pos/tinting/dispense", post(dispense_tint))
-        .route("/pos/tinting/formulas", get(list_formulas))
+        .route(
+            "/pos/tinting/formulas",
+            get(list_formulas).post(create_tint_formula),
+        )
         .route("/pos/tinting/colors", get(list_colors))
         .route(
             "/bopis/orders/{id}/complete-pickup",
@@ -2127,6 +2265,16 @@ pub fn router(edge: Edge) -> Router {
         .route_layer(ar_view_gate);
 
     let crm_routes = Router::new()
+        .route("/pos/customers/search", get(search_customers))
+        .route("/pos/customers/{id}", get(get_customer))
+        .route(
+            "/pos/customers/{id}/price-level",
+            post(set_customer_price_level),
+        )
+        .route(
+            "/pos/customers/{id}/transactions",
+            get(customer_transactions),
+        )
         .route(
             "/crm/activities",
             post(create_activity).get(list_activities),
@@ -2971,5 +3119,445 @@ mod tests {
         // No token: 401, never 403.
         let (status, _) = get_json(router, &format!("/portal/customers/{a}"), None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    // --- counter-UI wiring (spec §6.1) ---------------------------------
+
+    async fn seed_counter_customer(
+        edge: &Edge,
+        id: u128,
+        account: &str,
+        company: &str,
+        price_level_id: Option<Uuid>,
+    ) -> Uuid {
+        let customer_id = Uuid::from_u128(id);
+        df_db::insert_customer(
+            edge.pool(),
+            &Customer {
+                id: customer_id,
+                org_id: Uuid::from_u128(0x2000),
+                account_number: account.to_string(),
+                customer_type: "contractor".to_string(),
+                company_name: Some(company.to_string()),
+                first_name: None,
+                last_name: None,
+                email: Some("shop@acme.example".to_string()),
+                phone: Some("604-555-0100".to_string()),
+                price_level_id,
+                salesperson_id: None,
+                tax_exempt_cert: None,
+                tax_exempt_expires: None,
+                charge_enabled: false,
+                credit_limit: rust_decimal::Decimal::from(1000),
+                payment_terms: "NET30".to_string(),
+                terms_days: None,
+                finance_rate_pct_monthly: None,
+                credit_hold: false,
+                require_po_number: false,
+                require_job_name: false,
+                portal_enabled: false,
+            },
+        )
+        .await
+        .unwrap();
+        customer_id
+    }
+
+    /// Import the real Gennex black colorant SKU from the Benjamin
+    /// Moore price book (10005510, July 17 2026): quart, NET $39.34.
+    async fn import_gennex_black(edge: &Edge) {
+        df_db::import_products(
+            edge.pool(),
+            Uuid::from_u128(0x2000),
+            None,
+            &[df_db::ImportProductRow {
+                row: 2,
+                sku: "0229S1-004".to_string(),
+                name: "GENNEX WB CLRNT -BLACK".to_string(),
+                category: "COLORANT".to_string(),
+                line: "00229".to_string(),
+                color: "".to_string(),
+                size: "004".to_string(),
+                upc: "".to_string(),
+                msrp: "$45.00".to_string(),
+                map: "$41.00".to_string(),
+                net_price: "$39.34".to_string(),
+                list_price: "$39.64".to_string(),
+                brand_code: "BMC".to_string(),
+            }],
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn counter_product_search_returns_imported_real_sku() {
+        let edge = test_edge().await;
+        import_gennex_black(&edge).await;
+        let users = seeded_users(&edge).await;
+        let router = edge.router();
+        let cashier = Some(users.cashier.token.as_str());
+
+        let (status, body) =
+            get_json(router.clone(), "/pos/products/search?q=0229S1", cashier).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        let row = &body[0];
+        assert_eq!(row["sku"], "0229S1-004");
+        assert_eq!(row["name"], "GENNEX WB CLRNT -BLACK");
+        assert_eq!(row["list_price"], "39.64");
+        assert_eq!(row["standard_cost"], "39.34");
+        assert_eq!(row["msrp"], "45.00");
+        assert_eq!(row["map"], "41.00");
+        assert_eq!(row["container_volume_ml"], 946);
+        assert_eq!(row["on_hand"], "0");
+
+        // Exact sku and exact barcode (a barcode is a SKU) agree.
+        for query in ["sku=0229S1-004", "barcode=0229S1-004"] {
+            let (status, body) = get_json(
+                router.clone(),
+                &format!("/pos/products/search?{query}"),
+                cashier,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body.as_array().unwrap().len(), 1);
+            assert_eq!(body[0]["sku"], "0229S1-004");
+        }
+
+        // Case-insensitive substring over the name.
+        let (status, body) =
+            get_json(router.clone(), "/pos/products/search?q=gennex", cashier).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body.as_array().unwrap().len(), 1);
+
+        // No match is an empty array, not a 404.
+        let (status, body) = get_json(
+            router.clone(),
+            "/pos/products/search?q=does-not-exist",
+            cashier,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn counter_price_levels_preview_applies_gold() {
+        let edge = test_edge().await;
+        let product_id = seed_product(&edge).await;
+        let users = seeded_users(&edge).await;
+        let router = edge.router();
+        let cashier = Some(users.cashier.token.as_str());
+        let gold = df_db::PRICE_LEVEL_GOLD_ID.to_string();
+
+        // The four seeded levels, with the fixed UUIDs.
+        let (status, body) = get_json(router.clone(), "/pricing/levels", cashier).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body.as_array().unwrap().len(), 4);
+        let by_code = |code: &str| {
+            body.as_array()
+                .unwrap()
+                .iter()
+                .find(|level| level["code"] == code)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            by_code("retail")["id"],
+            df_db::PRICE_LEVEL_RETAIL_ID.to_string()
+        );
+        assert_eq!(by_code("retail")["discount_pct"], "0");
+        assert_eq!(by_code("gold")["id"], gold);
+        assert_eq!(by_code("gold")["discount_pct"], "0.20");
+        assert_eq!(by_code("ws")["discount_pct"], "0.25");
+        assert_eq!(by_code("platinum")["discount_pct"], "0.30");
+
+        // Explicit Gold on the preview: 2 x $100 x 0.8 = $160
+        // subtotal; eco $1.50; tax 7.25% on $161.50 = $11.7088.
+        let mut preview = sale_body(product_id, "Cash");
+        preview["price_level_id"] = serde_json::json!(gold);
+        let (status, body) =
+            post_json(router.clone(), "/pos/carts/price-preview", preview, cashier).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["subtotal"]["amount"], "160.0000");
+        assert_eq!(body["eco_fee_total"]["amount"], "1.5000");
+        assert_eq!(body["tax_total"]["amount"], "11.7088");
+        assert_eq!(body["grand_total"]["amount"], "173.2088");
+
+        // The customer's stored level applies when the sale names
+        // no level of its own.
+        let customer_id = seed_counter_customer(
+            &edge,
+            0x4000,
+            "ACME-001",
+            "Acme Painting",
+            Some(df_db::PRICE_LEVEL_GOLD_ID),
+        )
+        .await;
+        let mut preview = sale_body(product_id, "Cash");
+        preview["customer_id"] = serde_json::json!(customer_id.to_string());
+        let (status, body) =
+            post_json(router.clone(), "/pos/carts/price-preview", preview, cashier).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["subtotal"]["amount"], "160.0000");
+        assert_eq!(body["grand_total"]["amount"], "173.2088");
+    }
+
+    #[tokio::test]
+    async fn counter_visa_tender_records_brand_and_etransfer_has_no_surcharge() {
+        let edge = test_edge().await;
+        let product_id = seed_product(&edge).await;
+        edge.set_payment_provider(Arc::new(MockTerminal::new()));
+        let users = seeded_users(&edge).await;
+        let router = edge.router();
+        let cashier = Some(users.cashier.token.as_str());
+
+        // Visa authorizes as a card (same 3% surcharge) but the
+        // recorded tender stays Visa, never generic Card.
+        let (status, body) = post_json(
+            router.clone(),
+            "/pos/transactions",
+            sale_body(product_id, "Visa"),
+            cashier,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["grand_total"]["amount"], "222.5921");
+        assert_eq!(body["pos_fee_total"]["amount"], "6.4833");
+        assert_eq!(body["payments"][0]["tender"], "Visa");
+        let tx_id = body["transaction_id"].as_str().unwrap().to_string();
+
+        let (status, body) = get_json(
+            router.clone(),
+            &format!("/pos/transactions/{tx_id}"),
+            cashier,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["payments"][0]["tender"], "visa");
+        assert_eq!(body["payments"][0]["amount"], "222.5921");
+        assert!(body["payments"][0]["reference"].as_str().is_some());
+        assert_eq!(
+            body["lines"][0]["description"],
+            "Regal Select Interior Gallon"
+        );
+
+        // E-Transfer: no provider call, no surcharge, the supplied
+        // reference is recorded.
+        let mut etransfer = sale_body(product_id, "ETransfer");
+        etransfer["tenders"] = serde_json::json!([{
+            "kind": "ETransfer",
+            "amount": null,
+            "reference": "REF-2026-001",
+        }]);
+        let (status, body) =
+            post_json(router.clone(), "/pos/transactions", etransfer, cashier).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["grand_total"]["amount"], "216.1088");
+        assert_eq!(body["pos_fee_total"]["amount"], "0.0000");
+        assert_eq!(body["payments"][0]["tender"], "ETransfer");
+        assert_eq!(body["payments"][0]["reference"], "REF-2026-001");
+        let tx_id = body["transaction_id"].as_str().unwrap().to_string();
+        let (status, body) = get_json(
+            router.clone(),
+            &format!("/pos/transactions/{tx_id}"),
+            cashier,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["payments"][0]["tender"], "etransfer");
+        assert_eq!(body["payments"][0]["reference"], "REF-2026-001");
+
+        // Unknown transaction: 404.
+        let (status, _) = get_json(
+            router.clone(),
+            &format!("/pos/transactions/{}", Uuid::now_v7()),
+            cashier,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn counter_invoice_returns_header_lines_and_totals() {
+        let edge = test_edge().await;
+        let product_id = seed_product(&edge).await;
+        edge.set_payment_provider(Arc::new(MockTerminal::new()));
+        let users = seeded_users(&edge).await;
+        let router = edge.router();
+        let cashier = Some(users.cashier.token.as_str());
+
+        let mut sale = sale_body(product_id, "Visa");
+        sale["job_name"] = serde_json::json!("Kitchen repaint");
+        sale["po_number"] = serde_json::json!("PO-77");
+        let (status, body) = post_json(router.clone(), "/pos/transactions", sale, cashier).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let tx_id = body["transaction_id"].as_str().unwrap().to_string();
+        let doc_number = body["doc_number"].as_str().unwrap().to_string();
+
+        let (status, body) = get_json(
+            router.clone(),
+            &format!("/pos/transactions/{tx_id}/invoice"),
+            cashier,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["store_name"], "Test Paint Co");
+        assert_eq!(body["doc_number"], doc_number);
+        assert_eq!(body["invoice_number"], doc_number);
+        assert_eq!(body["job_name"], "Kitchen repaint");
+        assert_eq!(body["po_number"], "PO-77");
+        assert_eq!(body["fulfilment_mode"], "counter");
+        assert_eq!(body["lines"].as_array().unwrap().len(), 1);
+        assert_eq!(body["lines"][0]["sku"], "BM-REGAL-1G");
+        assert_eq!(body["lines"][0]["size_label"], "Gallon");
+        assert_eq!(body["lines"][0]["line_total"], "200.0000");
+        assert_eq!(body["tenders"][0]["label"], "Visa");
+        assert_eq!(body["tenders"][0]["amount"], "222.5921");
+        // US/CA store: no GST/PST split; the stored tax stands alone.
+        assert_eq!(body["totals"]["subtotal"], "200.0000");
+        assert_eq!(body["totals"]["eco_fee_total"], "1.5000");
+        assert_eq!(body["totals"]["tax_total"], "14.6088");
+        assert_eq!(body["totals"]["gst"], "0");
+        assert_eq!(body["totals"]["pst"], "0");
+        assert_eq!(body["totals"]["grand_total"], "222.5921");
+        assert_eq!(body["totals"]["change_due"], "0");
+        assert!(body["totals"]["charge"].is_null());
+    }
+
+    #[tokio::test]
+    async fn counter_customer_search_price_level_and_transactions() {
+        let edge = test_edge().await;
+        let product_id = seed_product(&edge).await;
+        edge.set_payment_provider(Arc::new(MockTerminal::new()));
+        let users = seeded_users(&edge).await;
+        let router = edge.router();
+        let cashier = Some(users.cashier.token.as_str());
+        let customer_id =
+            seed_counter_customer(&edge, 0x4000, "ACME-001", "Acme Painting", None).await;
+
+        // Substring search over account, company and email.
+        for query in ["acme", "ACME-001", "shop@acme"] {
+            let (status, body) = get_json(
+                router.clone(),
+                &format!("/pos/customers/search?q={query}"),
+                cashier,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body.as_array().unwrap().len(), 1);
+            assert_eq!(body[0]["account_number"], "ACME-001");
+            assert_eq!(body[0]["company_name"], "Acme Painting");
+            assert!(body[0]["price_level_id"].is_null());
+        }
+
+        // Set the price level, then clear it again.
+        let gold = df_db::PRICE_LEVEL_GOLD_ID.to_string();
+        let (status, body) = post_json(
+            router.clone(),
+            &format!("/pos/customers/{customer_id}/price-level"),
+            serde_json::json!({"price_level_id": gold}),
+            cashier,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["price_level_id"], gold);
+        let (status, body) = post_json(
+            router.clone(),
+            &format!("/pos/customers/{customer_id}/price-level"),
+            serde_json::json!({"price_level_id": null}),
+            cashier,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["price_level_id"].is_null());
+
+        // An unknown level is a 404, and so is an unknown customer.
+        let (status, _) = post_json(
+            router.clone(),
+            &format!("/pos/customers/{customer_id}/price-level"),
+            serde_json::json!({"price_level_id": Uuid::now_v7().to_string()}),
+            cashier,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = get_json(
+            router.clone(),
+            &format!("/pos/customers/{}", Uuid::now_v7()),
+            cashier,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // A sale for this customer shows up in their history, newest
+        // first, with lines and payments embedded.
+        let mut sale = sale_body(product_id, "Cash");
+        sale["customer_id"] = serde_json::json!(customer_id.to_string());
+        sale["job_name"] = serde_json::json!("Kitchen repaint");
+        let (status, _) = post_json(router.clone(), "/pos/transactions", sale, cashier).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, body) = get_json(
+            router.clone(),
+            &format!("/pos/customers/{customer_id}/transactions"),
+            cashier,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["job_name"], "Kitchen repaint");
+        assert_eq!(body[0]["lines"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            body[0]["lines"][0]["description"],
+            "Regal Select Interior Gallon"
+        );
+        assert_eq!(body[0]["payments"].as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["payments"][0]["tender"], "cash");
+    }
+
+    #[tokio::test]
+    async fn counter_tint_formula_create_validates_colorants() {
+        let edge = test_edge().await;
+        let product_id = seed_product(&edge).await;
+        import_gennex_black(&edge).await;
+        let users = seeded_users(&edge).await;
+        let router = edge.router();
+        let cashier = Some(users.cashier.token.as_str());
+
+        let formula_body = |code: &str| {
+            serde_json::json!({
+                "customer_id": null,
+                "job_id": null,
+                "color_code": "CC-100",
+                "color_name": "Test Blue",
+                "base_product_id": product_id.to_string(),
+                "container_volume_ml": 3785,
+                "sheen": "Eggshell",
+                "colorants": [{"code": code, "oz": "0.5", "shots": 0}],
+            })
+        };
+        let (status, body) = post_json(
+            router.clone(),
+            "/pos/tinting/formulas",
+            formula_body("S1"),
+            cashier,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(body["color_code_snapshot"], "CC-100");
+        assert_eq!(body["color_name_snapshot"], "Test Blue");
+        // 0.5 oz x $1.229375/fl oz, rounded to 4dp.
+        assert_eq!(body["total_tint_cost"], "0.6147");
+
+        // An unknown colorant code is a 400 naming the code.
+        let (status, body) = post_json(
+            router.clone(),
+            "/pos/tinting/formulas",
+            formula_body("ZZ"),
+            cashier,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("ZZ"), "{body}");
     }
 }

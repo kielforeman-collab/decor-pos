@@ -185,6 +185,10 @@ pub struct InventoryBalance {
     pub base_uom: String,
     pub list_price: Decimal,
     pub standard_cost: Decimal,
+    /// The price list's MSRP / MAP, when the import stored them
+    /// (migration `0014_counter_ui`; `None` when blank / pre-import).
+    pub msrp: Option<Decimal>,
+    pub map: Option<Decimal>,
     pub on_hand: Decimal,
     pub committed: Decimal,
     pub on_order: Decimal,
@@ -208,6 +212,8 @@ pub async fn inventory_balances(
             base_uom: product.base_uom,
             list_price: product.list_price,
             standard_cost: product.standard_cost,
+            msrp: product.msrp,
+            map: product.map,
             on_hand: Decimal::ZERO,
             committed: Decimal::ZERO,
             on_order: Decimal::ZERO,

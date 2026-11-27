@@ -361,6 +361,7 @@ fn transaction_from_payload(
         customer_id: payload_opt_uuid(payload, "customer_id"),
         job_id: payload_opt_uuid(payload, "job_id"),
         po_number: payload_str(payload, "po_number").map(str::to_string),
+        job_name: payload_str(payload, "job_name").map(str::to_string),
         salesperson_id: None,
         cashier_id: None,
         currency: store.currency.clone(),

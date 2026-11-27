@@ -488,7 +488,13 @@ impl Edge {
                 request.rows.len()
             )));
         }
-        Ok(df_db::import_products(self.pool(), self.config().org_id, &request.rows).await?)
+        Ok(df_db::import_products(
+            self.pool(),
+            self.config().org_id,
+            Some(store_id),
+            &request.rows,
+        )
+        .await?)
     }
 
     /// Set (or replace) the min/max reorder point for a product

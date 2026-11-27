@@ -44,9 +44,18 @@ pub fn compute_surcharge(rule: Option<&SurchargeRule>, amount: Money) -> Money {
     total
 }
 
-/// The first rule in `rules` for `tender`, if any.
+/// The first rule in `rules` for `tender`, if any. A branded card
+/// kind (Visa / Mastercard / Amex / Debit) falls back to the generic
+/// `Card` rule, so the store's single 3% card rule covers every
+/// card brand without a rule per brand.
 pub fn surcharge_rule_for(tender: TenderKind, rules: &[SurchargeRule]) -> Option<&SurchargeRule> {
-    rules.iter().find(|rule| rule.tender == tender)
+    rules.iter().find(|rule| rule.tender == tender).or_else(|| {
+        if tender.is_card_brand() {
+            rules.iter().find(|rule| rule.tender == TenderKind::Card)
+        } else {
+            None
+        }
+    })
 }
 
 #[cfg(test)]

@@ -60,6 +60,8 @@ fn product(org_id: Uuid) -> Product {
         tax_class_id: Uuid::now_v7(),
         prompt_template_id: None,
         is_active: true,
+        map: None,
+        msrp: None,
     }
 }
 
@@ -465,6 +467,7 @@ async fn tint_job_lifecycle_round_trip() {
             scheduled_at: None,
             completed_at: Some(Utc::now()),
             created_at: Utc::now(),
+            job_name: None,
         },
     )
     .await

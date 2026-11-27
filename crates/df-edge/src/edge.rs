@@ -78,6 +78,9 @@ struct ResolvedTender {
     surcharge: Money,
     /// Total collected (`tendered + surcharge`).
     charged: Money,
+    /// The reference the counter supplied with the tender (only
+    /// E-Transfer uses it — the customer's confirmation number).
+    reference: Option<String>,
 }
 
 /// Resolve tender amounts against a pre-surcharge total.
@@ -130,6 +133,7 @@ fn resolve_tenders(
             tendered: amount,
             surcharge,
             charged,
+            reference: tender.reference.clone(),
         });
     }
     if remaining.amount() > Decimal::ZERO {
@@ -153,6 +157,15 @@ fn resolve_tenders(
 
 fn money_add(a: Money, b: Money) -> Result<Money, EdgeError> {
     Ok(a.checked_add(b)?)
+}
+
+/// Normalise a jurisdiction code for the store seed: trimmed upper
+/// case, or blank when nothing was configured (`None` / empty).
+fn normalise_code(code: Option<&str>) -> String {
+    code.map(str::trim)
+        .filter(|code| !code.is_empty())
+        .map(str::to_uppercase)
+        .unwrap_or_default()
 }
 
 /// The edge daemon. Cheaply cloneable — all shared state lives
@@ -221,6 +234,10 @@ impl Edge {
     pub async fn open(config: EdgeConfig) -> Result<Self, EdgeError> {
         let pool = df_db::connect(&config.db_url).await?;
         df_db::migrate(&pool, df_db::Dialect::Sqlite).await?;
+        // Seed the four price levels + their matrix rules
+        // (idempotent — see `df_db::ensure_price_levels`); a fresh
+        // edge DB has no levels until this runs.
+        df_db::ensure_price_levels(&pool, config.org_id).await?;
         let (events, _) = broadcast::channel(64);
         let remote_hq = match (std::env::var("DF_HQ_URL"), std::env::var("DF_HQ_TOKEN")) {
             (Ok(url), Ok(token)) if !url.trim().is_empty() && !token.is_empty() => {
@@ -251,10 +268,22 @@ impl Edge {
     /// (e.g. the GUI product import's `get_store` check) fails with
     /// "row not found". The server calls this once at startup; it is
     /// a no-op when the rows already exist, and it never overwrites
-    /// existing details. Country/region/postal/timezone are
-    /// placeholders — there is no store-edit UI yet.
+    /// existing details.
+    ///
+    /// `country_code` / `region_code` are the store's jurisdiction
+    /// (e.g. `"CA"` / `"BC"`), which is what tax and eco fees price
+    /// from — see `PricingContext::load`. Pass `None` to leave them
+    /// blank (tax then computes as 0 until the row is fixed); a
+    /// blank seed is only correct for a store whose jurisdiction is
+    /// genuinely not configured yet. The values are normalised to
+    /// trimmed upper case (`"ca"` → `"CA"`) because the tax presets
+    /// match on exact codes.
     /// Returns true when it created the store row.
-    pub async fn ensure_configured_store(&self) -> Result<bool, EdgeError> {
+    pub async fn ensure_configured_store(
+        &self,
+        country_code: Option<&str>,
+        region_code: Option<&str>,
+    ) -> Result<bool, EdgeError> {
         let org_id = self.config.org_id;
         match df_db::get_organization(self.pool(), org_id).await {
             Ok(_) => {}
@@ -284,8 +313,8 @@ impl Edge {
                         org_id,
                         code: "MAIN".to_string(),
                         name: self.config.store_name.clone(),
-                        country_code: String::new(),
-                        region_code: String::new(),
+                        country_code: normalise_code(country_code),
+                        region_code: normalise_code(region_code),
                         postal_code: String::new(),
                         currency: self.config.currency.code().to_string(),
                         tax_zone_id: Uuid::now_v7(),
@@ -456,7 +485,8 @@ impl Edge {
                                 cash_sales =
                                     money_add(cash_sales, Money::new(payment.amount, currency))?
                             }
-                            "card" => {
+                            // Generic card + every branded card kind.
+                            "card" | "visa" | "mastercard" | "amex" | "debit" => {
                                 card_sales =
                                     money_add(card_sales, Money::new(payment.amount, currency))?
                             }
@@ -506,6 +536,22 @@ impl Edge {
 
     // --- pricing ------------------------------------------------------------
 
+    /// The price level a sale prices at: the sale's own level when
+    /// given, else the customer's stored level (when the sale has a
+    /// customer), else list pricing (`None`).
+    pub async fn effective_price_level(&self, input: &SaleInput) -> Option<Uuid> {
+        if input.price_level_id.is_some() {
+            return input.price_level_id;
+        }
+        match input.customer_id {
+            Some(customer_id) => df_db::get_customer(&self.pool, customer_id)
+                .await
+                .ok()
+                .and_then(|customer| customer.price_level_id),
+            None => None,
+        }
+    }
+
     /// Totals for a cart without persisting anything.
     pub async fn price_preview(&self, input: &SaleInput) -> Result<PricePreview, EdgeError> {
         self.validate_lines(&input.lines)?;
@@ -516,11 +562,13 @@ impl Edge {
             self.currency(),
         )
         .await;
+        let price_level_id = self.effective_price_level(input).await;
         let priced = price_lines(
             &self.pool,
             &ctx,
             input.customer_id,
             input.job_id,
+            price_level_id,
             &input.lines,
         )
         .await?;
@@ -617,11 +665,13 @@ impl Edge {
             self.currency(),
         )
         .await;
+        let price_level_id = self.effective_price_level(&input).await;
         let priced = price_lines(
             &self.pool,
             &ctx,
             input.customer_id,
             input.job_id,
+            price_level_id,
             &input.lines,
         )
         .await?;
@@ -657,16 +707,22 @@ impl Edge {
             .check_charge_credit(input.customer_id, charge_total)
             .await?;
 
-        // Authorize card tenders before writing anything.
+        // Authorize card tenders before writing anything. A
+        // branded card (Visa / Mastercard / Amex / Debit) authorizes
+        // through the same provider call as generic Card, with the
+        // same 3% surcharge — but the recorded tender stays the
+        // brand, never generic Card. E-Transfer authorizes nothing
+        // and carries no surcharge; its reference is the one the
+        // counter supplied (or `ETRANSFER` when none was given).
         let mut payments: Vec<PaymentResult> = Vec::with_capacity(resolved.len());
         for tender in &resolved {
             match tender.kind {
-                TenderKind::Card => {
+                kind if kind.is_card() => {
                     let result = provider
                         .authorize(&PaymentRequest {
                             amount: tender.charged,
                             idempotency_key: Uuid::now_v7(),
-                            tender: TenderKind::Card,
+                            tender: kind,
                             surcharge: tender.surcharge,
                         })
                         .await?;
@@ -678,6 +734,18 @@ impl Edge {
                     }
                     payments.push(result);
                 }
+                TenderKind::ETransfer => payments.push(PaymentResult {
+                    status: PaymentStatus::Approved,
+                    authorization: None,
+                    reference: tender
+                        .reference
+                        .clone()
+                        .filter(|reference| !reference.trim().is_empty())
+                        .unwrap_or_else(|| "ETRANSFER".to_string()),
+                    amount: tender.charged,
+                    surcharge: tender.surcharge,
+                    tender: TenderKind::ETransfer,
+                }),
                 TenderKind::Cash => payments.push(PaymentResult {
                     status: PaymentStatus::Approved,
                     authorization: None,
@@ -708,6 +776,9 @@ impl Edge {
                     surcharge: tender.surcharge,
                     tender: TenderKind::GiftCard,
                 }),
+                // `resolve_tenders` only produces the kinds above;
+                // the guard arm covers every card brand.
+                _ => unreachable!("unresolved tender kind reached authorization"),
             }
         }
 
@@ -729,6 +800,7 @@ impl Edge {
             customer_id: input.customer_id,
             job_id: input.job_id,
             po_number: input.po_number.clone(),
+            job_name: input.job_name.clone(),
             salesperson_id: None,
             cashier_id: till.as_ref().map(|t| t.cashier_id),
             currency: self.currency().code().to_string(),
@@ -950,15 +1022,8 @@ impl Edge {
     /// (tender label + amount). `df-hw` deliberately does not depend
     /// on `df-payments`, so this mapping lives here, at the boundary.
     fn payment_summary(result: &PaymentResult) -> PaymentSummary {
-        let tender_label = match result.tender {
-            TenderKind::Cash => "Cash",
-            TenderKind::Card => "Card",
-            TenderKind::ChargeAccount => "Charge Account",
-            TenderKind::GiftCard => "Gift Card",
-        }
-        .to_string();
         PaymentSummary {
-            tender_label,
+            tender_label: result.tender.label().to_string(),
             amount: result.amount,
         }
     }
@@ -1001,7 +1066,7 @@ impl Edge {
         &self,
         input: SaleInput,
     ) -> Result<CompletedSale, EdgeError> {
-        let has_card = input.tenders.iter().any(|t| t.kind == TenderKind::Card);
+        let has_card = input.tenders.iter().any(|t| t.kind.is_card());
         let provider = self.http_provider(has_card)?;
         self.checkout(input, provider.as_ref()).await
     }
@@ -1107,6 +1172,7 @@ impl Edge {
             customer_id: original.customer_id,
             job_id: original.job_id,
             po_number: original.po_number.clone(),
+            job_name: original.job_name.clone(),
             salesperson_id: None,
             cashier_id: original.cashier_id,
             currency: currency.code().to_string(),
@@ -1347,11 +1413,13 @@ impl Edge {
             self.currency(),
         )
         .await;
+        let price_level_id = self.effective_price_level(&input).await;
         let priced = price_lines(
             &self.pool,
             &ctx,
             input.customer_id,
             input.job_id,
+            price_level_id,
             &input.lines,
         )
         .await?;
@@ -1375,6 +1443,7 @@ impl Edge {
                 customer_id: input.customer_id,
                 job_id: input.job_id,
                 po_number: input.po_number.clone(),
+                job_name: input.job_name.clone(),
                 salesperson_id: None,
                 cashier_id: None,
                 currency: self.currency().code().to_string(),
@@ -1448,11 +1517,13 @@ impl Edge {
             self.currency(),
         )
         .await;
+        let price_level_id = self.effective_price_level(&input).await;
         let priced = price_lines(
             &self.pool,
             &ctx,
             input.customer_id,
             input.job_id,
+            price_level_id,
             &input.lines,
         )
         .await?;
@@ -1484,13 +1555,16 @@ impl Edge {
         let pos_fee_total = surcharge;
         let grand_total = pre_surcharge.checked_add(pos_fee_total)?;
 
-        // Authorize a card deposit before writing anything.
-        let payment = if deposit.kind == TenderKind::Card {
+        // Authorize a card deposit before writing anything. A
+        // branded card authorizes as itself (see `checkout`); an
+        // E-Transfer deposit records the supplied reference and
+        // authorizes nothing.
+        let payment = if deposit.kind.is_card() {
             let result = provider
                 .authorize(&PaymentRequest {
                     amount: charged,
                     idempotency_key: Uuid::now_v7(),
-                    tender: TenderKind::Card,
+                    tender: deposit.kind,
                     surcharge,
                 })
                 .await?;
@@ -1515,7 +1589,15 @@ impl Edge {
                             .unwrap_or_default()
                     ),
                     TenderKind::GiftCard => "GIFT-CARD".to_string(),
-                    TenderKind::Card => unreachable!(),
+                    TenderKind::ETransfer => deposit
+                        .reference
+                        .clone()
+                        .filter(|reference| !reference.trim().is_empty())
+                        .unwrap_or_else(|| "ETRANSFER".to_string()),
+                    // Card kinds authorize above; this arm is
+                    // unreachable but the match must stay exhaustive
+                    // over every `TenderKind`.
+                    _ => unreachable!("card tenders authorize above"),
                 },
                 amount: charged,
                 surcharge,
@@ -1543,6 +1625,7 @@ impl Edge {
                 customer_id: input.customer_id,
                 job_id: input.job_id,
                 po_number: input.po_number.clone(),
+                job_name: input.job_name.clone(),
                 salesperson_id: None,
                 cashier_id: None,
                 currency: self.currency().code().to_string(),
@@ -1634,7 +1717,7 @@ impl Edge {
         input: SaleInput,
         deposit: TenderInput,
     ) -> Result<Uuid, EdgeError> {
-        let provider = self.http_provider(deposit.kind == TenderKind::Card)?;
+        let provider = self.http_provider(deposit.kind.is_card())?;
         self.record_layaway(input, deposit, provider.as_ref()).await
     }
 
@@ -1831,6 +1914,8 @@ pub(crate) mod test_support {
             tax_class_id: Uuid::now_v7(),
             prompt_template_id: None,
             is_active: true,
+            map: None,
+            msrp: None,
         };
         df_db::insert_product(edge.pool(), &product).await.unwrap();
         product_id
@@ -1840,6 +1925,8 @@ pub(crate) mod test_support {
         SaleInput {
             customer_id: None,
             job_id: None,
+            price_level_id: None,
+            job_name: None,
             lines: vec![SaleLineInput {
                 product_id,
                 sku: "BM-REGAL-1G".to_string(),
@@ -1852,6 +1939,7 @@ pub(crate) mod test_support {
             tenders: vec![TenderInput {
                 kind: tender,
                 amount: None,
+                reference: None,
             }],
             po_number: None,
         }

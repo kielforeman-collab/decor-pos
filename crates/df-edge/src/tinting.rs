@@ -205,6 +205,125 @@ fn formula_colorants(
     Ok(lines)
 }
 
+/// One colorant in a `POST /pos/tinting/formulas` body: the
+/// colorant code, ounces and shots (formula tracking only — no
+/// machine code anywhere in this path).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CreateFormulaColorant {
+    pub code: String,
+    pub oz: Decimal,
+    pub shots: u32,
+}
+
+/// `POST /pos/tinting/formulas` body (mirrors HQ
+/// `POST /api/v1/tinting/formulas`, which takes the full
+/// `TintFormula` row; the counter sends the fields it knows and
+/// the server fills in the rest).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CreateTintFormulaRequest {
+    pub customer_id: Option<Uuid>,
+    pub job_id: Option<Uuid>,
+    pub color_code: String,
+    pub color_name: String,
+    pub base_product_id: Uuid,
+    pub container_volume_ml: i32,
+    pub sheen: Option<String>,
+    pub colorants: Vec<CreateFormulaColorant>,
+}
+
+impl Edge {
+    /// Create a tint formula (formula tracking only). Every
+    /// colorant code must exist in the `colorants` table for this
+    /// org — an unknown code is a 400 naming the code, and nothing
+    /// is stored. The base product must exist. The total tint cost
+    /// is computed from the colorant rows (authoritative cost), not
+    /// from anything the caller sends.
+    pub async fn create_tint_formula(
+        &self,
+        request: CreateTintFormulaRequest,
+    ) -> Result<TintFormula, EdgeError> {
+        if request.color_code.trim().is_empty() {
+            return Err(EdgeError::InvalidInput(
+                "color_code is required".to_string(),
+            ));
+        }
+        if request.color_name.trim().is_empty() {
+            return Err(EdgeError::InvalidInput(
+                "color_name is required".to_string(),
+            ));
+        }
+        if request.colorants.is_empty() {
+            return Err(EdgeError::InvalidInput(
+                "formula needs at least one colorant".to_string(),
+            ));
+        }
+        if request.container_volume_ml <= 0 {
+            return Err(EdgeError::InvalidInput(
+                "container_volume_ml must be positive".to_string(),
+            ));
+        }
+        df_db::get_product(self.pool(), request.base_product_id).await?;
+        if let Some(customer_id) = request.customer_id {
+            df_db::get_customer(self.pool(), customer_id).await?;
+        }
+        let colorants = df_db::list_colorants_for_org(self.pool(), self.config().org_id).await?;
+        let mut lines = Vec::with_capacity(request.colorants.len());
+        let mut stored = Vec::with_capacity(request.colorants.len());
+        for input in &request.colorants {
+            let Some(colorant) = colorants
+                .iter()
+                .find(|c| c.code.eq_ignore_ascii_case(input.code.trim()))
+            else {
+                return Err(EdgeError::InvalidInput(format!(
+                    "unknown colorant code: {}",
+                    input.code
+                )));
+            };
+            lines.push(TintColorant {
+                code: colorant.code.clone(),
+                ounces: input.oz,
+                shots: input.shots,
+                shots_per_fl_oz: colorant.shots_per_fl_oz.try_into().map_err(|_| {
+                    EdgeError::InvalidInput(format!("bad shots_per_fl_oz for {}", colorant.code))
+                })?,
+                cost_per_fl_oz: Money::new(colorant.cost_per_fl_oz, self.config().currency),
+            });
+            let oz_number = serde_json::Number::from_str(&input.oz.to_string()).map_err(|_| {
+                EdgeError::InvalidInput(format!("bad oz for colorant {}", input.code))
+            })?;
+            stored.push(serde_json::json!({
+                "code": colorant.code,
+                "oz": oz_number,
+                "shots": input.shots,
+            }));
+        }
+        let total_tint_cost = tint_cost(&lines)?.amount();
+        let formula = TintFormula {
+            id: Uuid::now_v7(),
+            org_id: self.config().org_id,
+            store_id: self.config().store_id,
+            customer_id: request.customer_id,
+            job_id: request.job_id,
+            color_id: None,
+            color_code_snapshot: request.color_code.trim().to_string(),
+            color_name_snapshot: request.color_name.trim().to_string(),
+            base_product_id: request.base_product_id,
+            container_volume_ml: request.container_volume_ml,
+            sheen: request.sheen,
+            room_or_usage: None,
+            is_custom_match: false,
+            colorants_json: serde_json::Value::Array(stored),
+            total_tint_cost,
+            tint_surcharge: Decimal::ZERO,
+            dispenser_name: None,
+            external_formula_ref: None,
+            dispensed_at: chrono::Utc::now(),
+        };
+        df_db::insert_tint_formula(self.pool(), &formula).await?;
+        Ok(formula)
+    }
+}
+
 impl Edge {
     /// Set (or replace) the operator-configured product thresholds
     /// used by [`Edge::low_stock`]. There is no min-level table yet

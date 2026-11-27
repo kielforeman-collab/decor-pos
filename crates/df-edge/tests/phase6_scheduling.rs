@@ -116,6 +116,7 @@ async fn seed_monday_history(edge: &Edge) {
                     scheduled_at: None,
                     completed_at: Some(at(2026, 11, day, 10, 0)),
                     created_at: at(2026, 11, day, 10, 0),
+                    job_name: None,
                 },
             )
             .await

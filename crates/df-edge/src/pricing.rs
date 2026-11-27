@@ -142,12 +142,17 @@ pub async fn tax_and_eco_for(
 
 /// Price lines with matrix pricing, tax and eco fees. (Returns do
 /// not use this function: they reuse the original unit price and call
-/// [`tax_and_eco_for`] directly.)
+/// [`tax_and_eco_for`] directly.) `price_level_id` is the effective
+/// level for this sale (the caller resolves `SaleInput.price_level_id`
+/// ?? the customer's stored level); it is passed straight into the
+/// matrix engine, so a level rule (e.g. Gold 20% off list) prices
+/// the line.
 pub async fn price_lines(
     pool: &AnyPool,
     ctx: &PricingContext,
     customer_id: Option<Uuid>,
     job_id: Option<Uuid>,
+    price_level_id: Option<Uuid>,
     lines: &[SaleLineInput],
 ) -> Result<PricedSale, EdgeError> {
     let currency = ctx.currency;
@@ -167,7 +172,7 @@ pub async fn price_lines(
             qty: line.qty,
             customer_id,
             job_id,
-            price_level_id: None,
+            price_level_id,
             product_id: Some(line.product_id),
             product_line_id: None,
             class_id: None,

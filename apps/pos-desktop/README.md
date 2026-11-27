@@ -44,6 +44,14 @@ cargo run -p pos-desktop --features tauri-shell
 # or: cd apps/pos-desktop && cargo tauri dev / cargo tauri build
 ```
 
+The native app reads its store config from the environment:
+`DF_CURRENCY` (`USD` or `CAD`, default `USD`), `DF_COUNTRY` and
+`DF_REGION` (e.g. `CA` / `BC`). The counter UI sends CAD amounts,
+so this store runs with `DF_CURRENCY=CAD DF_COUNTRY=CA DF_REGION=BC`
+— `DF_COUNTRY`/`DF_REGION` seed the store row on first boot, which
+is what tax prices from (`CA`/`BC` = GST 5% + PST 7%); without them
+the seed leaves the jurisdiction blank and tax prices as 0.
+
 ## Dev path (verified in this VM)
 
 Terminal 1 — the edge daemon (mock terminal, in-process `MemoryHq`):
@@ -54,8 +62,15 @@ cargo run -p df-server -- edge \
   --db sqlite:edge.db \
   --store-id 00000000-0000-0000-0000-00000000a000 \
   --org-id 00000000-0000-0000-0000-00000000b000 \
-  --listen 127.0.0.1:8080
+  --listen 127.0.0.1:8080 \
+  --currency CAD --country CA --region BC
 ```
+
+`--currency CAD --country CA --region BC` are this store's values
+(the counter UI sends CAD; `CA`/`BC` = GST 5% + PST 7%): they seed
+the store row on first boot, which is what tax prices from. Run
+the edge before `seed-demo.sql` — its store insert is
+`INSERT OR IGNORE`, so a seeded row is left alone.
 
 Terminal 2 — the UI (Vite proxies `/api/*` to the edge on :8080):
 

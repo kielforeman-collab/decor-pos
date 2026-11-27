@@ -189,6 +189,19 @@ enum Command {
         /// Currency code (`USD` or `CAD`).
         #[arg(long, default_value = "USD")]
         currency: String,
+        /// Country code for the store's jurisdiction (`US` or
+        /// `CA`), used when seeding the store row on first boot —
+        /// tax and eco fees price from it. Omit it (or pass an
+        /// empty value) to seed a blank country, which prices tax
+        /// as 0 until the store row is fixed.
+        #[arg(long)]
+        country: Option<String>,
+        /// Region / province code for the store's jurisdiction
+        /// (e.g. `BC`), used with `--country` when seeding the
+        /// store row on first boot. Matched case-insensitively
+        /// against the tax presets (`CA`/`BC` = GST 5% + PST 7%).
+        #[arg(long)]
+        region: Option<String>,
         /// Directory scheduled report emails queue into (the
         /// `/bi/email-outbox` endpoint reads the same directory's
         /// `manifest.json`). No SMTP send happens.
@@ -1780,6 +1793,10 @@ async fn run_users_revoke_sessions(db: String, email: String) -> ! {
     }));
 }
 
+/// The `df-server edge` daemon. The nine arguments are the `Edge`
+/// CLI flags, passed straight through (clippy's
+/// `too_many_arguments`).
+#[allow(clippy::too_many_arguments)]
 async fn run_edge(
     db: String,
     store_id: Uuid,
@@ -1787,6 +1804,8 @@ async fn run_edge(
     org_id: Option<Uuid>,
     store_name: String,
     currency: String,
+    country: Option<String>,
+    region: Option<String>,
     email_outbox: Option<PathBuf>,
 ) -> ! {
     let currency: Currency = match currency.parse() {
@@ -1796,6 +1815,25 @@ async fn run_edge(
             std::process::exit(2);
         }
     };
+    // Jurisdiction for the first-boot store seed. Only US/CA have
+    // tax presets, so anything else is a startup error, not a
+    // silent 0% tax. Empty/absent means "not configured": the seed
+    // leaves the codes blank (and warns below).
+    let country = match country.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(code) => match code.to_ascii_uppercase().as_str() {
+            "US" | "CA" => Some(code.to_ascii_uppercase()),
+            other => {
+                eprintln!("df-server edge: invalid --country {other:?}: expected US or CA");
+                std::process::exit(2);
+            }
+        },
+    };
+    let region = region
+        .as_deref()
+        .map(str::trim)
+        .filter(|region| !region.is_empty())
+        .map(str::to_ascii_uppercase);
     let org_id = org_id.unwrap_or_else(Uuid::now_v7);
     let config = EdgeConfig {
         store_id,
@@ -1816,8 +1854,18 @@ async fn run_edge(
     // they already exist). Without this, a fresh database has an empty
     // `stores` table and store-validating flows — e.g. the GUI product
     // import — fail with "row not found".
-    match edge.ensure_configured_store().await {
-        Ok(true) => println!("df-server edge: seeded store {store_id} (org {org_id}) — first boot"),
+    match edge
+        .ensure_configured_store(country.as_deref(), region.as_deref())
+        .await
+    {
+        Ok(true) => {
+            println!("df-server edge: seeded store {store_id} (org {org_id}) — first boot");
+            if country.is_none() || region.is_none() {
+                eprintln!(
+                    "df-server edge: WARNING: no --country/--region given, so the seeded store has blank jurisdiction and tax prices as 0 — pass --country CA --region BC (or set COUNTRY/REGION in .env) and re-seed, or fix the store row"
+                );
+            }
+        }
         Ok(false) => {}
         Err(err) => {
             eprintln!("df-server edge: failed to seed store: {err}");
@@ -1860,6 +1908,8 @@ async fn main() {
             org_id,
             store_name,
             currency,
+            country,
+            region,
             email_outbox,
         } => {
             run_edge(
@@ -1869,6 +1919,8 @@ async fn main() {
                 org_id,
                 store_name,
                 currency,
+                country,
+                region,
                 email_outbox,
             )
             .await
@@ -2134,7 +2186,7 @@ mod tests {
         assert!(applied_migration_versions(&pool).await.is_empty());
         df_db::migrate(&pool, df_db::Dialect::Sqlite).await.unwrap();
         let applied = applied_migration_versions(&pool).await;
-        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13]);
+        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14]);
         df_db::migrate(&pool, df_db::Dialect::Sqlite).await.unwrap();
         assert_eq!(applied_migration_versions(&pool).await, applied);
     }

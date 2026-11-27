@@ -69,7 +69,7 @@ const CUSTOMER_ID: u128 = 0x4000;
 
 /// sqlx `_sqlx_migrations` versions for the 0001–0013 set (there is
 /// no 0008 — the numbering jumps 0007 → 0009).
-const EXPECTED_MIGRATION_VERSIONS: [i64; 12] = [1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13];
+const EXPECTED_MIGRATION_VERSIONS: [i64; 13] = [1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14];
 
 fn dec(s: &str) -> Decimal {
     Decimal::from_str(s).unwrap()
@@ -330,6 +330,8 @@ async fn seed_fixture(pool: &df_db::AnyPool) {
             tax_class_id: Uuid::now_v7(),
             prompt_template_id: None,
             is_active: true,
+            map: None,
+            msrp: None,
         },
     )
     .await
@@ -528,8 +530,11 @@ fn sale_input(qty: &str, tender: TenderKind, customer: Option<Uuid>) -> SaleInpu
         tenders: vec![TenderInput {
             kind: tender,
             amount: None,
+            reference: None,
         }],
         po_number: None,
+        job_name: None,
+        price_level_id: None,
     }
 }
 
@@ -639,6 +644,7 @@ async fn seed_read_fixture(pool: &df_db::AnyPool) {
             scheduled_at: None,
             completed_at: Some(now),
             created_at: now,
+            job_name: None,
         },
     )
     .await

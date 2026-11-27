@@ -30,6 +30,7 @@ pub(crate) fn transaction_from_row(row: &sqlx::any::AnyRow) -> Result<Transactio
         customer_id: opt_uuid_col(row, "customer_id")?,
         job_id: opt_uuid_col(row, "job_id")?,
         po_number: opt_text_col(row, "po_number")?,
+        job_name: opt_text_col(row, "job_name")?,
         salesperson_id: opt_uuid_col(row, "salesperson_id")?,
         cashier_id: opt_uuid_col(row, "cashier_id")?,
         currency: text_col(row, "currency")?,
@@ -75,7 +76,7 @@ where
     E: Executor<'e, Database = sqlx::Any>,
 {
     sqlx::query(
-        "INSERT INTO transactions (id, org_id, store_id, till_session_id, doc_number, doc_type, status, customer_id, job_id, po_number, salesperson_id, cashier_id, currency, subtotal, tax_total, eco_fee_total, pos_fee_total, grand_total, deposit_paid, fulfillment_mode, scheduled_at, completed_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)",
+        "INSERT INTO transactions (id, org_id, store_id, till_session_id, doc_number, doc_type, status, customer_id, job_id, po_number, job_name, salesperson_id, cashier_id, currency, subtotal, tax_total, eco_fee_total, pos_fee_total, grand_total, deposit_paid, fulfillment_mode, scheduled_at, completed_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)",
     )
     .bind(uuid_str(tx.id))
     .bind(uuid_str(tx.org_id))
@@ -87,6 +88,7 @@ where
     .bind(opt_uuid_str(tx.customer_id))
     .bind(opt_uuid_str(tx.job_id))
     .bind(&tx.po_number)
+    .bind(&tx.job_name)
     .bind(opt_uuid_str(tx.salesperson_id))
     .bind(opt_uuid_str(tx.cashier_id))
     .bind(&tx.currency)

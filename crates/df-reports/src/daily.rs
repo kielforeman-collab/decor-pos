@@ -376,6 +376,8 @@ mod tests {
                 tax_class_id: Uuid::now_v7(),
                 prompt_template_id: None,
                 is_active: true,
+                map: None,
+                msrp: None,
             },
         )
         .await
@@ -498,6 +500,7 @@ mod tests {
                     scheduled_at: None,
                     completed_at: Some(now),
                     created_at: now,
+                    job_name: None,
                 },
             )
             .await

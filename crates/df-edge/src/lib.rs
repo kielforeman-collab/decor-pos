@@ -40,6 +40,7 @@
 
 pub mod ar;
 pub mod bi;
+pub mod counter;
 pub mod crm;
 pub mod delivery;
 pub mod edge;
@@ -48,6 +49,7 @@ pub mod error;
 pub mod http;
 pub mod hw;
 pub mod inventory;
+pub mod invoice;
 pub mod payments;
 pub mod portal;
 pub mod pricing;
@@ -56,6 +58,7 @@ pub mod tinting;
 pub mod types;
 
 pub use ar::PostedArPayment;
+pub use counter::{ProductSearchResult, TransactionView};
 pub use crm::{
     CreateActivityRequest, CreateAppointmentRequest, CreateSavedViewRequest, LapsedReport,
     SavedViewCustomer, SnoozeActivityRequest, UpdateActivityRequest, UpdateAppointmentRequest,
@@ -89,6 +92,10 @@ pub use inventory::{
     SetReorderPointRequest, ShelfTagResponse, StartCountRequest, SuggestedLine,
     SuggestedPurchaseOrder, Transfer, TransferLineView,
 };
+pub use invoice::{
+    InvoiceCharge, InvoiceCustomer, InvoiceFormulaLine, InvoiceLine, InvoiceTender, InvoiceTint,
+    InvoiceTotals, InvoiceView,
+};
 pub use payments::{
     MockTerminal, PaymentError, PaymentProvider, PaymentRequest, PaymentResult, PaymentStatus,
     SurchargeRule, TenderKind, compute_surcharge, surcharge_rule_for,
@@ -98,8 +105,8 @@ pub use scheduling::{
     ClockRequest, CreateShiftTemplateRequest, CreateStaffShiftRequest, SetShiftStatusRequest,
 };
 pub use tinting::{
-    ColorantLevelView, ColorantsResponse, DispenseTintRequest, DispenseTintResponse,
-    tint_job_to_row, virtual_tinter_from_levels,
+    ColorantLevelView, ColorantsResponse, CreateFormulaColorant, CreateTintFormulaRequest,
+    DispenseTintRequest, DispenseTintResponse, tint_job_to_row, virtual_tinter_from_levels,
 };
 pub use types::{
     CompletedSale, EdgeConfig, PricePreview, PricePreviewLine, ReturnLineInput, SaleInput,

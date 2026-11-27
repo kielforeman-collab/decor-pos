@@ -116,6 +116,8 @@ async fn pg_repos_round_trip() {
             tax_class_id: Uuid::now_v7(),
             prompt_template_id: None,
             is_active: true,
+            map: None,
+            msrp: None,
         },
     )
     .await
@@ -232,6 +234,7 @@ async fn pg_repos_round_trip() {
             scheduled_at: None,
             completed_at: Some(now),
             created_at: now,
+            job_name: None,
         },
     )
     .await

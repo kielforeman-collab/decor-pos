@@ -56,7 +56,11 @@ services:
       - --store-name
       - ${STORE_NAME:-Decor POS Store}
       - --currency
-      - ${CURRENCY:-USD}
+      - ${CURRENCY:-CAD}
+      - --country
+      - ${COUNTRY:-}
+      - --region
+      - ${REGION:-}
       - --listen
       - 0.0.0.0:8080
     environment:

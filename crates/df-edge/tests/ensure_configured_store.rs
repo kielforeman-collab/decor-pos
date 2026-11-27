@@ -36,8 +36,12 @@ async fn ensure_seeds_fresh_db_and_is_idempotent() {
             .is_err()
     );
 
-    // First call seeds both rows.
-    assert!(edge.ensure_configured_store().await.unwrap());
+    // First call seeds both rows, with the configured jurisdiction.
+    assert!(
+        edge.ensure_configured_store(Some("ca"), Some("bc"))
+            .await
+            .unwrap()
+    );
     let store = df_db::get_store(edge.pool(), Uuid::from_u128(STORE_ID))
         .await
         .unwrap();
@@ -45,13 +49,29 @@ async fn ensure_seeds_fresh_db_and_is_idempotent() {
     assert_eq!(store.name, "Test Paint Co");
     assert_eq!(store.org_id, Uuid::from_u128(ORG_ID));
     assert_eq!(store.currency, "USD");
+    // Jurisdiction codes are normalised to trimmed upper case.
+    assert_eq!(store.country_code, "CA");
+    assert_eq!(store.region_code, "BC");
     let org = df_db::get_organization(edge.pool(), Uuid::from_u128(ORG_ID))
         .await
         .unwrap();
     assert_eq!(org.default_currency, "USD");
 
-    // Second call is a no-op and keeps the existing rows untouched.
-    assert!(!edge.ensure_configured_store().await.unwrap());
+    // Second call is a no-op and keeps the existing rows untouched —
+    // even when called with different jurisdiction values.
+    assert!(
+        !edge
+            .ensure_configured_store(Some("US"), Some("OR"))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        df_db::get_store(edge.pool(), Uuid::from_u128(STORE_ID))
+            .await
+            .unwrap()
+            .country_code,
+        "CA"
+    );
     assert_eq!(
         df_db::get_store(edge.pool(), Uuid::from_u128(STORE_ID))
             .await
@@ -59,4 +79,18 @@ async fn ensure_seeds_fresh_db_and_is_idempotent() {
             .code,
         "MAIN"
     );
+}
+
+/// No jurisdiction configured: the seed leaves the codes blank
+/// (today's behaviour — tax then computes as 0 until the row is
+/// fixed), rather than inventing one.
+#[tokio::test]
+async fn ensure_without_jurisdiction_seeds_blank_codes() {
+    let edge = fresh_edge().await;
+    assert!(edge.ensure_configured_store(None, None).await.unwrap());
+    let store = df_db::get_store(edge.pool(), Uuid::from_u128(STORE_ID))
+        .await
+        .unwrap();
+    assert_eq!(store.country_code, "");
+    assert_eq!(store.region_code, "");
 }

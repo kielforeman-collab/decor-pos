@@ -718,6 +718,8 @@ mod tests {
             tax_class_id: Uuid::now_v7(),
             prompt_template_id: None,
             is_active: true,
+            map: None,
+            msrp: None,
         }
     }
 
@@ -757,6 +759,7 @@ mod tests {
             scheduled_at: None,
             completed_at: Some(seed.created_at),
             created_at: seed.created_at,
+            job_name: None,
         }
     }
 

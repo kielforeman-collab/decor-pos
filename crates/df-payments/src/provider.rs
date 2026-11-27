@@ -11,11 +11,21 @@ use df_domain::Money;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// How the customer is paying.
+/// How the customer is paying. The card brands are distinct tender
+/// kinds: a Visa sale authorizes through the card provider and
+/// records `visa` (not generic `card`), so the till, the invoice
+/// and the provider reconciliation all show the brand the customer
+/// actually used. Serialized PascalCase (`"Visa"`); stored
+/// lowercase (`visa`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TenderKind {
     Cash,
     Card,
+    Visa,
+    Mastercard,
+    Amex,
+    Debit,
+    ETransfer,
     ChargeAccount,
     GiftCard,
 }
@@ -26,8 +36,43 @@ impl TenderKind {
         match self {
             TenderKind::Cash => "cash",
             TenderKind::Card => "card",
+            TenderKind::Visa => "visa",
+            TenderKind::Mastercard => "mastercard",
+            TenderKind::Amex => "amex",
+            TenderKind::Debit => "debit",
+            TenderKind::ETransfer => "etransfer",
             TenderKind::ChargeAccount => "charge_account",
             TenderKind::GiftCard => "gift_card",
+        }
+    }
+
+    /// True for the branded card kinds (Visa / Mastercard / Amex /
+    /// Debit): they authorize as cards through the provider, with
+    /// the same surcharge rule as generic `Card`.
+    pub fn is_card_brand(self) -> bool {
+        matches!(
+            self,
+            TenderKind::Visa | TenderKind::Mastercard | TenderKind::Amex | TenderKind::Debit
+        )
+    }
+
+    /// True for generic `Card` and for the branded card kinds.
+    pub fn is_card(self) -> bool {
+        self == TenderKind::Card || self.is_card_brand()
+    }
+
+    /// The receipt / invoice label for this kind.
+    pub fn label(self) -> &'static str {
+        match self {
+            TenderKind::Cash => "Cash",
+            TenderKind::Card => "Card",
+            TenderKind::Visa => "Visa",
+            TenderKind::Mastercard => "Mastercard",
+            TenderKind::Amex => "Amex",
+            TenderKind::Debit => "Debit",
+            TenderKind::ETransfer => "E-Transfer",
+            TenderKind::ChargeAccount => "Charge Account",
+            TenderKind::GiftCard => "Gift Card",
         }
     }
 }

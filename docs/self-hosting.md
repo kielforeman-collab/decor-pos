@@ -89,7 +89,9 @@ data).
 | `STORE_ID` | edge, api | *(required)* | UUID of the store the edge serves |
 | `ORG_ID` | edge, api | *(required)* | UUID of the organization |
 | `STORE_NAME` | edge | `Decor POS Store` | Shown on receipts |
-| `CURRENCY` | edge | `USD` | `USD` or `CAD` |
+| `CURRENCY` | edge | `CAD` | `USD` or `CAD` — must be `CAD` for this store: the counter UI sends CAD amounts |
+| `COUNTRY` | edge | `CA` | `US` or `CA` — the store's country, seeded into the store row on first boot; tax prices from it |
+| `REGION` | edge | `BC` | Province/state code, e.g. `BC` — seeded with `COUNTRY`; `CA`/`BC` = GST 5% + PST 7% |
 | `DATABASE_URL` | hq, migrate schema | *(none — `--db` or this is required)* | sqlx URL for the HQ database: `postgres://<user>:<password>@<host>:<port>/<database>` or `sqlite:<path>`. `--db` wins when both are set. Never commit a real URL; never log one (startup logs show the redacted form `postgres://***@host:5432/db`). |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | postgres | `decor` / *(required)* / `decorpos` | The HQ database credentials; `DATABASE_URL` is built from these. |
 | `STRIPE_API_KEY`, `STRIPE_TERMINAL_LOCATION_ID` | edge | *(empty)* | Env-only; empty = mock terminal. Live Stripe Terminal calls are not implemented in v1.0 |
@@ -108,13 +110,22 @@ data).
 ```sh
 cargo build --release --locked -p df-server -p df-api
 ./target/release/df-server edge --db sqlite:edge.db \
-  --store-id <uuid> --org-id <uuid> --listen 127.0.0.1:8080
+  --store-id <uuid> --org-id <uuid> --listen 127.0.0.1:8080 \
+  --currency CAD --country CA --region BC
 ./target/release/df-api --db sqlite:edge.db \
   --org-id <uuid> --store-id <uuid> --listen 127.0.0.1:3000
 ```
 
 `df-server edge` creates and migrates the SQLite database on open.
 `df-api` runs no migrations — the database must already exist.
+
+`--currency` / `--country` / `--region` are the values seeded into
+the store row on first boot (`--country CA --region BC` = GST 5% +
+PST 7% for this store); the seed never overwrites an existing row,
+so changing them later means fixing the store row, not re-running
+the edge. Omit `--country` / `--region` and the seed leaves the
+jurisdiction blank — tax then prices as 0 (the edge prints a
+warning on first boot in that case).
 
 ### Local PostgreSQL (dev)
 

@@ -23,7 +23,10 @@
 //! | List Price       | `list_price`                               |
 //! | NET Price        | `standard_cost` (and `avg_cost` on create)|
 //! | Brand Code       | `manufacturer_code`                        |
-//! | Category / Line / Color / Size / Product UPC / MSRP / MAP / French Description / Brand Discount… | **not stored** — `products` has no columns for them (see [`ImportProductRow`]) |
+//! | MSRP / MAP       | `msrp` / `map` (migration `0014_counter_ui`) |
+//! | Size             | `container_volume_ml` (see [`container_volume_ml_for_size`]) |
+//! | Line `00229` / `COLORANT` category | also a `colorants` row (`Gennex`) |
+//! | Category / Line / Color / Product UPC / French Description / Brand Discount… | **not stored** — `products` has no columns for them (see [`ImportProductRow`]) |
 //!
 //! Defaults for the columns the file cannot supply follow the
 //! existing seed pattern (`Edge::seed_product`): `product_type`
@@ -42,7 +45,9 @@ use uuid::Uuid;
 use crate::AnyPool;
 use crate::error::DbError;
 use crate::models::Product;
-use crate::repos::{get_product_by_sku, insert_product, update_imported_product};
+use crate::repos::{
+    ImportedProductUpdate, get_product_by_sku, insert_product, update_imported_product,
+};
 
 /// One parsed spreadsheet row, as posted by the back office. Every
 /// field is a string (prices arrive like `"$39.34"`); `row` is the
@@ -87,6 +92,16 @@ pub struct ValidatedImportRow {
     pub list_price: Decimal,
     pub net_price: Decimal,
     pub brand_code: String,
+    pub msrp: Option<Decimal>,
+    pub map: Option<Decimal>,
+    /// Container volume in ml, derived from the Size column (see
+    /// [`container_volume_ml_for_size`]); `None` when the size is
+    /// unknown / not a volume (kits, eaches, packaging).
+    pub container_volume_ml: Option<i32>,
+    pub line: String,
+    pub category: String,
+    pub color: String,
+    pub size: String,
 }
 
 /// One row that could not be imported.
@@ -132,7 +147,8 @@ pub fn parse_money(value: &str, what: &str) -> Result<Option<Decimal>, String> {
 /// Validate one posted row. SKU and name are required; List Price
 /// and NET Price are required and must parse as decimals >= 0.
 /// MSRP / MAP are optional (the real price list leaves MSRP blank
-/// on most rows) but must parse when present.
+/// on most rows) but must parse when present — and are now stored
+/// (migration `0014_counter_ui`), not just validated.
 pub fn validate_import_row(row: &ImportProductRow) -> Result<ValidatedImportRow, String> {
     let sku = row.sku.trim().to_string();
     if sku.is_empty() {
@@ -146,10 +162,8 @@ pub fn validate_import_row(row: &ImportProductRow) -> Result<ValidatedImportRow,
         .ok_or_else(|| format!("{sku}: List Price is missing"))?;
     let net_price = parse_money(&row.net_price, "net_price")?
         .ok_or_else(|| format!("{sku}: NET Price is missing"))?;
-    // Parsed for validation only — MSRP / MAP are not stored (no
-    // columns); a garbage value here is still a bad row.
-    parse_money(&row.msrp, "msrp")?;
-    parse_money(&row.map, "map")?;
+    let msrp = parse_money(&row.msrp, "msrp")?;
+    let map = parse_money(&row.map, "map")?;
     Ok(ValidatedImportRow {
         row: row.row,
         sku,
@@ -157,7 +171,92 @@ pub fn validate_import_row(row: &ImportProductRow) -> Result<ValidatedImportRow,
         list_price,
         net_price,
         brand_code: row.brand_code.trim().to_string(),
+        msrp,
+        map,
+        container_volume_ml: container_volume_ml_for_size(&row.size),
+        line: row.line.trim().to_string(),
+        category: row.category.trim().to_string(),
+        color: row.color.trim().to_string(),
+        size: row.size.trim().to_string(),
     })
+}
+
+/// Container volume (ml) for a price-list Size value.
+///
+/// The Benjamin Moore price book's Size column carries short codes,
+/// verified against the 10005510 book effective July 17, 2026:
+/// `001` is the gallon (the `-001` colorant SKU's NET, $157.41, is
+/// 4x the `-004` quart's $39.34; a gallon paint SKU's NET matches
+/// its gallon price), `004` is the quart, `005` is the 5-gallon
+/// pail (a `-005` paint NET is ~5x its gallon NET), and `006` is
+/// the colour-sample pot ("COLOUR SAMPLE", ~$3). The word forms
+/// (`GAL`, `QT`, `PAIL`, `SAMPLE`) are accepted too, for rows the
+/// back office (or another vendor file) sends that way. Anything
+/// else — kits (`012`, `022`), eaches (`000`), packaging (`014`),
+/// the malformed shifted row's `K7931X-001` — is not a volume and
+/// yields `None`.
+pub fn container_volume_ml_for_size(size: &str) -> Option<i32> {
+    let normalized = size.trim().to_uppercase();
+    let normalized = normalized.trim_start_matches("1 ").trim_end_matches('S');
+    match normalized {
+        "001" | "GAL" | "GALLON" => Some(3785),
+        "004" | "QT" | "QUART" => Some(946),
+        "005" | "PAIL" | "5-GAL" | "5GAL" | "5 GAL" => Some(18927),
+        "006" | "SAMPLE" | "SAMPLE POT" => Some(237),
+        _ => None,
+    }
+}
+
+/// Container volume in US fluid ounces for a Size value, for
+/// colorant costing (`cost_per_fl_oz = NET / fl oz`). Same code
+/// table as [`container_volume_ml_for_size`]: gallon 128, quart 32,
+/// 5-gal pail 640, sample pot 8. `None` when the size has no
+/// volume (the colorant is then skipped, not guessed).
+pub fn container_fl_oz_for_size(size: &str) -> Option<Decimal> {
+    match container_volume_ml_for_size(size) {
+        Some(3785) => Some(Decimal::from(128)),
+        Some(946) => Some(Decimal::from(32)),
+        Some(18927) => Some(Decimal::from(640)),
+        Some(237) => Some(Decimal::from(8)),
+        _ => None,
+    }
+}
+
+/// Whether an import row is a Gennex colorant: Line `00229` only.
+///
+/// The brief says "Line 00229 (or Category COLORANT)", but the
+/// real price book's `COLORANT` category spans three lines —
+/// `00229` Gennex (16 rows), `00233` (12 rows) and `0TL56`
+/// ColorTech (12 rows) — and only the 00229 SKUs have the `0229…`
+/// shape the code derivation strips. Upserting the other two
+/// lines as `system_name "Gennex"` would mislabel 24 rows from
+/// other systems and break the "real 16" outcome, so the category
+/// is not a fallback: a row is Gennex iff its Line is 00229.
+/// (The 00233 / 0TL56 rows still import as products; they just
+/// get no colorant row until their own systems are modeled.)
+pub fn is_colorant_row(line: &str, _category: &str) -> bool {
+    line.trim() == "00229"
+}
+
+/// The Gennex colorant code for a colorant SKU: the part of the SKU
+/// after the `0229` line prefix and before the `-` size suffix —
+/// `0229S1-004` → `S1`, `0229B1-004` → `B1`. Falls back to the
+/// row's Color column (which carries the same code, e.g. `S1`)
+/// when the SKU does not have the `0229…-…` shape.
+pub fn gennex_colorant_code(sku: &str, color: &str) -> Option<String> {
+    let sku = sku.trim();
+    if let Some(rest) = sku.strip_prefix("0229") {
+        let code = rest.split('-').next().unwrap_or("").trim();
+        if !code.is_empty() {
+            return Some(code.to_string());
+        }
+    }
+    let color = color.trim();
+    if color.is_empty() {
+        None
+    } else {
+        Some(color.to_string())
+    }
 }
 
 /// Upsert every row into `products` for `org_id`. Returns per-row
@@ -165,9 +264,22 @@ pub fn validate_import_row(row: &ImportProductRow) -> Result<ValidatedImportRow,
 /// could not be imported — validation failures, a duplicate SKU
 /// inside this one file, or a database error on that row. A second
 /// import of the same file updates prices instead of duplicating.
+///
+/// Gennex colorants (Line `00229` — see [`is_colorant_row`] for
+/// why the `COLORANT` category is not a fallback) are also
+/// upserted into `colorants` (`system_name "Gennex"`, code from the
+/// SKU, `cost_per_fl_oz = NET / container fl oz`, 48 shots/fl oz)
+/// — and, when `store_id` is given, a zero `colorant_levels` row is
+/// created for a newly-seen colorant so the counter's colorant
+/// list shows it (an existing level is never reset: on-hand stock
+/// is real data, not import data). A colorant failure never fails
+/// its product row; the product import is authoritative.
+/// `store_id` is `None` in the `df-db` unit tests, which assert on
+/// the `colorants` table only.
 pub async fn import_products(
     pool: &AnyPool,
     org_id: Uuid,
+    store_id: Option<Uuid>,
     rows: &[ImportProductRow],
 ) -> Result<ProductImportResult, DbError> {
     let mut created = 0usize;
@@ -196,6 +308,9 @@ pub async fn import_products(
         }
         seen.insert(validated.sku.clone(), validated.row);
 
+        // A colorant row is only catalogued when its product row
+        // imported: a failed product row catalogues nothing.
+        let mut product_ok = false;
         match get_product_by_sku(pool, org_id, &validated.sku).await {
             Ok(_) => {
                 let manufacturer_code = if validated.brand_code.is_empty() {
@@ -205,16 +320,24 @@ pub async fn import_products(
                 };
                 match update_imported_product(
                     pool,
-                    org_id,
-                    &validated.sku,
-                    &validated.name,
-                    manufacturer_code.as_deref(),
-                    validated.list_price,
-                    validated.net_price,
+                    ImportedProductUpdate {
+                        org_id,
+                        sku: &validated.sku,
+                        name: &validated.name,
+                        manufacturer_code: manufacturer_code.as_deref(),
+                        list_price: validated.list_price,
+                        standard_cost: validated.net_price,
+                        msrp: validated.msrp,
+                        map: validated.map,
+                        container_volume_ml: validated.container_volume_ml,
+                    },
                 )
                 .await
                 {
-                    Ok(()) => updated += 1,
+                    Ok(()) => {
+                        updated += 1;
+                        product_ok = true;
+                    }
                     Err(e) => failures.push(fail(format!("database error: {e}"))),
                 }
             }
@@ -240,21 +363,32 @@ pub async fn import_products(
                     list_price: validated.list_price,
                     standard_cost: validated.net_price,
                     avg_cost: validated.net_price,
+                    msrp: validated.msrp,
+                    map: validated.map,
                     min_margin_pct: None,
                     sheen: None,
                     paint_base_code: None,
-                    container_volume_ml: None,
+                    container_volume_ml: validated.container_volume_ml,
                     eco_fee_category: None,
                     tax_class_id: Uuid::now_v7(),
                     prompt_template_id: None,
                     is_active: true,
                 };
                 match insert_product(pool, &product).await {
-                    Ok(()) => created += 1,
+                    Ok(()) => {
+                        created += 1;
+                        product_ok = true;
+                    }
                     Err(e) => failures.push(fail(format!("database error: {e}"))),
                 }
             }
             Err(e) => failures.push(fail(format!("database error: {e}"))),
+        }
+
+        // Gennex colorant rows double as colorant catalog rows.
+        // Best-effort: a colorant problem is not a product problem.
+        if product_ok && is_colorant_row(&validated.line, &validated.category) {
+            let _ = upsert_gennex_colorant(pool, org_id, store_id, &validated).await;
         }
     }
 
@@ -265,6 +399,83 @@ pub async fn import_products(
         failed,
         failures,
     })
+}
+
+/// Upsert one Gennex colorant from a validated import row:
+/// `cost_per_fl_oz = NET / container fl oz` (quart 32, gallon 128
+/// — see [`container_fl_oz_for_size`]), 48 shots per fl oz. A code
+/// sold in both sizes (e.g. S1 as `0229S1-001` and `0229S1-004`)
+/// keeps one colorant row: the gallon and quart book prices derive
+/// ~$1.23/fl oz each, and the last row in file order wins. When
+/// `store_id` is given, a zero level row is created for a
+/// newly-seen colorant only.
+async fn upsert_gennex_colorant(
+    pool: &AnyPool,
+    org_id: Uuid,
+    store_id: Option<Uuid>,
+    validated: &ValidatedImportRow,
+) -> Result<(), DbError> {
+    use crate::models::{Colorant, ColorantLevelRow};
+    use crate::{
+        get_colorant_by_code, get_colorant_level, insert_colorant, update_colorant,
+        upsert_colorant_level,
+    };
+    let Some(code) = gennex_colorant_code(&validated.sku, &validated.color) else {
+        return Ok(());
+    };
+    let Some(fl_oz) = container_fl_oz_for_size(&validated.size) else {
+        return Ok(());
+    };
+    if fl_oz <= Decimal::ZERO {
+        return Ok(());
+    }
+    let cost_per_fl_oz = validated.net_price / fl_oz;
+    let (id, is_new) = match get_colorant_by_code(pool, org_id, "Gennex", &code).await {
+        Ok(existing) => {
+            let mut updated = existing.clone();
+            updated.name = validated.name.clone();
+            updated.cost_per_fl_oz = cost_per_fl_oz;
+            updated.shots_per_fl_oz = 48;
+            update_colorant(pool, &updated).await?;
+            (existing.id, false)
+        }
+        Err(DbError::NotFound(_)) => {
+            let id = Uuid::now_v7();
+            insert_colorant(
+                pool,
+                &Colorant {
+                    id,
+                    org_id,
+                    system_name: "Gennex".to_string(),
+                    code,
+                    name: validated.name.clone(),
+                    cost_per_fl_oz,
+                    shots_per_fl_oz: 48,
+                },
+            )
+            .await?;
+            (id, true)
+        }
+        Err(e) => return Err(e),
+    };
+    if is_new {
+        if let Some(store_id) = store_id {
+            if get_colorant_level(pool, id, store_id).await?.is_none() {
+                upsert_colorant_level(
+                    pool,
+                    &ColorantLevelRow {
+                        colorant_id: id,
+                        store_id,
+                        on_hand_fl_oz: Decimal::ZERO,
+                        low_threshold_fl_oz: Decimal::ZERO,
+                        updated_at: chrono::Utc::now(),
+                    },
+                )
+                .await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

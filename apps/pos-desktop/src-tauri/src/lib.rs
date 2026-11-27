@@ -20,11 +20,14 @@
 //! card data is handled here: providers return references/tokens
 //! only, never PAN/CVV.
 
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use df_domain::Money;
 use df_edge::{
-    CompletedSale, Edge, EdgeConfig, PricePreview, ReturnLineInput, SaleInput, TenderInput, ZReport,
+    ArCustomerSummary, ColorantsResponse, CompletedSale, CreateTintFormulaRequest, Edge,
+    EdgeConfig, InvoiceView, PricePreview, ProductSearchResult, ReturnLineInput, SaleInput,
+    TenderInput, TransactionView, ZReport,
 };
 use df_hw::{BarcodeEntry, MockPrinter, parse_scanner_input};
 use df_payments::{MockTerminal, PaymentProvider, StandaloneTerminal};
@@ -66,6 +69,15 @@ impl PosApp {
     /// and install the mock terminal as the default provider.
     pub async fn open(config: EdgeConfig) -> Result<Self, PosError> {
         let edge = Edge::open(config).await?;
+        // First boot seeds the org + store rows (a no-op when they
+        // already exist), so the native app prices tax from the
+        // configured jurisdiction instead of 0 — same as `df-server
+        // edge`. `DF_COUNTRY` / `DF_REGION` carry the jurisdiction
+        // (`CA` / `BC` for this store); absent means a blank seed.
+        let country = std::env::var("DF_COUNTRY").ok();
+        let region = std::env::var("DF_REGION").ok();
+        edge.ensure_configured_store(country.as_deref(), region.as_deref())
+            .await?;
         let printer = Arc::new(MockPrinter::new());
         edge.set_printer(printer.clone());
         let mock = Arc::new(MockTerminal::new());
@@ -178,6 +190,104 @@ impl PosApp {
 
     pub async fn void_transaction(&self, id: Uuid) -> Result<df_db::models::Transaction, PosError> {
         Ok(self.edge.void_transaction(id).await?)
+    }
+
+    // --- Counter-UI port: products, pricing, customers, invoices,
+    // tint (same JSON shapes as the edge HTTP API — see
+    // `crates/df-edge/src/http.rs`; the frontend's `api.ts`
+    // mappers handle both paths). ---
+
+    /// Counter product search: exact `sku` / `barcode`, or a
+    /// substring over sku/name for `q` (cap 50).
+    pub async fn search_products(
+        &self,
+        q: Option<String>,
+        sku: Option<String>,
+        barcode: Option<String>,
+        limit: Option<usize>,
+    ) -> Result<Vec<ProductSearchResult>, PosError> {
+        Ok(self
+            .edge
+            .search_products(q.as_deref(), sku.as_deref(), barcode.as_deref(), limit)
+            .await?)
+    }
+
+    /// The seeded price levels for this org.
+    pub async fn list_price_levels(&self) -> Result<Vec<df_db::models::PriceLevel>, PosError> {
+        Ok(self.edge.list_price_levels().await?)
+    }
+
+    /// Counter customer search: substring over account number,
+    /// company/first/last name and email.
+    pub async fn search_customers(
+        &self,
+        q: Option<String>,
+    ) -> Result<Vec<df_db::models::Customer>, PosError> {
+        Ok(self.edge.search_customers(q.as_deref()).await?)
+    }
+
+    /// One customer's AR position (ledger balance + credit
+    /// controls + entry count).
+    pub async fn customer_summary(&self, id: Uuid) -> Result<ArCustomerSummary, PosError> {
+        Ok(self.edge.ar_customer_summary(id).await?)
+    }
+
+    /// A customer's transactions, newest first, each with lines
+    /// (SKUs resolved) and payments.
+    pub async fn customer_transactions(
+        &self,
+        id: Uuid,
+        limit: Option<usize>,
+    ) -> Result<Vec<TransactionView>, PosError> {
+        Ok(self.edge.customer_transactions(id, limit).await?)
+    }
+
+    /// One transaction with its lines (SKUs resolved) and payments.
+    pub async fn transaction_view(&self, id: Uuid) -> Result<TransactionView, PosError> {
+        Ok(self.edge.transaction_view(id).await?)
+    }
+
+    /// The letter-size invoice render data for one transaction.
+    pub async fn invoice(&self, id: Uuid) -> Result<InvoiceView, PosError> {
+        Ok(self.edge.invoice(id).await?)
+    }
+
+    /// Tint color catalog search, scoped to one manufacturer.
+    pub async fn search_tint_colors(
+        &self,
+        manufacturer: &str,
+        query: &str,
+    ) -> Result<Vec<df_db::models::ColorCatalogEntry>, PosError> {
+        Ok(self.edge.search_colors(manufacturer, query).await?)
+    }
+
+    /// Colorant levels for this store, with shortage alerts.
+    pub async fn tint_colorants(&self) -> Result<ColorantsResponse, PosError> {
+        Ok(self.edge.colorant_levels().await?)
+    }
+
+    /// Stored tint formulas: by customer colour history
+    /// (`customer_id`, optionally one job and/or a color
+    /// substring) or by color name/code across the org.
+    pub async fn search_tint_formulas(
+        &self,
+        query: Option<String>,
+        customer_id: Option<Uuid>,
+        job_id: Option<Uuid>,
+    ) -> Result<Vec<df_db::models::TintFormula>, PosError> {
+        Ok(self
+            .edge
+            .search_tint_formulas(query.as_deref(), customer_id, job_id)
+            .await?)
+    }
+
+    /// Create a tint formula (formula tracking only — no machine
+    /// code anywhere in this path).
+    pub async fn create_tint_formula(
+        &self,
+        request: CreateTintFormulaRequest,
+    ) -> Result<df_db::models::TintFormula, PosError> {
+        Ok(self.edge.create_tint_formula(request).await?)
     }
 
     /// Drain the outbox into the in-process HQ sink.
@@ -382,6 +492,124 @@ mod commands {
     pub async fn last_receipt_text(app: State<'_, PosApp>) -> Result<String, String> {
         Ok(app.last_receipt_text())
     }
+
+    // --- Counter-UI port (same JSON shapes as the edge HTTP API;
+    // the frontend's `api.ts` mappers handle both paths). ---
+
+    #[tauri::command]
+    pub async fn search_products(
+        app: State<'_, PosApp>,
+        q: Option<String>,
+        sku: Option<String>,
+        barcode: Option<String>,
+        limit: Option<usize>,
+    ) -> Result<Vec<ProductSearchResult>, String> {
+        app.search_products(q, sku, barcode, limit)
+            .await
+            .map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn list_price_levels(
+        app: State<'_, PosApp>,
+    ) -> Result<Vec<df_db::models::PriceLevel>, String> {
+        app.list_price_levels().await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn search_customers(
+        app: State<'_, PosApp>,
+        q: Option<String>,
+    ) -> Result<Vec<df_db::models::Customer>, String> {
+        app.search_customers(q).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn customer_summary(
+        app: State<'_, PosApp>,
+        id: Uuid,
+    ) -> Result<ArCustomerSummary, String> {
+        app.customer_summary(id).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn customer_transactions(
+        app: State<'_, PosApp>,
+        id: Uuid,
+        limit: Option<usize>,
+    ) -> Result<Vec<TransactionView>, String> {
+        app.customer_transactions(id, limit).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn get_transaction(
+        app: State<'_, PosApp>,
+        id: Uuid,
+    ) -> Result<TransactionView, String> {
+        app.transaction_view(id).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn get_invoice(app: State<'_, PosApp>, id: Uuid) -> Result<InvoiceView, String> {
+        app.invoice(id).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn list_tint_colors(
+        app: State<'_, PosApp>,
+        manufacturer: Option<String>,
+        query: Option<String>,
+    ) -> Result<Vec<df_db::models::ColorCatalogEntry>, String> {
+        app.search_tint_colors(
+            manufacturer.as_deref().unwrap_or(""),
+            query.as_deref().unwrap_or(""),
+        )
+        .await
+        .map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn list_tint_colorants(app: State<'_, PosApp>) -> Result<ColorantsResponse, String> {
+        app.tint_colorants().await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn list_tint_formulas(
+        app: State<'_, PosApp>,
+        query: Option<String>,
+        customer_id: Option<Uuid>,
+        job_id: Option<Uuid>,
+    ) -> Result<Vec<df_db::models::TintFormula>, String> {
+        app.search_tint_formulas(query, customer_id, job_id)
+            .await
+            .map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn create_tint_formula(
+        app: State<'_, PosApp>,
+        customer_id: Option<Uuid>,
+        job_id: Option<Uuid>,
+        color_code: String,
+        color_name: String,
+        base_product_id: Uuid,
+        container_volume_ml: i32,
+        sheen: Option<String>,
+        colorants: Vec<df_edge::CreateFormulaColorant>,
+    ) -> Result<df_db::models::TintFormula, String> {
+        app.create_tint_formula(CreateTintFormulaRequest {
+            customer_id,
+            job_id,
+            color_code,
+            color_name,
+            base_product_id,
+            container_volume_ml,
+            sheen,
+            colorants,
+        })
+        .await
+        .map_err(cmd_err)
+    }
 }
 
 /// Run the native Tauri shell around an already-opened [`PosApp`].
@@ -409,6 +637,17 @@ pub fn run(app: PosApp) {
             commands::sync_now,
             commands::scan_barcode,
             commands::last_receipt_text,
+            commands::search_products,
+            commands::list_price_levels,
+            commands::search_customers,
+            commands::customer_summary,
+            commands::customer_transactions,
+            commands::get_transaction,
+            commands::get_invoice,
+            commands::list_tint_colors,
+            commands::list_tint_colorants,
+            commands::list_tint_formulas,
+            commands::create_tint_formula,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Decor POS application");
@@ -417,6 +656,13 @@ pub fn run(app: PosApp) {
 /// Default edge config for the desktop app. Store/org ids come from
 /// `DF_STORE_ID` / `DF_ORG_ID` (UUIDs) when set, else fixed demo ids
 /// so the local `pos-desktop.db` keeps working across runs.
+///
+/// Currency comes from `DF_CURRENCY` (`USD` or `CAD`) when set and
+/// valid, else `USD` — the counter UI sends CAD amounts, so this
+/// store runs with `DF_CURRENCY=CAD` (and `DF_COUNTRY=CA`
+/// `DF_REGION=BC`, read by [`PosApp::open`] for the first-boot
+/// store seed). The `USD` fallback preserves the previous
+/// behaviour for any other store; it is not this store's value.
 pub fn default_config() -> EdgeConfig {
     let store_id = std::env::var("DF_STORE_ID")
         .ok()
@@ -429,7 +675,10 @@ pub fn default_config() -> EdgeConfig {
     let db_url = std::env::var("DF_DB").unwrap_or_else(|_| "sqlite:pos-desktop.db".to_string());
     let store_name =
         std::env::var("DF_STORE_NAME").unwrap_or_else(|_| "Decor POS Store".to_string());
-    let currency = df_domain::Currency::Usd;
+    let currency = std::env::var("DF_CURRENCY")
+        .ok()
+        .and_then(|v| df_domain::Currency::from_str(v.trim()).ok())
+        .unwrap_or(df_domain::Currency::Usd);
     EdgeConfig {
         store_id,
         org_id,
@@ -479,5 +728,64 @@ mod tests {
         assert!(app.scan_barcode("999999999999", &catalog).is_err());
         assert_eq!(app.receipt_count(), 0);
         assert_eq!(app.last_receipt_text(), "");
+    }
+
+    #[tokio::test]
+    async fn pos_app_counter_reads_and_tint_formula_validation() {
+        use std::str::FromStr;
+
+        let app = PosApp::open(test_config()).await.unwrap();
+
+        // The four price levels are seeded by `Edge::open`.
+        let levels = app.list_price_levels().await.unwrap();
+        assert_eq!(levels.len(), 4);
+        assert!(levels.iter().any(|l| l.code == "gold"));
+
+        // Empty catalog / customer book on a fresh edge.
+        assert!(
+            app.search_products(Some("regal".to_string()), None, None, None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            app.search_customers(Some("nobody".to_string()))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(app.search_tint_colors("", "").await.unwrap().is_empty());
+        assert!(app.tint_colorants().await.unwrap().levels.is_empty());
+        assert!(
+            app.search_tint_formulas(Some("oc-1".to_string()), None, None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // Unknown ids are errors, not empty values.
+        let missing = Uuid::now_v7();
+        assert!(app.customer_summary(missing).await.is_err());
+        assert!(app.transaction_view(missing).await.is_err());
+        assert!(app.invoice(missing).await.is_err());
+        assert!(app.customer_transactions(missing, None).await.is_err());
+
+        // Formula creation validates before storing: an unknown
+        // colorant code is rejected (no colorant rows seeded here).
+        let bad_formula = CreateTintFormulaRequest {
+            customer_id: None,
+            job_id: None,
+            color_code: "OC-1".to_string(),
+            color_name: "Test White".to_string(),
+            base_product_id: Uuid::now_v7(),
+            container_volume_ml: 3785,
+            sheen: None,
+            colorants: vec![df_edge::CreateFormulaColorant {
+                code: "S1".to_string(),
+                oz: Decimal::from_str("1.5").unwrap(),
+                shots: 0,
+            }],
+        };
+        assert!(app.create_tint_formula(bad_formula).await.is_err());
     }
 }

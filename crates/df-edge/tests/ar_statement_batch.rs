@@ -157,6 +157,8 @@ async fn test_edge() -> (Edge, Uuid) {
             tax_class_id: Uuid::now_v7(),
             prompt_template_id: None,
             is_active: true,
+            map: None,
+            msrp: None,
         },
     )
     .await
@@ -272,8 +274,11 @@ fn charge_sale_input(customer_id: Uuid) -> SaleInput {
         tenders: vec![TenderInput {
             kind: TenderKind::ChargeAccount,
             amount: None,
+            reference: None,
         }],
         po_number: None,
+        job_name: None,
+        price_level_id: None,
     }
 }
 

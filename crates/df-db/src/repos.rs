@@ -40,8 +40,8 @@ use uuid::Uuid;
 use crate::codec::{bool_col, color_from_row, colorant_from_row, tint_formula_from_row};
 use crate::error::DbError;
 use crate::models::{
-    ArLedgerEntry, ColorCatalogEntry, Colorant, Customer, Organization, PricingRuleRow, Product,
-    Store, TintFormula, UserRow,
+    ArLedgerEntry, ColorCatalogEntry, Colorant, Customer, Organization, PriceLevel, PricingRuleRow,
+    Product, Store, TintFormula, UserRow,
 };
 
 // --- text encode helpers --------------------------------------------------
@@ -214,6 +214,8 @@ fn product_from_row(row: &AnyRow) -> Result<Product, DbError> {
         list_price: dec_col(row, "list_price")?,
         standard_cost: dec_col(row, "standard_cost")?,
         avg_cost: dec_col(row, "avg_cost")?,
+        msrp: opt_dec_col(row, "msrp")?,
+        map: opt_dec_col(row, "map")?,
         min_margin_pct: opt_dec_col(row, "min_margin_pct")?,
         sheen: opt_text_col(row, "sheen")?,
         paint_base_code: opt_text_col(row, "paint_base_code")?,
@@ -431,7 +433,7 @@ pub async fn get_user_by_email(pool: &AnyPool, email: &str) -> Result<UserRow, D
 
 pub async fn insert_product(pool: &AnyPool, product: &Product) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO products (id, org_id, sku, manufacturer_code, name, department_id, class_id, product_line_id, primary_vendor_id, product_type, base_uom, list_price, standard_cost, avg_cost, min_margin_pct, sheen, paint_base_code, container_volume_ml, eco_fee_category, tax_class_id, prompt_template_id, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)",
+        "INSERT INTO products (id, org_id, sku, manufacturer_code, name, department_id, class_id, product_line_id, primary_vendor_id, product_type, base_uom, list_price, standard_cost, avg_cost, msrp, map, min_margin_pct, sheen, paint_base_code, container_volume_ml, eco_fee_category, tax_class_id, prompt_template_id, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)",
     )
     .bind(uuid_str(product.id))
     .bind(uuid_str(product.org_id))
@@ -447,6 +449,8 @@ pub async fn insert_product(pool: &AnyPool, product: &Product) -> Result<(), DbE
     .bind(dec_str(product.list_price))
     .bind(dec_str(product.standard_cost))
     .bind(dec_str(product.avg_cost))
+    .bind(opt_dec_str(product.msrp))
+    .bind(opt_dec_str(product.map))
     .bind(opt_dec_str(product.min_margin_pct))
     .bind(&product.sheen)
     .bind(&product.paint_base_code)
@@ -460,29 +464,45 @@ pub async fn insert_product(pool: &AnyPool, product: &Product) -> Result<(), DbE
     Ok(())
 }
 
+/// The fields a re-import may update on an existing product, as
+/// one struct so [`update_imported_product`] stays under clippy's
+/// argument limit.
+pub struct ImportedProductUpdate<'a> {
+    pub org_id: Uuid,
+    pub sku: &'a str,
+    pub name: &'a str,
+    pub manufacturer_code: Option<&'a str>,
+    pub list_price: Decimal,
+    pub standard_cost: Decimal,
+    pub msrp: Option<Decimal>,
+    pub map: Option<Decimal>,
+    pub container_volume_ml: Option<i32>,
+}
+
 /// Update the import-controlled fields of an existing product:
-/// name, manufacturer code and prices. Department, tax class,
-/// product type and UOM are left as they were — a re-import
-/// reprices, it does not reclassify.
+/// name, manufacturer code, prices, MSRP / MAP and container
+/// volume. Department, tax class, product type and UOM are left as
+/// they were — a re-import reprices, it does not reclassify. A
+/// `None` MSRP / MAP / volume leaves the stored value untouched
+/// (the file may leave MSRP blank on most rows); pass `Some` to
+/// overwrite it.
 pub async fn update_imported_product(
     pool: &AnyPool,
-    org_id: Uuid,
-    sku: &str,
-    name: &str,
-    manufacturer_code: Option<&str>,
-    list_price: Decimal,
-    standard_cost: Decimal,
+    update: ImportedProductUpdate<'_>,
 ) -> Result<(), DbError> {
     sqlx::query(
-        "UPDATE products SET name = $1, manufacturer_code = $2, list_price = $3, standard_cost = $4, avg_cost = $5 WHERE org_id = $6 AND sku = $7",
+        "UPDATE products SET name = $1, manufacturer_code = $2, list_price = $3, standard_cost = $4, avg_cost = $5, msrp = COALESCE($6, msrp), map = COALESCE($7, map), container_volume_ml = COALESCE($8, container_volume_ml) WHERE org_id = $9 AND sku = $10",
     )
-    .bind(name)
-    .bind(manufacturer_code)
-    .bind(dec_str(list_price))
-    .bind(dec_str(standard_cost))
-    .bind(dec_str(standard_cost))
-    .bind(uuid_str(org_id))
-    .bind(sku)
+    .bind(update.name)
+    .bind(update.manufacturer_code)
+    .bind(dec_str(update.list_price))
+    .bind(dec_str(update.standard_cost))
+    .bind(dec_str(update.standard_cost))
+    .bind(opt_dec_str(update.msrp))
+    .bind(opt_dec_str(update.map))
+    .bind(update.container_volume_ml)
+    .bind(uuid_str(update.org_id))
+    .bind(update.sku)
     .execute(pool)
     .await?;
     Ok(())
@@ -722,6 +742,163 @@ pub async fn list_customers_for_org(
         .fetch_all(pool)
         .await?;
     rows.iter().map(customer_from_row).collect()
+}
+
+/// Replace a customer's price level (the counter's price-level
+/// picker, `POST /pos/customers/{id}/price-level`). `None` clears
+/// it back to list pricing.
+pub async fn update_customer_price_level(
+    pool: &AnyPool,
+    id: Uuid,
+    price_level_id: Option<Uuid>,
+) -> Result<(), DbError> {
+    sqlx::query("UPDATE customers SET price_level_id = $1 WHERE id = $2")
+        .bind(opt_uuid_str(price_level_id))
+        .bind(uuid_str(id))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+// --- price levels -----------------------------------------------------------
+/// Fixed UUIDv7 ids for the four seeded price levels
+/// (`price_levels`, migration `0014_counter_ui`). Deterministic so
+/// the counter UI, tests and any synced copy agree on which level
+/// "Gold" is without a lookup by code. The timestamp half is
+/// 2026-11-27T00:00:00Z (the day the levels were introduced);
+/// the last 12 hex digits are the level number (1–4).
+pub const PRICE_LEVEL_RETAIL_ID: Uuid = Uuid::from_u128(0x01a21a4d_4000_7000_8000_000000000001);
+pub const PRICE_LEVEL_GOLD_ID: Uuid = Uuid::from_u128(0x01a21a4d_4000_7000_8000_000000000002);
+pub const PRICE_LEVEL_WS_ID: Uuid = Uuid::from_u128(0x01a21a4d_4000_7000_8000_000000000003);
+pub const PRICE_LEVEL_PLATINUM_ID: Uuid = Uuid::from_u128(0x01a21a4d_4000_7000_8000_000000000004);
+
+fn price_level_from_row(row: &AnyRow) -> Result<PriceLevel, DbError> {
+    Ok(PriceLevel {
+        id: uuid_col(row, "id")?,
+        org_id: uuid_col(row, "org_id")?,
+        code: text_col(row, "code")?,
+        name: text_col(row, "name")?,
+        discount_pct: dec_col(row, "discount_pct")?,
+    })
+}
+
+/// Insert a price level, ignoring the insert when the id already
+/// exists (the seed below is idempotent).
+pub async fn insert_price_level(pool: &AnyPool, level: &PriceLevel) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO price_levels (id, org_id, code, name, discount_pct) VALUES ($1, $2, $3, $4, $5) ON CONFLICT(id) DO NOTHING",
+    )
+    .bind(uuid_str(level.id))
+    .bind(uuid_str(level.org_id))
+    .bind(&level.code)
+    .bind(&level.name)
+    .bind(dec_str(level.discount_pct))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn list_price_levels(pool: &AnyPool, org_id: Uuid) -> Result<Vec<PriceLevel>, DbError> {
+    let rows = sqlx::query(
+        "SELECT * FROM price_levels WHERE org_id = $1 ORDER BY discount_pct ASC, code ASC",
+    )
+    .bind(uuid_str(org_id))
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(price_level_from_row).collect()
+}
+
+pub async fn get_price_level(pool: &AnyPool, id: Uuid) -> Result<PriceLevel, DbError> {
+    let row = sqlx::query("SELECT * FROM price_levels WHERE id = $1")
+        .bind(uuid_str(id))
+        .fetch_one(pool)
+        .await
+        .map_err(not_found(&format!("price level {id}")))?;
+    price_level_from_row(&row)
+}
+
+/// Seed the four price levels (fixed ids above) plus the matching
+/// matrix rules, idempotently — safe to run on every
+/// [`crate::migrate`] / edge open. `discount_pct` is a fraction
+/// (Gold `0.20`); the rule stores the same discount as percent
+/// points (`20`) because `df-domain::pricing::CalcMethod::PctOffList`
+/// takes percent. Retail needs no rule (list price is the fallback).
+/// A rule is seeded only when no rule exists yet for that level, so
+/// an operator-edited rule is never overwritten.
+pub async fn ensure_price_levels(pool: &AnyPool, org_id: Uuid) -> Result<(), DbError> {
+    let levels = [
+        (
+            PRICE_LEVEL_RETAIL_ID,
+            "retail",
+            "Retail",
+            Decimal::ZERO,
+            None,
+        ),
+        (
+            PRICE_LEVEL_GOLD_ID,
+            "gold",
+            "Gold",
+            Decimal::from_str("0.20").unwrap(),
+            Some(Decimal::from(20)),
+        ),
+        (
+            PRICE_LEVEL_WS_ID,
+            "ws",
+            "WS",
+            Decimal::from_str("0.25").unwrap(),
+            Some(Decimal::from(25)),
+        ),
+        (
+            PRICE_LEVEL_PLATINUM_ID,
+            "platinum",
+            "Platinum",
+            Decimal::from_str("0.30").unwrap(),
+            Some(Decimal::from(30)),
+        ),
+    ];
+    for (id, code, name, discount_pct, rule_pct) in levels {
+        insert_price_level(
+            pool,
+            &PriceLevel {
+                id,
+                org_id,
+                code: code.to_string(),
+                name: name.to_string(),
+                discount_pct,
+            },
+        )
+        .await?;
+        if let Some(rule_pct) = rule_pct {
+            let existing = list_pricing_rules(pool, org_id).await?;
+            if existing.iter().any(|rule| rule.price_level_id == Some(id)) {
+                continue;
+            }
+            insert_pricing_rule(
+                pool,
+                &PricingRuleRow {
+                    id: Uuid::now_v7(),
+                    org_id,
+                    priority: 100,
+                    customer_id: None,
+                    job_id: None,
+                    price_level_id: Some(id),
+                    product_id: None,
+                    product_line_id: None,
+                    class_id: None,
+                    department_id: None,
+                    vendor_id: None,
+                    min_qty: Decimal::ONE,
+                    calc_method: "pct_off_list".to_string(),
+                    calc_value: rule_pct,
+                    min_margin_floor: None,
+                    effective_from: None,
+                    effective_to: None,
+                },
+            )
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 // --- pricing rules ----------------------------------------------------------

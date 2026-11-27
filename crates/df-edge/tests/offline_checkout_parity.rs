@@ -122,6 +122,8 @@ async fn seeded_edge() -> Edge {
             tax_class_id: Uuid::now_v7(),
             prompt_template_id: None,
             is_active: true,
+            map: None,
+            msrp: None,
         },
     )
     .await
@@ -199,8 +201,11 @@ fn sale_input(qty: &str, tender: TenderKind, customer: Option<Uuid>) -> SaleInpu
         tenders: vec![TenderInput {
             kind: tender,
             amount: None,
+            reference: None,
         }],
         po_number: None,
+        job_name: None,
+        price_level_id: None,
     }
 }
 

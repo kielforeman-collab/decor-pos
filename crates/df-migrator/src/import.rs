@@ -373,6 +373,14 @@ async fn import_product_row(
         list_price,
         standard_cost,
         avg_cost: standard_cost,
+        msrp: match columns.get(row, "msrp").filter(|v| !v.is_empty()) {
+            Some(value) => Some(parse_decimal(value, "msrp")?),
+            None => None,
+        },
+        map: match columns.get(row, "map").filter(|v| !v.is_empty()) {
+            Some(value) => Some(parse_decimal(value, "map")?),
+            None => None,
+        },
         min_margin_pct: None,
         sheen: None,
         paint_base_code: None,

@@ -173,10 +173,12 @@ impl Edge {
             return Err(EdgeError::from(PortalError::FormulaNotForCustomer));
         }
         let product = df_db::get_product(self.pool(), formula.base_product_id).await?;
+        let customer = df_db::get_customer(self.pool(), req.customer_id).await?;
         let priced = self
             .price_order_lines(
                 Some(req.customer_id),
                 req.job_id,
+                customer.price_level_id,
                 &[formula_line(
                     &formula,
                     &product,
@@ -360,7 +362,7 @@ impl Edge {
                 unit_cost: Money::new(product.standard_cost, self.config().currency),
             });
         }
-        let priced = self.price_order_lines(None, None, &lines).await?;
+        let priced = self.price_order_lines(None, None, None, &lines).await?;
         let grand_total = priced
             .subtotal
             .checked_add(priced.tax_total)?
@@ -620,6 +622,7 @@ impl Edge {
         &self,
         customer_id: Option<Uuid>,
         job_id: Option<Uuid>,
+        price_level_id: Option<Uuid>,
         lines: &[SaleLineInput],
     ) -> Result<crate::pricing::PricedSale, EdgeError> {
         let ctx = PricingContext::load(
@@ -629,7 +632,15 @@ impl Edge {
             self.config().currency,
         )
         .await;
-        price_lines(self.pool(), &ctx, customer_id, job_id, lines).await
+        price_lines(
+            self.pool(),
+            &ctx,
+            customer_id,
+            job_id,
+            price_level_id,
+            lines,
+        )
+        .await
     }
 }
 
@@ -679,6 +690,7 @@ impl Edge {
                 customer_id,
                 job_id,
                 po_number: None,
+                job_name: None,
                 salesperson_id: None,
                 cashier_id: None,
                 currency: self.config().currency.code().to_string(),

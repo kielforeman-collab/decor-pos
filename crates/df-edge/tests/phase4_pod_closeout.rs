@@ -102,6 +102,8 @@ async fn test_edge() -> Edge {
             tax_class_id: Uuid::now_v7(),
             prompt_template_id: None,
             is_active: true,
+            map: None,
+            msrp: None,
         },
     )
     .await
@@ -125,8 +127,11 @@ fn cash_sale_input() -> SaleInput {
         tenders: vec![TenderInput {
             kind: TenderKind::Cash,
             amount: None,
+            reference: None,
         }],
         po_number: None,
+        job_name: None,
+        price_level_id: None,
     }
 }
 
@@ -336,6 +341,7 @@ async fn pod_closeout_gates_on_signature_and_photo() {
         scheduled_at: None,
         completed_at: None,
         created_at: Utc::now(),
+        job_name: None,
     };
     df_db::insert_transaction(edge.pool(), &open_tx)
         .await

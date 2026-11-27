@@ -71,11 +71,16 @@ pub struct SaleLineInput {
 /// One tender as entered at the counter. `amount = None` means "the
 /// remaining balance" (the usual counter flow: the last tender covers
 /// whatever is left). Cash may exceed the remaining balance (change
-/// due); card / charge / gift-card tenders may not.
+/// due); card / charge / gift-card tenders may not. `reference` is
+/// the reference recorded with the payment — for E-Transfer the
+/// reference the customer supplied (e.g. their confirmation number);
+/// other tenders ignore it and record the provider reference.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TenderInput {
     pub kind: TenderKind,
     pub amount: Option<Money>,
+    #[serde(default)]
+    pub reference: Option<String>,
 }
 
 /// A sale (or quote / hold) as entered at the counter.
@@ -83,6 +88,15 @@ pub struct TenderInput {
 pub struct SaleInput {
     pub customer_id: Option<Uuid>,
     pub job_id: Option<Uuid>,
+    /// The price level to price this sale at. When `None`, the
+    /// customer's stored level is used (when the sale has a
+    /// customer); otherwise list pricing applies.
+    #[serde(default)]
+    pub price_level_id: Option<Uuid>,
+    /// The job name printed on the invoice (free text; distinct
+    /// from `job_id`, which points at a `customer_jobs` row).
+    #[serde(default)]
+    pub job_name: Option<String>,
     pub lines: Vec<SaleLineInput>,
     pub tenders: Vec<TenderInput>,
     pub po_number: Option<String>,

@@ -75,6 +75,8 @@ fn product(org_id: Uuid) -> Product {
         tax_class_id: Uuid::now_v7(),
         prompt_template_id: None,
         is_active: true,
+        map: None,
+        msrp: None,
     }
 }
 
@@ -103,6 +105,7 @@ fn transaction(org_id: Uuid, store_id: Uuid, till_id: Option<Uuid>) -> Transacti
         scheduled_at: None,
         completed_at: Some(Utc::now()),
         created_at: Utc::now(),
+        job_name: None,
     }
 }
 

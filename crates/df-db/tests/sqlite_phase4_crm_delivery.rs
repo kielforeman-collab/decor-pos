@@ -119,6 +119,7 @@ fn sale(
         scheduled_at: None,
         completed_at: Some(Utc::now() - TimeDelta::days(days_ago)),
         created_at: Utc::now() - TimeDelta::days(days_ago),
+        job_name: None,
     }
 }
 

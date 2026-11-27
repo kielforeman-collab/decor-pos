@@ -97,6 +97,8 @@ async fn test_edge() -> Edge {
             tax_class_id: Uuid::now_v7(),
             prompt_template_id: None,
             is_active: true,
+            map: None,
+            msrp: None,
         },
     )
     .await
@@ -120,8 +122,11 @@ fn sale_input(qty: &str, tender: TenderKind, tender_amount: Option<&str>) -> Sal
         tenders: vec![TenderInput {
             kind: tender,
             amount: tender_amount.map(money),
+            reference: None,
         }],
         po_number: None,
+        job_name: None,
+        price_level_id: None,
     }
 }
 
