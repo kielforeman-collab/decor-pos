@@ -126,6 +126,14 @@ pub async fn tax_and_eco_for(
             qty,
             today,
         )
+        // A preset priced in another currency than the sale's is not
+        // convertible here — treat it as no fee rather than failing
+        // the sale. The store row's jurisdiction and the till's
+        // currency can disagree (e.g. a store row seeded with a US
+        // jurisdiction while the till runs CAD): the US PaintCare
+        // fee is USD, so no CAD fee applies and the sale completes
+        // with a zero eco fee.
+        .filter(|fee| fee.currency() == currency)
         .unwrap_or_else(|| Money::zero(currency)),
         _ => Money::zero(currency),
     };
@@ -210,4 +218,139 @@ pub async fn price_lines(
         tax_total,
         eco_fee_total,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::edge::Edge;
+    use crate::edge::test_support::{seed_product, test_config};
+    use crate::types::EdgeConfig;
+    use df_db::models::{Organization, Store};
+    use df_domain::money::Currency;
+
+    /// An edge whose config currency may disagree with the store
+    /// row's jurisdiction — the demo-seed case is a US/CA store row
+    /// under a CAD till.
+    async fn edge_with_store(currency: Currency, country: &str, region: &str) -> (Edge, Uuid) {
+        let mut config = test_config();
+        config.currency = currency;
+        config.surcharge_rules = EdgeConfig::default_surcharge_rules(currency);
+        let edge = Edge::open(config).await.unwrap();
+        let org = Organization {
+            id: Uuid::from_u128(0x2000),
+            name: "Test Paint Co".to_string(),
+            default_currency: currency.code().to_string(),
+            enabled_modules: serde_json::json!({"core_pos": true}),
+            settings_json: serde_json::json!({}),
+            created_at: Utc::now(),
+        };
+        df_db::insert_organization(edge.pool(), &org).await.unwrap();
+        let store = Store {
+            id: Uuid::from_u128(0x1000),
+            org_id: org.id,
+            code: "MAIN".to_string(),
+            name: "Main Store".to_string(),
+            country_code: country.to_string(),
+            region_code: region.to_string(),
+            postal_code: String::new(),
+            currency: currency.code().to_string(),
+            tax_zone_id: Uuid::now_v7(),
+            timezone: "UTC".to_string(),
+            is_warehouse: false,
+        };
+        df_db::insert_store(edge.pool(), &store).await.unwrap();
+        let product_id = seed_product(&edge).await;
+        (edge, product_id)
+    }
+
+    #[tokio::test]
+    async fn eco_fee_in_other_currency_is_zero_not_an_error() {
+        // Regression: a US/CA store row under a CAD till used to fail
+        // the whole sale with "currency mismatch: CAD vs USD" because
+        // the USD PaintCare fee was added to a CAD line total.
+        let (edge, product_id) = edge_with_store(Currency::Cad, "US", "CA").await;
+        let ctx = PricingContext::load(
+            edge.pool(),
+            Uuid::from_u128(0x2000),
+            Uuid::from_u128(0x1000),
+            Currency::Cad,
+        )
+        .await;
+        let (tax, eco_fee) = tax_and_eco_for(
+            edge.pool(),
+            &ctx,
+            product_id,
+            Money::from_units(100, Currency::Cad),
+            Decimal::ONE,
+        )
+        .await
+        .expect("mismatched-currency eco fee must not fail the sale");
+        assert_eq!(eco_fee, Money::zero(Currency::Cad));
+        // Tax still prices on the line total alone (US/CA tax rule
+        // is 7.25% on $100).
+        assert_eq!(
+            tax,
+            Money::from_str_amount("7.2500", Currency::Cad).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn eco_fee_applies_when_preset_matches_sale_currency() {
+        // A genuine BC store under a CAD till still charges the
+        // shipped BC preset: $1.00 per 1-gallon container.
+        let (edge, product_id) = edge_with_store(Currency::Cad, "CA", "BC").await;
+        let ctx = PricingContext::load(
+            edge.pool(),
+            Uuid::from_u128(0x2000),
+            Uuid::from_u128(0x1000),
+            Currency::Cad,
+        )
+        .await;
+        let (tax, eco_fee) = tax_and_eco_for(
+            edge.pool(),
+            &ctx,
+            product_id,
+            Money::from_units(100, Currency::Cad),
+            Decimal::ONE,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            eco_fee,
+            Money::from_str_amount("1.0000", Currency::Cad).unwrap()
+        );
+        // BC tax is 12% on line total + eco fee: 12% of $101.
+        assert_eq!(
+            tax,
+            Money::from_str_amount("12.1200", Currency::Cad).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn eco_fee_unchanged_for_us_store() {
+        // US/CA store under a USD till: the $0.75 PaintCare fee
+        // still applies exactly as before.
+        let (edge, product_id) = edge_with_store(Currency::Usd, "US", "CA").await;
+        let ctx = PricingContext::load(
+            edge.pool(),
+            Uuid::from_u128(0x2000),
+            Uuid::from_u128(0x1000),
+            Currency::Usd,
+        )
+        .await;
+        let (_tax, eco_fee) = tax_and_eco_for(
+            edge.pool(),
+            &ctx,
+            product_id,
+            Money::from_units(100, Currency::Usd),
+            Decimal::ONE,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            eco_fee,
+            Money::from_str_amount("0.7500", Currency::Usd).unwrap()
+        );
+    }
 }
