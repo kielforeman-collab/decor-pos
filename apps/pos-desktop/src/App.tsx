@@ -80,14 +80,6 @@ import {
  * the List Price column is what is used here, per the brief.
  * NET is the dealer's cost and backs the below-cost gate.
  */
-const QUICK_PICKS: { sku: string; name: string; listPrice: string; netCost: string; ml: number }[] = [
-  { sku: 'F5491X-001', name: 'REGAL SELECT EGG -BASE 1', listPrice: '49.12', netCost: '48.75', ml: 3785 },
-  { sku: 'K04600-001', name: 'FS HI HIDING PRIMER -WHITE', listPrice: '46.97', netCost: '45.22', ml: 3785 },
-  { sku: 'F50809-001', name: 'WATERBORNE CEILING', listPrice: '43.62', netCost: '43.29', ml: 3785 },
-  { sku: 'F62601-001', name: 'BEN INT LTX EGGSHELL -WHITE', listPrice: '41.18', netCost: '40.87', ml: 3785 },
-  { sku: 'K2001X-006', name: 'COLOUR SAMPLE -BASE 1', listPrice: '3.29', netCost: '3.27', ml: 236 },
-]
-
 const RETAIL_LEVEL: PriceLevel = { id: 'retail', code: 'retail', name: 'Retail', discount_pct: '0' }
 const DELIVERY_FEE = '25.00'
 const SALE_NUMBER_FALLBACK = 'NEW SALE'
@@ -427,32 +419,6 @@ export default function App() {
 
   function addSearchProduct(p: ProductSearchResult, qty = '1') {
     maybeAddSnapshot(snapshotFromProduct(p, qty))
-  }
-
-  async function addQuickPick(qp: (typeof QUICK_PICKS)[number]) {
-    try {
-      const found = await searchProducts({ sku: qp.sku, limit: 1 })
-      if (found.length > 0) {
-        addSearchProduct(found[0], '1')
-        return
-      }
-    } catch {
-      // Backend search unavailable — fall through to the verified
-      // price-book snapshot for the chip.
-    }
-    maybeAddSnapshot({
-      product_id: syntheticProductId(qp.sku),
-      sku: qp.sku,
-      description: qp.name,
-      qty: '1',
-      uom: 'gal',
-      unit_price: qp.listPrice,
-      unit_cost: qp.netCost,
-      discPct: '0',
-      sizeLabel: sizeLabelForVolume(qp.ml, 'gal'),
-      containerVolumeMl: qp.ml,
-      tint: null,
-    })
   }
 
   async function resolveScanText(raw: string) {
@@ -993,6 +959,25 @@ export default function App() {
                 {label} <span className="txn-count">{count}</span>
               </button>
             ))}
+            {txnTab === 'sale' && (
+              <span className="txn-fields">
+                <label className="txn-field">
+                  Job
+                  <input className="job-input" value={jobName} onChange={(e) => setJobName(e.target.value)} placeholder="Job name (optional)" aria-label="Job name" />
+                </label>
+                <label className="txn-field">
+                  PO
+                  <input className="po-input" value={poNumber} onChange={(e) => setPoNumber(e.target.value)} placeholder="Optional" aria-label="PO number" />
+                </label>
+                <span className="account-chip">
+                  {customerSummary
+                    ? `Balance ${fmtMoney(customerSummary.balance)} · Available ${fmtMoney(cad((Number(customerSummary.credit_limit.amount) - Number(customerSummary.balance.amount)).toFixed(4)))} · ${customer?.payment_terms ?? 'Terms —'}`
+                    : customer
+                      ? `${customer.account_number} · select the customer card for balance`
+                      : 'Walk-in — no account'}
+                </span>
+              </span>
+            )}
           </div>
 
           {txnTab === 'sale' && (
@@ -1016,24 +1001,6 @@ export default function App() {
                   </button>
                 ))}
                 <span className="seg-note">{fulfilment === 'delivery' ? 'Delivery fee $25.00' : 'No delivery fee'}</span>
-              </div>
-
-              <div className="cust-strip elbow-frame">
-                <label>
-                  Job
-                  <input value={jobName} onChange={(e) => setJobName(e.target.value)} placeholder="Job name (optional)" />
-                </label>
-                <label>
-                  PO number
-                  <input value={poNumber} onChange={(e) => setPoNumber(e.target.value)} placeholder="Optional" />
-                </label>
-                <span className="account-chip">
-                  {customerSummary
-                    ? `Balance ${fmtMoney(customerSummary.balance)} · Available ${fmtMoney(cad((Number(customerSummary.credit_limit.amount) - Number(customerSummary.balance.amount)).toFixed(4)))} · ${customer?.payment_terms ?? 'Terms —'}`
-                    : customer
-                      ? `${customer.account_number} · select the customer card for balance`
-                      : 'Walk-in — no account'}
-                </span>
               </div>
 
               <div className="entry-row elbow-frame">
@@ -1069,16 +1036,6 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="quick-row">
-                {QUICK_PICKS.map((qp) => (
-                  <button key={qp.sku} type="button" className="quick-chip" onClick={() => void addQuickPick(qp)}>
-                    <span className="quick-sku">{qp.sku}</span>
-                    <span className="quick-name">{qp.name}</span>
-                    <span className="quick-price">{fmtMoney(cad(qp.listPrice))}</span>
-                  </button>
-                ))}
-              </div>
-
               <Ticket
                 lines={lines}
                 preview={preview}
@@ -1103,7 +1060,7 @@ export default function App() {
                 </div>
               </details>
 
-              <div className="notes elbow-frame">
+              <div className="notes">
                 <label>
                   Sale note (prints on receipt)
                   <input value={saleNote} onChange={(e) => setSaleNote(e.target.value)} placeholder="e.g. Leave at back door" />

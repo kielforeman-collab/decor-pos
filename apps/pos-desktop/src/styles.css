@@ -296,7 +296,18 @@ button:disabled { opacity: 0.45; cursor: default; }
 :root[data-theme="tos"] .register h2, :root[data-theme="tos"] .till-section h2 { font-family: var(--font-display); font-size: 0.95rem; letter-spacing: 0.05em; }
 
 /* --- Txn tabs (compact: 32px; TOS 40px) --- */
-.txn-tabs { display: flex; gap: var(--block-gap); margin-bottom: 8px; flex-wrap: wrap; }
+.txn-tabs { display: flex; gap: var(--block-gap); margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
+/* Job/PO + account chip live in the tabs row (sale tab only): one
+   compact line with the Sale/Held/Completed/Voided buttons. Inline
+   labels keep the row at tab height; the 32px inputs fit inside the
+   44px LCARS / 40px TOS tabs. */
+.txn-fields { margin-left: auto; display: flex; gap: 10px; align-items: center; min-width: 0; }
+.txn-field { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; white-space: nowrap; }
+.txn-field input { min-height: 2rem; padding: 4px 8px; }
+.txn-field .job-input { width: 160px; }
+.txn-field .po-input { width: 110px; }
+.txn-fields .account-chip { padding: 4px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 560px; }
+:root[data-theme="lcars"] .txn-field input { min-height: 32px; padding: 4px 10px; border-width: 2px; }
 .txn-tab {
   min-height: 2rem; padding: 4px 12px; border: 1px solid var(--line-strong);
   background: var(--panel-2); color: var(--ink); border-radius: var(--pill);
@@ -333,9 +344,15 @@ button:disabled { opacity: 0.45; cursor: default; }
   padding-left: 24px;
 }
 
-/* --- Cust strip / entry row --- */
-.cust-strip { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
-.cust-strip label, .notes label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; flex: 1; min-width: 140px; }
+/* --- Entry row --- */
+.notes label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; flex: 1; min-width: 140px; }
+/* Sales notes: bare bones — no elbow frame, no LCARS pill/curve
+   decoration. Inline labels and 32px inputs keep the row to one
+   short line in every theme. */
+.notes label { flex-direction: row; align-items: center; }
+.notes label input { flex: 1; min-width: 0; }
+.notes input { min-height: 32px; padding: 4px 8px; }
+:root[data-theme="lcars"] .notes input { min-height: 32px; padding: 4px 8px; border-width: 1px; border-radius: 6px; }
 .account-chip {
   font-size: 0.85rem; background: var(--panel-2); border: 1px solid var(--line);
   border-radius: var(--pill); padding: 8px 12px;
@@ -379,42 +396,36 @@ input, select, textarea {
 .sr-stock { font-size: 0.8rem; color: var(--ink-3); }
 .search-status { padding: 10px; font-size: 0.9rem; color: var(--ink-2); }
 
-/* --- Quick picks --- */
-.quick-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
-.quick-chip {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
-  padding: 8px 12px; background: var(--panel-2); border: 1px solid var(--line-strong);
-  border-radius: var(--pill); color: var(--ink);
-}
-.quick-sku { font-family: var(--font-mono); font-size: 0.8rem; font-weight: 700; }
-.quick-name { font-size: 0.85rem; }
-.quick-price { font-weight: 700; }
-
 /* --- Ticket --- */
 .ticket-wrap { overflow-x: auto; }
 table.ticket { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.95rem; }
 .ticket thead th {
-  text-align: left; padding: 8px 6px; border-bottom: 2px solid var(--ink);
+  text-align: left; padding: 6px; border-bottom: 2px solid var(--ink);
   font-family: var(--font-cond); font-size: 13px; letter-spacing: 0.05em; text-transform: uppercase;
 }
 :root[data-theme="tos"] .ticket thead th { background: #121212; color: var(--tos-gold-hi); min-height: 38px; }
 :root[data-theme="mono"] .ticket thead th { background: #111; color: #fff; }
-.ticket td { padding: 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
-.ticket .lrow { min-height: 40px; }
+.ticket td { padding: 3px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.ticket .lrow { min-height: 32px; }
 .ticket .lrow:nth-child(even) { background: var(--panel-2); }
 :root[data-theme="tos"] .ticket .lrow { background: #fffdf2; }
 :root[data-theme="tos"] .ticket .lrow:nth-child(even) { background: #f0ead3; }
 :root[data-theme="tos"] .ticket .c-sku { color: var(--tos-red); font-weight: 700; }
 .ticket .c-num { width: 32px; }
-.ticket .c-disc input, .ticket .c-qty input { width: 56px; padding: 4px; text-align: center; min-height: 2rem; }
+.ticket .c-disc input, .ticket .c-qty input { width: 56px; padding: 2px 4px; text-align: center; min-height: 28px; }
 .ticket .c-x button { background: none; border: none; color: var(--bad); font-weight: 700; min-height: 0; padding: 4px 8px; }
 .ticket-empty { text-align: center; color: var(--ink-2); padding: 16px !important; }
 .size-tag { font-size: 0.8rem; color: var(--ink-2); margin-left: 6px; }
 .tint-line { display: block; font-size: 0.85rem; margin-top: 4px; color: var(--ink-2); }
 .tint-line .swatch { display: inline-block; width: 14px; height: 14px; border: 1px solid var(--line-strong); vertical-align: -2px; margin-right: 4px; }
 .qty-stepper { display: flex; align-items: center; gap: 2px; }
-.qty-stepper button { min-width: 28px; min-height: 2rem; padding: 0 6px; background: var(--panel-2); border: 1px solid var(--line-strong); border-radius: 4px; }
-.disc-input { min-height: 2rem; }
+.qty-stepper button { min-width: 28px; min-height: 28px; padding: 0 6px; background: var(--panel-2); border: 1px solid var(--line-strong); border-radius: 4px; }
+.disc-input { min-height: 28px; }
+/* LCARS: the generic 52px pill inputs would make every ticket row
+   64px tall. Compact 28px inputs with a small radius so the short
+   centred values clear the curve. */
+:root[data-theme="lcars"] .ticket .c-disc input,
+:root[data-theme="lcars"] .ticket .c-qty input { min-height: 28px; padding: 2px 4px; border-width: 2px; border-radius: 6px; }
 
 /* --- Notes / manual entry --- */
 .notes { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
@@ -529,7 +540,6 @@ table.ticket { width: 100%; border-collapse: collapse; margin-top: 8px; font-siz
 :root[data-theme="lcars"] .live-toggle {
   padding-left: 26px; padding-right: 26px; white-space: nowrap;
 }
-:root[data-theme="lcars"] .quick-chip { padding-left: 22px; padding-right: 22px; }
 :root[data-theme="lcars"] input, :root[data-theme="lcars"] select {
   background: #000; color: var(--lcars-peach); border: 3px solid var(--lcars-orange); border-radius: 999px; min-height: 52px;
   padding: 8px 20px;

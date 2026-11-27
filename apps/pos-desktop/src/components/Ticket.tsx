@@ -108,7 +108,7 @@ export default function Ticket({ lines, preview, onQty, onDisc, onRemove, onTint
           ))}
           {lines.length === 0 && (
             <tr>
-              <td colSpan={9} className="ticket-empty">No lines yet — scan, search, quick-pick, or enter a line.</td>
+              <td colSpan={9} className="ticket-empty">No lines yet — scan, search, or enter a line.</td>
             </tr>
           )}
         </tbody>
