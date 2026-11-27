@@ -140,12 +140,12 @@ export async function openTill(
   cashier_id: string,
   opening_float: Money,
 ): Promise<TillSession> {
-  if (isTauri) return invoke('open_till', { cashier_id, opening_float })
+  if (isTauri) return invoke('open_till', { cashierId: cashier_id, openingFloat: opening_float })
   return http('/pos/tills/open', { cashier_id, opening_float })
 }
 
 export async function closeTill(till_id: string, counted_cash: Money): Promise<ZReport> {
-  if (isTauri) return invoke('close_till', { till_id, counted_cash })
+  if (isTauri) return invoke('close_till', { tillId: till_id, countedCash: counted_cash })
   return http(`/pos/tills/${till_id}/close`, { counted_cash })
 }
 
@@ -166,7 +166,7 @@ export async function listHolds(): Promise<{ hold_ids: string[] }> {
 }
 
 export async function resumeHold(hold_id: string): Promise<SaleInput> {
-  if (isTauri) return invoke('resume_hold', { hold_id })
+  if (isTauri) return invoke('resume_hold', { holdId: hold_id })
   return http(`/pos/holds/${hold_id}/resume`, {})
 }
 
@@ -196,7 +196,7 @@ export async function recordReturn(
   transaction_id: string,
   lines: { product_id: string; qty: string }[],
 ): Promise<CompletedSale> {
-  if (isTauri) return invoke('record_return', { original_tx_id: transaction_id, lines })
+  if (isTauri) return invoke('record_return', { originalTxId: transaction_id, lines })
   return http(`/pos/transactions/${transaction_id}/return`, lines)
 }
 
@@ -658,8 +658,8 @@ export async function listTintFormulas(opts: {
     try {
       const found = await invoke<RawTintFormula[]>('list_tint_formulas', {
         query: opts.query ?? null,
-        customer_id: opts.customer_id ?? null,
-        job_id: opts.job_id ?? null,
+        customerId: opts.customer_id ?? null,
+        jobId: opts.job_id ?? null,
       })
       return found.map(mapTintFormula)
     } catch {
@@ -681,7 +681,18 @@ export async function saveTintFormula(body: {
 }): Promise<TintFormulaEntry | null> {
   if (isTauri) {
     try {
-      const saved = await invoke<RawTintFormula>('create_tint_formula', { ...body })
+      // Tauri renames top-level command args to camelCase; the
+      // nested colorant fields stay snake_case (plain serde).
+      // The HTTP path below keeps the snake_case `body` as-is.
+      const saved = await invoke<RawTintFormula>('create_tint_formula', {
+        customerId: body.customer_id ?? null,
+        jobId: body.job_id ?? null,
+        colorCode: body.color_code,
+        colorName: body.color_name,
+        baseProductId: body.base_product_id,
+        containerVolumeMl: body.container_volume_ml,
+        colorants: body.colorants,
+      })
       return mapTintFormula(saved)
     } catch {
       return null
@@ -705,7 +716,7 @@ export async function setCustomerPriceLevel(
   if (isTauri) {
     const raw = await invoke<RawCustomer>('set_customer_price_level', {
       id,
-      price_level_id: priceLevelId,
+      priceLevelId: priceLevelId,
     })
     return mapCustomer(raw)
   }
@@ -894,7 +905,7 @@ export async function listStores(): Promise<Store[]> {
 }
 
 export async function inventoryBalances(storeId: string): Promise<InventoryBalance[]> {
-  if (isTauri) return invoke<InventoryBalance[]>('inventory_balances', { store_id: storeId })
+  if (isTauri) return invoke<InventoryBalance[]>('inventory_balances', { storeId })
   return http<InventoryBalance[]>(`/inventory/balances?store_id=${storeId}`)
 }
 
@@ -905,9 +916,9 @@ export async function suggestReplenishment(
 ): Promise<SuggestedPurchaseOrder[]> {
   if (isTauri) {
     return invoke<SuggestedPurchaseOrder[]>('suggest_replenishment', {
-      store_id: storeId,
+      storeId: storeId,
       days: days ?? null,
-      lead_time_days: leadTimeDays ?? null,
+      leadTimeDays: leadTimeDays ?? null,
     })
   }
   return http<SuggestedPurchaseOrder[]>('/purchasing/replenishment/suggest', {
@@ -918,7 +929,7 @@ export async function suggestReplenishment(
 }
 
 export async function listPurchaseOrders(storeId: string): Promise<PurchaseOrderView[]> {
-  if (isTauri) return invoke<PurchaseOrderView[]>('list_purchase_orders', { store_id: storeId })
+  if (isTauri) return invoke<PurchaseOrderView[]>('list_purchase_orders', { storeId })
   return http<PurchaseOrderView[]>(`/purchasing/orders?store_id=${storeId}`)
 }
 
@@ -936,8 +947,8 @@ export async function createPurchaseOrder(
 ): Promise<PurchaseOrderView> {
   if (isTauri) {
     return invoke<PurchaseOrderView>('create_purchase_order', {
-      vendor_id: vendorId,
-      store_id: storeId,
+      vendorId: vendorId,
+      storeId: storeId,
       lines,
     })
   }
@@ -957,7 +968,7 @@ export async function receivePurchaseOrder(
 }
 
 export async function listTransfers(storeId: string): Promise<Transfer[]> {
-  if (isTauri) return invoke<Transfer[]>('list_transfers', { store_id: storeId })
+  if (isTauri) return invoke<Transfer[]>('list_transfers', { storeId })
   return http<Transfer[]>(`/inventory/transfers?store_id=${storeId}`)
 }
 
@@ -968,8 +979,8 @@ export async function createTransfer(
 ): Promise<Transfer> {
   if (isTauri) {
     return invoke<Transfer>('create_transfer', {
-      from_store_id: fromStoreId,
-      to_store_id: toStoreId,
+      fromStoreId: fromStoreId,
+      toStoreId: toStoreId,
       lines,
     })
   }
@@ -991,13 +1002,13 @@ export async function receiveTransfer(id: string): Promise<Transfer> {
 }
 
 export async function getArAging(storeId: string): Promise<AgingView> {
-  if (isTauri) return invoke<AgingView>('get_ar_aging', { store_id: storeId, as_of: null })
+  if (isTauri) return invoke<AgingView>('get_ar_aging', { storeId, asOf: null })
   return http<AgingView>(`/ar/aging?store_id=${storeId}`)
 }
 
 export async function getArCollections(storeId: string): Promise<CollectionsView> {
   if (isTauri) {
-    return invoke<CollectionsView>('get_ar_collections', { store_id: storeId, as_of: null })
+    return invoke<CollectionsView>('get_ar_collections', { storeId, asOf: null })
   }
   return http<CollectionsView>(`/ar/collections?store_id=${storeId}`)
 }
@@ -1009,7 +1020,7 @@ export async function postArPayment(
 ): Promise<PostedArPayment> {
   if (isTauri) {
     return invoke<PostedArPayment>('post_ar_payment', {
-      customer_id: customerId,
+      customerId: customerId,
       amount,
       method,
     })
@@ -1024,7 +1035,7 @@ export async function sendPurchaseOrder(
   if (isTauri) {
     return invoke<{ po_id: string; path: string; raw: string }>('send_purchase_order', {
       id,
-      out_dir: outDir ?? null,
+      outDir: outDir ?? null,
     })
   }
   return http<{ po_id: string; path: string; raw: string }>(`/edi/purchase-orders/${id}/send`, {
@@ -1033,19 +1044,19 @@ export async function sendPurchaseOrder(
 }
 
 export async function listEdiDocuments(poId: string): Promise<EdiDocumentRow[]> {
-  if (isTauri) return invoke<EdiDocumentRow[]>('list_edi_documents', { po_id: poId })
+  if (isTauri) return invoke<EdiDocumentRow[]>('list_edi_documents', { poId })
   return http<EdiDocumentRow[]>(`/edi/documents?po_id=${poId}`)
 }
 
 export async function listPoAcknowledgments(poId: string): Promise<PoAcknowledgmentRow[]> {
   if (isTauri) {
-    return invoke<PoAcknowledgmentRow[]>('list_po_acknowledgments', { po_id: poId })
+    return invoke<PoAcknowledgmentRow[]>('list_po_acknowledgments', { poId })
   }
   return http<PoAcknowledgmentRow[]>(`/edi/acknowledgments?po_id=${poId}`)
 }
 
 export async function threeWayMatch(poId: string): Promise<InvoiceMatchReport> {
-  if (isTauri) return invoke<InvoiceMatchReport>('three_way_match', { po_id: poId })
+  if (isTauri) return invoke<InvoiceMatchReport>('three_way_match', { poId })
   return http<InvoiceMatchReport>(`/edi/three-way-match?po_id=${poId}`)
 }
 
@@ -1057,7 +1068,9 @@ export async function threeWayMatch(poId: string): Promise<InvoiceMatchReport> {
 export async function importProducts(
   rows: ProductImportRow[],
 ): Promise<ProductImportResponse> {
-  if (isTauri) return invoke<ProductImportResponse>('import_products', { rows })
+  // `store_id` is optional on the command (None = the edge's store);
+  // pass it explicitly so the call does not rely on a missing key.
+  if (isTauri) return invoke<ProductImportResponse>('import_products', { storeId: null, rows })
   return http<ProductImportResponse>('/pos/inventory/import', { rows })
 }
 
@@ -1073,7 +1086,7 @@ export interface ReorderPoint {
 export async function listReorderPoints(storeId: string): Promise<ReorderPoint[]> {
   if (isTauri) {
     try {
-      return await invoke<ReorderPoint[]>('list_reorder_points', { store_id: storeId })
+      return await invoke<ReorderPoint[]>('list_reorder_points', { storeId })
     } catch {
       return []
     }
@@ -1095,7 +1108,16 @@ export async function setReorderPoint(
     max_qty: maxQty,
     reorder_qty: reorderQty,
   }
-  if (isTauri) return invoke<ReorderPoint>('set_reorder_point', body)
+  // Tauri renames top-level command args to camelCase; the HTTP
+  // path below keeps the snake_case `body` as-is.
+  if (isTauri)
+    return invoke<ReorderPoint>('set_reorder_point', {
+      storeId: storeId,
+      productId: productId,
+      minQty: minQty,
+      maxQty: maxQty,
+      reorderQty: reorderQty,
+    })
   return http<ReorderPoint>('/inventory/reorder-points', body)
 }
 
@@ -1149,7 +1171,17 @@ export async function createVendor(body: {
   phone?: string | null
   edi_enabled?: boolean
 }): Promise<Vendor> {
-  if (isTauri) return invoke<Vendor>('create_vendor', body)
+  // Tauri renames top-level command args to camelCase; the HTTP
+  // path below keeps the snake_case `body` as-is.
+  if (isTauri)
+    return invoke<Vendor>('create_vendor', {
+      name: body.name,
+      displayName: body.display_name ?? null,
+      contactName: body.contact_name ?? null,
+      email: body.email ?? null,
+      phone: body.phone ?? null,
+      ediEnabled: body.edi_enabled ?? null,
+    })
   return http<Vendor>('/vendors', body)
 }
 
@@ -1164,7 +1196,17 @@ export async function updateVendor(
     edi_enabled?: boolean
   },
 ): Promise<Vendor> {
-  if (isTauri) return invoke<Vendor>('update_vendor', { id, ...patch })
+  // Tauri renames top-level command args to camelCase; the HTTP
+  // path below keeps the snake_case `patch` as-is.
+  if (isTauri)
+    return invoke<Vendor>('update_vendor', {
+      id,
+      displayName: patch.display_name ?? null,
+      contactName: patch.contact_name ?? null,
+      email: patch.email ?? null,
+      phone: patch.phone ?? null,
+      ediEnabled: patch.edi_enabled ?? null,
+    })
   return http<Vendor>(`/vendors/${encodeURIComponent(id)}`, patch)
 }
 
@@ -1183,7 +1225,7 @@ export interface TransportRecord {
 export async function listTransportRecords(vendorId: string): Promise<TransportRecord[]> {
   if (isTauri) {
     try {
-      return await invoke<TransportRecord[]>('list_transport_records', { vendor_id: vendorId })
+      return await invoke<TransportRecord[]>('list_transport_records', { vendorId })
     } catch {
       return []
     }
@@ -1201,10 +1243,10 @@ export async function getKpiDashboard(
   if (isTauri) {
     try {
       return await invoke<KpiDashboard>('get_kpi_dashboard', {
-        store_id: storeId,
+        storeId: storeId,
         start,
         end,
-        as_of: end,
+        asOf: end,
       })
     } catch {
       return null
@@ -1222,7 +1264,7 @@ export async function getDashboardAggregate(
   if (isTauri) {
     try {
       return await invoke<DashboardAggregate>('get_dashboard', {
-        store_id: storeId,
+        storeId: storeId,
         start,
         end,
       })

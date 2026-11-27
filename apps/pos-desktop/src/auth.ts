@@ -296,7 +296,7 @@ export async function setupAdmin(
     ? normalizeSession(
         await invokeAuth<unknown>('auth_setup', {
           email,
-          display_name: displayName,
+          displayName: displayName,
           password,
         }),
       )
@@ -331,7 +331,7 @@ export async function counterSwitch(opts: {
         await invokeAuth<unknown>('auth_counter_switch', {
           email: opts.email,
           pin: opts.pin,
-          badge_token: opts.badgeToken,
+          badgeToken: opts.badgeToken,
         }),
       )
     : normalizeSession(await authPost('/pos/auth/counter-switch', body))
@@ -369,9 +369,9 @@ export async function verifyOverride(
     const json = (
       isTauri
         ? await invokeAuth<unknown>('auth_override_verify', {
-            user_id: userId,
+            userId: userId,
             pin,
-            reason_code: reasonCode,
+            reasonCode: reasonCode,
           })
         : await authPost('/pos/auth/override-verify', {
             user_id: userId,
