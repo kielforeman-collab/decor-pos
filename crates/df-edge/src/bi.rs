@@ -8,6 +8,10 @@
 //! * [`Edge::kpi_dashboard`] — one store's KPI dashboard
 //!   (sales, margin, inventory turns, AR aging, formula usage
 //!   tracked only).
+//! * [`Edge::dashboard_aggregate`] — one store's dashboard
+//!   aggregate for the Products / Vendors / Dashboards screens
+//!   (sales, daily, by-category, tenders, top products /
+//!   customers, tint, low stock).
 //! * [`Edge::eco_remittance`] — org-wide PaintCare/eco-fee
 //!   remittance by jurisdiction.
 //! * [`Edge::ad_hoc_inquiry`] — completed transactions filtered
@@ -18,7 +22,9 @@
 //!   configured — the edge never invents a delivery record.
 
 use chrono::NaiveDate;
-use df_reports::{AdHocInquiry, EcoRemittanceReport, EmailDelivery, InquiryRow, KpiDashboard};
+use df_reports::{
+    AdHocInquiry, DashboardAggregate, EcoRemittanceReport, EmailDelivery, InquiryRow, KpiDashboard,
+};
 use uuid::Uuid;
 
 use crate::edge::Edge;
@@ -41,6 +47,26 @@ impl Edge {
             start,
             end,
             as_of,
+            self.config().currency,
+        )
+        .await?)
+    }
+
+    /// One store's dashboard aggregate for `[start, end]`
+    /// (sales, daily, by-category, tenders, top products /
+    /// customers, tint, low stock).
+    pub async fn dashboard_aggregate(
+        &self,
+        store_id: Uuid,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> Result<DashboardAggregate, EdgeError> {
+        Ok(df_reports::dashboard_aggregate(
+            self.pool(),
+            self.config().org_id,
+            store_id,
+            start,
+            end,
             self.config().currency,
         )
         .await?)

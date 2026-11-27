@@ -1,8 +1,6 @@
 interface SidebarProps {
   activeNav: string
-  currentThemeLabel: string
   onNavigate: (name: string) => void
-  onCycleTheme: () => void
   onChangeLocation: () => void
   onSwitchOperator: () => void
   onSignOut: () => void
@@ -29,9 +27,7 @@ const GROUPS: { title: string; items: { name: string; badge?: string }[] }[] = [
 
 export default function Sidebar({
   activeNav,
-  currentThemeLabel,
   onNavigate,
-  onCycleTheme,
   onChangeLocation,
   onSwitchOperator,
   onSignOut,
@@ -59,9 +55,6 @@ export default function Sidebar({
         </div>
       ))}
       <div className="side-foot">
-        <button type="button" className="side-foot-btn" onClick={onCycleTheme}>
-          Theme: {currentThemeLabel}
-        </button>
         <button type="button" className="side-foot-btn" onClick={onChangeLocation}>
           Change location
         </button>

@@ -27,11 +27,12 @@ use df_domain::Money;
 use df_edge::{
     AgingView, ArCustomerSummary, CollectionsView, ColorantsResponse, CompletedSale,
     CreatePoLineRequest, CreatePurchaseOrderRequest, CreateTintFormulaRequest,
-    CreateTransferRequest, Edge, EdgeConfig, InvoiceMatchReport, InvoiceView, PoAcknowledgmentRow,
+    CreateTransferRequest, CreateVendorRequest, DashboardAggregate, Edge, EdgeConfig,
+    ImportProductsRequest, InvoiceMatchReport, InvoiceView, KpiDashboard, PoAcknowledgmentRow,
     PostedArPayment, PricePreview, ProductSearchResult, PurchaseOrderView, ReceivePoLineRequest,
     ReceivePurchaseOrderRequest, ReplenishmentSuggestRequest, ReturnLineInput, SaleInput,
-    SendPoResponse, SuggestedPurchaseOrder, TenderInput, TransactionView, Transfer,
-    TransferLineView, ZReport,
+    SendPoResponse, SetReorderPointRequest, SuggestedPurchaseOrder, TenderInput, TransactionView,
+    Transfer, TransferLineView, UpdateVendorRequest, VendorDetail, VendorView, ZReport,
 };
 use df_hw::{BarcodeEntry, MockPrinter, parse_scanner_input};
 use df_payments::{MockTerminal, PaymentProvider, StandaloneTerminal};
@@ -381,6 +382,151 @@ impl PosApp {
             .edge
             .receive_purchase_order(id, ReceivePurchaseOrderRequest { lines })
             .await?)
+    }
+
+    // --- Vendors / Dashboards screens: the same Edge methods the
+    // back office calls over HTTP, wrapped so the Tauri commands
+    // below (and the tests) can use them directly. ---
+
+    /// Vendors for this org, with PO counts.
+    pub async fn list_vendors(&self) -> Result<Vec<VendorView>, PosError> {
+        Ok(self.edge.list_vendors().await?)
+    }
+
+    /// One vendor + its POs, newest first.
+    pub async fn get_vendor(&self, id: Uuid) -> Result<VendorDetail, PosError> {
+        Ok(self.edge.get_vendor(id).await?)
+    }
+
+    /// Create a vendor. `name` is the PO key.
+    pub async fn create_vendor(
+        &self,
+        name: String,
+        display_name: Option<String>,
+        contact_name: Option<String>,
+        email: Option<String>,
+        phone: Option<String>,
+        edi_enabled: Option<bool>,
+    ) -> Result<VendorView, PosError> {
+        Ok(self
+            .edge
+            .create_vendor(CreateVendorRequest {
+                name,
+                display_name,
+                contact_name,
+                email,
+                phone,
+                edi_enabled,
+            })
+            .await?)
+    }
+
+    /// Partial update of a vendor (`None` = leave the stored value
+    /// alone). `name` is never editable — it is the PO key.
+    pub async fn update_vendor(
+        &self,
+        id: Uuid,
+        display_name: Option<String>,
+        contact_name: Option<String>,
+        email: Option<String>,
+        phone: Option<String>,
+        edi_enabled: Option<bool>,
+    ) -> Result<VendorView, PosError> {
+        Ok(self
+            .edge
+            .update_vendor(
+                id,
+                UpdateVendorRequest {
+                    display_name,
+                    contact_name,
+                    email,
+                    phone,
+                    edi_enabled,
+                },
+            )
+            .await?)
+    }
+
+    /// Dashboard aggregate for a store and date range.
+    pub async fn get_dashboard(
+        &self,
+        store_id: Uuid,
+        start: chrono::NaiveDate,
+        end: chrono::NaiveDate,
+    ) -> Result<DashboardAggregate, PosError> {
+        Ok(self.edge.dashboard_aggregate(store_id, start, end).await?)
+    }
+
+    /// KPI dashboard for a store and date range, AR aging as of
+    /// `as_of`.
+    pub async fn get_kpi_dashboard(
+        &self,
+        store_id: Uuid,
+        start: chrono::NaiveDate,
+        end: chrono::NaiveDate,
+        as_of: chrono::NaiveDate,
+    ) -> Result<KpiDashboard, PosError> {
+        Ok(self.edge.kpi_dashboard(store_id, start, end, as_of).await?)
+    }
+
+    /// GUI product import: upsert parsed spreadsheet rows by SKU.
+    /// Same response shape as `POST /pos/inventory/import`.
+    pub async fn import_products(
+        &self,
+        store_id: Option<Uuid>,
+        rows: Vec<df_db::ImportProductRow>,
+    ) -> Result<df_db::ProductImportResult, PosError> {
+        Ok(self
+            .edge
+            .import_products(ImportProductsRequest { store_id, rows })
+            .await?)
+    }
+
+    /// All reorder points at a store.
+    pub async fn list_reorder_points(
+        &self,
+        store_id: Uuid,
+    ) -> Result<Vec<df_db::models::ReorderPoint>, PosError> {
+        Ok(self.edge.list_reorder_points(store_id).await?)
+    }
+
+    /// Set (or replace) the min/max reorder point for a product.
+    pub async fn set_reorder_point(
+        &self,
+        store_id: Uuid,
+        product_id: Uuid,
+        min_qty: Decimal,
+        max_qty: Decimal,
+        reorder_qty: Decimal,
+    ) -> Result<df_db::models::ReorderPoint, PosError> {
+        Ok(self
+            .edge
+            .set_reorder_point(SetReorderPointRequest {
+                product_id,
+                store_id: Some(store_id),
+                min_qty,
+                max_qty,
+                reorder_qty,
+            })
+            .await?)
+    }
+
+    /// Transport audit trail for a vendor. Returned as plain JSON
+    /// values — `TransportRecord` lives in `df-edi`, which this
+    /// crate does not depend on (same treatment as
+    /// `list_edi_documents`).
+    pub async fn list_transport_records(
+        &self,
+        vendor_id: &str,
+    ) -> Result<Vec<serde_json::Value>, PosError> {
+        let records = self.edge.list_transport_records(vendor_id).await?;
+        records
+            .iter()
+            .map(|record| {
+                serde_json::to_value(record)
+                    .map_err(|e| PosError::Edge(df_edge::EdgeError::InvalidInput(e.to_string())))
+            })
+            .collect()
     }
 
     /// Transfers out of or into a store, newest first.
@@ -989,6 +1135,132 @@ mod commands {
         app.three_way_match(po_id).await.map_err(cmd_err)
     }
 
+    // --- Vendors / Dashboards screens (same JSON shapes as the
+    // edge HTTP API; the frontend's `api.ts` mappers handle both
+    // paths). ---
+
+    #[tauri::command]
+    pub async fn list_vendors(app: State<'_, PosApp>) -> Result<Vec<VendorView>, String> {
+        app.list_vendors().await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn get_vendor(app: State<'_, PosApp>, id: Uuid) -> Result<VendorDetail, String> {
+        app.get_vendor(id).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn create_vendor(
+        app: State<'_, PosApp>,
+        name: String,
+        display_name: Option<String>,
+        contact_name: Option<String>,
+        email: Option<String>,
+        phone: Option<String>,
+        edi_enabled: Option<bool>,
+    ) -> Result<VendorView, String> {
+        app.create_vendor(name, display_name, contact_name, email, phone, edi_enabled)
+            .await
+            .map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn update_vendor(
+        app: State<'_, PosApp>,
+        id: Uuid,
+        display_name: Option<String>,
+        contact_name: Option<String>,
+        email: Option<String>,
+        phone: Option<String>,
+        edi_enabled: Option<bool>,
+    ) -> Result<VendorView, String> {
+        app.update_vendor(id, display_name, contact_name, email, phone, edi_enabled)
+            .await
+            .map_err(cmd_err)
+    }
+
+    /// Parse a `YYYY-MM-DD` command argument (same rule as the HTTP
+    /// `bi_date` helper: a malformed date is an error, not a
+    /// default).
+    fn dashboard_date(text: &str, label: &str) -> Result<chrono::NaiveDate, String> {
+        chrono::NaiveDate::from_str(text)
+            .map_err(|_| format!("{label} must be YYYY-MM-DD, got {text:?}"))
+    }
+
+    #[tauri::command]
+    pub async fn get_dashboard(
+        app: State<'_, PosApp>,
+        store_id: Uuid,
+        start: String,
+        end: String,
+    ) -> Result<DashboardAggregate, String> {
+        let start = dashboard_date(&start, "start")?;
+        let end = dashboard_date(&end, "end")?;
+        app.get_dashboard(store_id, start, end)
+            .await
+            .map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn get_kpi_dashboard(
+        app: State<'_, PosApp>,
+        store_id: Uuid,
+        start: String,
+        end: String,
+        as_of: Option<String>,
+    ) -> Result<KpiDashboard, String> {
+        let start = dashboard_date(&start, "start")?;
+        let end = dashboard_date(&end, "end")?;
+        let as_of = match as_of {
+            Some(text) => dashboard_date(&text, "as_of")?,
+            None => end,
+        };
+        app.get_kpi_dashboard(store_id, start, end, as_of)
+            .await
+            .map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn import_products(
+        app: State<'_, PosApp>,
+        store_id: Option<Uuid>,
+        rows: Vec<df_db::ImportProductRow>,
+    ) -> Result<df_db::ProductImportResult, String> {
+        app.import_products(store_id, rows).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn list_reorder_points(
+        app: State<'_, PosApp>,
+        store_id: Uuid,
+    ) -> Result<Vec<df_db::models::ReorderPoint>, String> {
+        app.list_reorder_points(store_id).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn set_reorder_point(
+        app: State<'_, PosApp>,
+        store_id: Uuid,
+        product_id: Uuid,
+        min_qty: Decimal,
+        max_qty: Decimal,
+        reorder_qty: Decimal,
+    ) -> Result<df_db::models::ReorderPoint, String> {
+        app.set_reorder_point(store_id, product_id, min_qty, max_qty, reorder_qty)
+            .await
+            .map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn list_transport_records(
+        app: State<'_, PosApp>,
+        vendor_id: String,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        app.list_transport_records(&vendor_id)
+            .await
+            .map_err(cmd_err)
+    }
+
     // --- auth commands (Phase 7): the same login / setup / switch /
     // logout / override surface as the edge HTTP `/pos/auth/*`
     // endpoints, backed by the same `df_db` functions the HTTP
@@ -1186,6 +1458,16 @@ pub fn run(app: PosApp) {
             commands::list_edi_documents,
             commands::list_po_acknowledgments,
             commands::three_way_match,
+            commands::list_vendors,
+            commands::get_vendor,
+            commands::create_vendor,
+            commands::update_vendor,
+            commands::get_dashboard,
+            commands::get_kpi_dashboard,
+            commands::import_products,
+            commands::list_reorder_points,
+            commands::set_reorder_point,
+            commands::list_transport_records,
             commands::auth_login,
             commands::auth_setup,
             commands::auth_setup_status,
@@ -1313,6 +1595,136 @@ mod tests {
         assert!(app.ship_transfer(missing).await.is_err());
         assert!(app.receive_transfer(missing).await.is_err());
         assert!(app.three_way_match(missing).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn pos_app_vendors_dashboard_import_reorder_methods() {
+        let app = PosApp::open(test_config()).await.unwrap();
+        let store_id = Uuid::from_u128(0xA000);
+        let today = chrono::Utc::now().date_naive();
+
+        // Vendors: empty on a fresh edge; create / duplicate /
+        // update / unknown-id behaviour.
+        assert!(app.list_vendors().await.unwrap().is_empty());
+        let vendor = app
+            .create_vendor(
+                "Benjamin Moore".to_string(),
+                Some("Benjamin Moore".to_string()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(vendor.name, "Benjamin Moore");
+        assert_eq!(vendor.po_count, 0);
+        assert_eq!(vendor.open_po_count, 0);
+        assert!(vendor.last_po_at.is_none());
+        assert!(!vendor.edi_enabled);
+        assert!(
+            app.create_vendor("Benjamin Moore".to_string(), None, None, None, None, None)
+                .await
+                .is_err()
+        );
+        assert!(
+            app.create_vendor("   ".to_string(), None, None, None, None, None)
+                .await
+                .is_err()
+        );
+        let updated = app
+            .update_vendor(
+                vendor.id,
+                Some("BM".to_string()),
+                Some("Pat".to_string()),
+                None,
+                None,
+                Some(true),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.name, "Benjamin Moore");
+        assert_eq!(updated.display_name.as_deref(), Some("BM"));
+        assert_eq!(updated.contact_name.as_deref(), Some("Pat"));
+        assert!(updated.edi_enabled);
+        let detail = app.get_vendor(vendor.id).await.unwrap();
+        assert_eq!(detail.vendor.id, vendor.id);
+        assert!(detail.purchase_orders.is_empty());
+        assert!(app.get_vendor(Uuid::now_v7()).await.is_err());
+
+        // Import: one real row creates one product.
+        let imported = app
+            .import_products(
+                Some(store_id),
+                vec![df_db::ImportProductRow {
+                    row: 2,
+                    sku: "BM-REGAL-1G".to_string(),
+                    name: "Regal Select Interior Gallon".to_string(),
+                    category: String::new(),
+                    line: String::new(),
+                    color: String::new(),
+                    size: "1 gal".to_string(),
+                    upc: String::new(),
+                    msrp: String::new(),
+                    map: String::new(),
+                    net_price: "50.00".to_string(),
+                    list_price: "100.00".to_string(),
+                    brand_code: "BM".to_string(),
+                }],
+            )
+            .await
+            .unwrap();
+        assert_eq!(imported.created, 1);
+        assert_eq!(imported.failed, 0);
+        let products = app
+            .search_products(None, Some("BM-REGAL-1G".to_string()), None, None)
+            .await
+            .unwrap();
+        assert_eq!(products.len(), 1);
+        let product_id = products[0].product_id;
+
+        // Reorder points: set then list.
+        assert!(app.list_reorder_points(store_id).await.unwrap().is_empty());
+        let point = app
+            .set_reorder_point(
+                store_id,
+                product_id,
+                Decimal::from(2),
+                Decimal::from(10),
+                Decimal::from(5),
+            )
+            .await
+            .unwrap();
+        assert_eq!(point.min_qty, Decimal::from(2));
+        let points = app.list_reorder_points(store_id).await.unwrap();
+        assert_eq!(points.len(), 1);
+
+        // Dashboards on an empty day: zeros, one daily row. The
+        // imported product is low-stock: its reorder point is min 2
+        // and nothing is on hand yet.
+        let dashboard = app.get_dashboard(store_id, today, today).await.unwrap();
+        assert_eq!(dashboard.sales.sale_count, 0);
+        assert!(dashboard.sales.avg_ticket.is_none());
+        assert_eq!(dashboard.daily.len(), 1);
+        assert!(dashboard.by_category.is_empty());
+        assert!(dashboard.tenders.is_empty());
+        assert_eq!(dashboard.low_stock.len(), 1);
+        assert_eq!(dashboard.low_stock[0].sku, "BM-REGAL-1G");
+        assert_eq!(dashboard.low_stock[0].on_hand, Decimal::ZERO);
+        assert_eq!(dashboard.low_stock[0].min_qty, Some(Decimal::from(2)));
+        let kpi = app
+            .get_kpi_dashboard(store_id, today, today, today)
+            .await
+            .unwrap();
+        assert_eq!(kpi.sales.sale_count, 0);
+
+        // Transport audit trail: no records for this vendor yet.
+        assert!(
+            app.list_transport_records("Benjamin Moore")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

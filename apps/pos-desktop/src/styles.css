@@ -540,6 +540,14 @@ table.ticket { width: 100%; border-collapse: collapse; margin-top: 8px; font-siz
   padding: 8px 20px;
 }
 :root[data-theme="lcars"] .theme-select { min-height: 32px; height: 32px; padding: 2px 22px; }
+/* Dense screens: the global LCARS 52px pill input would force the
+ * whole app to scroll at 1080p — same fix as the ticket qty/disc
+ * inputs (28px, 6px radius) applied to every screen input. */
+:root[data-theme="lcars"] .screen-input {
+  min-height: 28px; height: 28px; padding: 2px 8px;
+  border-width: 2px; border-radius: 6px;
+}
+:root[data-theme="lcars"] .screen-btn { min-height: 28px; padding: 2px 12px; border-radius: 6px; }
 :root[data-theme="lcars"] .omni { background: #000; border: 3px solid var(--lcars-orange); border-radius: 999px; min-height: 40px; padding: 0 20px; }
 :root[data-theme="lcars"] .omni input { border: none; background: transparent; min-height: 0; padding: 0; }
 :root[data-theme="lcars"] button { font-family: var(--font-display); letter-spacing: 0.04em; }
@@ -786,6 +794,8 @@ kbd { background: #eee; border: 1px solid #999; border-radius: 3px; padding: 0 5
   font: inherit; font-size: 0.9rem; cursor: pointer;
 }
 .screen-tabs button.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
+.screen-date { display: flex; align-items: center; gap: 4px; font-size: 0.85rem; color: var(--ink-3); }
+.screen-date .screen-input { width: auto; }
 .screen-picker { position: relative; margin-bottom: 8px; }
 .screen-picker-results {
   position: absolute; z-index: 20; left: 0; right: 0; top: 100%; margin: 2px 0 0; padding: 0;

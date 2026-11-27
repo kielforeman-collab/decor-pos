@@ -32,10 +32,14 @@ import type {
   CompletedSale,
   CustomerSearchResult,
   CustomerTransaction,
+  DashboardAggregate,
   InvoiceData,
+  KpiDashboard,
   Money,
   PriceLevel,
   PricePreview,
+  ProductImportResponse,
+  ProductImportRow,
   ProductSearchResult,
   SaleInput,
   ScanResult,
@@ -1043,4 +1047,189 @@ export async function listPoAcknowledgments(poId: string): Promise<PoAcknowledgm
 export async function threeWayMatch(poId: string): Promise<InvoiceMatchReport> {
   if (isTauri) return invoke<InvoiceMatchReport>('three_way_match', { po_id: poId })
   return http<InvoiceMatchReport>(`/edi/three-way-match?po_id=${poId}`)
+}
+
+// --- products: import, reorder points -------------------------------------
+// The import endpoint upserts by SKU (new SKUs created, existing SKUs
+// get new prices); the spreadsheet itself is parsed in the browser
+// (see productImport.ts) and only the parsed rows are sent.
+
+export async function importProducts(
+  rows: ProductImportRow[],
+): Promise<ProductImportResponse> {
+  if (isTauri) return invoke<ProductImportResponse>('import_products', { rows })
+  return http<ProductImportResponse>('/pos/inventory/import', { rows })
+}
+
+export interface ReorderPoint {
+  id: string
+  store_id: string
+  product_id: string
+  min_qty: string
+  max_qty: string
+  reorder_qty: string
+}
+
+export async function listReorderPoints(storeId: string): Promise<ReorderPoint[]> {
+  if (isTauri) {
+    try {
+      return await invoke<ReorderPoint[]>('list_reorder_points', { store_id: storeId })
+    } catch {
+      return []
+    }
+  }
+  return (await httpGetOptional<ReorderPoint[]>(`/inventory/reorder-points?store_id=${storeId}`)) ?? []
+}
+
+export async function setReorderPoint(
+  storeId: string,
+  productId: string,
+  minQty: string,
+  maxQty: string,
+  reorderQty: string,
+): Promise<ReorderPoint> {
+  const body = {
+    product_id: productId,
+    store_id: storeId,
+    min_qty: minQty,
+    max_qty: maxQty,
+    reorder_qty: reorderQty,
+  }
+  if (isTauri) return invoke<ReorderPoint>('set_reorder_point', body)
+  return http<ReorderPoint>('/inventory/reorder-points', body)
+}
+
+// --- vendors ---------------------------------------------------------------
+
+export interface Vendor {
+  id: string
+  name: string
+  display_name: string | null
+  contact_name: string | null
+  email: string | null
+  phone: string | null
+  edi_enabled: boolean
+  po_count: number
+  open_po_count: number
+  last_po_at: string | null
+}
+
+export interface VendorDetail {
+  vendor: Vendor
+  purchase_orders: PurchaseOrderView[]
+}
+
+export async function listVendors(): Promise<Vendor[]> {
+  if (isTauri) {
+    try {
+      return await invoke<Vendor[]>('list_vendors')
+    } catch {
+      return []
+    }
+  }
+  return (await httpGetOptional<Vendor[]>('/vendors')) ?? []
+}
+
+export async function getVendor(id: string): Promise<VendorDetail | null> {
+  if (isTauri) {
+    try {
+      return await invoke<VendorDetail>('get_vendor', { id })
+    } catch {
+      return null
+    }
+  }
+  return httpGetOptional<VendorDetail>(`/vendors/${encodeURIComponent(id)}`)
+}
+
+export async function createVendor(body: {
+  name: string
+  display_name?: string | null
+  contact_name?: string | null
+  email?: string | null
+  phone?: string | null
+  edi_enabled?: boolean
+}): Promise<Vendor> {
+  if (isTauri) return invoke<Vendor>('create_vendor', body)
+  return http<Vendor>('/vendors', body)
+}
+
+export async function updateVendor(
+  id: string,
+  patch: {
+    name?: string
+    display_name?: string | null
+    contact_name?: string | null
+    email?: string | null
+    phone?: string | null
+    edi_enabled?: boolean
+  },
+): Promise<Vendor> {
+  if (isTauri) return invoke<Vendor>('update_vendor', { id, ...patch })
+  return http<Vendor>(`/vendors/${encodeURIComponent(id)}`, patch)
+}
+
+export interface TransportRecord {
+  id: string
+  vendor_id: string
+  direction: string
+  transport: string
+  file_name: string
+  doc_type: string | null
+  status: string
+  error: string | null
+  created_at: string
+}
+
+export async function listTransportRecords(vendorId: string): Promise<TransportRecord[]> {
+  if (isTauri) {
+    try {
+      return await invoke<TransportRecord[]>('list_transport_records', { vendor_id: vendorId })
+    } catch {
+      return []
+    }
+  }
+  return (await httpGetOptional<TransportRecord[]>(`/edi/transport?vendor_id=${encodeURIComponent(vendorId)}`)) ?? []
+}
+
+// --- BI dashboards ---------------------------------------------------------
+
+export async function getKpiDashboard(
+  storeId: string,
+  start: string,
+  end: string,
+): Promise<KpiDashboard | null> {
+  if (isTauri) {
+    try {
+      return await invoke<KpiDashboard>('get_kpi_dashboard', {
+        store_id: storeId,
+        start,
+        end,
+        as_of: end,
+      })
+    } catch {
+      return null
+    }
+  }
+  const q = new URLSearchParams({ store_id: storeId, start, end, as_of: end })
+  return httpGetOptional<KpiDashboard>(`/bi/kpi?${q}`)
+}
+
+export async function getDashboardAggregate(
+  storeId: string,
+  start: string,
+  end: string,
+): Promise<DashboardAggregate | null> {
+  if (isTauri) {
+    try {
+      return await invoke<DashboardAggregate>('get_dashboard', {
+        store_id: storeId,
+        start,
+        end,
+      })
+    } catch {
+      return null
+    }
+  }
+  const q = new URLSearchParams({ store_id: storeId, start, end })
+  return httpGetOptional<DashboardAggregate>(`/bi/dashboard?${q}`)
 }

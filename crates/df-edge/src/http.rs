@@ -46,6 +46,9 @@
 //! * `GET /bi/kpi?store_id=&start=&end=&as_of=` — KPI dashboard
 //!   (sales, margin, inventory turns, AR aging, formula usage
 //!   tracked only; defaults to today)
+//! * `GET /bi/dashboard?store_id=&start=&end=` — dashboard
+//!   aggregate (sales, daily, by-category, tenders, top products
+//!   / customers, tint, low stock; defaults to today)
 //! * `GET /bi/eco?start=&end=&format=json|csv` — PaintCare/eco-fee
 //!   remittance by jurisdiction (defaults to the month to date)
 //! * `GET /bi/inquiry?store_id=&start=&end=&customer_id=&product_id=&doc_type=`
@@ -67,6 +70,10 @@
 //!   replenishment suggestions (one preview PO per vendor)
 //! * `POST /purchasing/orders` + `GET /purchasing/orders?store_id=` —
 //!   create / list purchase orders
+//! * `GET /vendors` + `GET /vendors/{id}` — vendors for this org
+//!   (with PO counts) / one vendor + its POs, newest first
+//! * `POST /vendors` + `POST /vendors/{id}` — create a vendor /
+//!   partial update (name is the PO key and is never editable)
 //! * `POST /purchasing/orders/{id}/receive` — receive per-line
 //!   quantities (posts `po_receive` ledger entries, updates status)
 //! * `POST /inventory/transfers` + `GET /inventory/transfers` —
@@ -181,8 +188,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use df_reports::{
-    AdHocInquiry, DailyUsageReport, EmailDelivery, InquiryRow, KpiDashboard, LowStockReport,
-    ProductThreshold,
+    AdHocInquiry, DailyUsageReport, DashboardAggregate, EmailDelivery, InquiryRow, KpiDashboard,
+    LowStockReport, ProductThreshold,
 };
 use df_tinter::TinterError;
 use futures_util::{SinkExt, StreamExt};
@@ -225,6 +232,7 @@ use crate::tinting::{
     ColorantsResponse, CreateTintFormulaRequest, DispenseTintRequest, DispenseTintResponse,
 };
 use crate::types::{CompletedSale, PricePreview, ReturnLineInput, SaleInput, TenderInput, ZReport};
+use crate::vendors::{CreateVendorRequest, UpdateVendorRequest, VendorDetail, VendorView};
 use df_auth::{OverrideCredential, Permission};
 use df_auth_http::{
     AuthRule, AuthSession, Gate, LoginResponse, LogoutResponse, OverrideVerifyResponse,
@@ -771,6 +779,18 @@ async fn bi_kpi(
         .map_err(err_response)
 }
 
+async fn bi_dashboard(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<BiKpiQuery>,
+) -> Result<Json<DashboardAggregate>, (StatusCode, Json<ErrorResponse>)> {
+    let today = chrono::Utc::now().date_naive();
+    let (start, end) = bi_range(&query.start, &query.end, today, today)?;
+    edge.dashboard_aggregate(store_or_default(&edge, query.store_id), start, end)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
 async fn bi_eco(
     State(edge): State<Arc<Edge>>,
     Query(query): Query<BiEcoQuery>,
@@ -966,6 +986,40 @@ async fn receive_purchase_order(
     Json(body): Json<ReceivePurchaseOrderRequest>,
 ) -> HandlerResult<PurchaseOrderView> {
     edge.receive_purchase_order(id, body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+// --- vendors ---------------------------------------------------------------
+
+async fn list_vendors(State(edge): State<Arc<Edge>>) -> HandlerResult<Vec<VendorView>> {
+    edge.list_vendors().await.map(Json).map_err(err_response)
+}
+
+async fn get_vendor(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<VendorDetail> {
+    edge.get_vendor(id).await.map(Json).map_err(err_response)
+}
+
+async fn create_vendor(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<CreateVendorRequest>,
+) -> HandlerResult<VendorView> {
+    edge.create_vendor(body)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn update_vendor(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateVendorRequest>,
+) -> HandlerResult<VendorView> {
+    edge.update_vendor(id, body)
         .await
         .map(Json)
         .map_err(err_response)
@@ -2235,6 +2289,7 @@ pub fn router(edge: Edge) -> Router {
         .route("/pos/reports/daily-usage", get(daily_usage))
         .route("/pos/reports/low-stock", get(low_stock))
         .route("/bi/kpi", get(bi_kpi))
+        .route("/bi/dashboard", get(bi_dashboard))
         .route("/bi/eco", get(bi_eco))
         .route("/bi/inquiry", get(bi_inquiry))
         .route("/bi/email-outbox", get(bi_email_outbox))
@@ -2263,6 +2318,8 @@ pub fn router(edge: Edge) -> Router {
         .route("/inventory/counts", get(list_counts))
         .route("/inventory/shelf-tags", get(shelf_tag))
         .route("/purchasing/orders", get(list_purchase_orders))
+        .route("/vendors", get(list_vendors))
+        .route("/vendors/{id}", get(get_vendor))
         .route("/stores", get(list_stores))
         .route_layer(inventory_view_gate);
 
@@ -2278,6 +2335,8 @@ pub fn router(edge: Edge) -> Router {
 
     let purchasing_routes = Router::new()
         .route("/purchasing/orders", post(create_purchase_order))
+        .route("/vendors", post(create_vendor))
+        .route("/vendors/{id}", post(update_vendor))
         .route_layer(po_create_gate);
 
     let receive_routes = Router::new()
@@ -2633,6 +2692,113 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "voided");
+    }
+
+    #[tokio::test]
+    async fn vendors_and_dashboard_over_http() {
+        let edge = test_edge().await;
+        let product_id = seed_product(&edge).await;
+        let users = seeded_users(&edge).await;
+        let router = edge.router();
+        let manager = Some(users.manager.token.as_str());
+        let store_id = edge.config().store_id;
+        let today = chrono::Utc::now().date_naive();
+
+        // No vendors on a fresh edge.
+        let (status, body) = get_json(router.clone(), "/vendors", manager).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, serde_json::json!([]));
+
+        // Creating a PO auto-creates its vendor row (the same
+        // backfill rule the migration applies to older POs).
+        let (status, body) = post_json(
+            router.clone(),
+            "/purchasing/orders",
+            serde_json::json!({
+                "vendor_id": "Benjamin Moore",
+                "store_id": store_id.to_string(),
+                "lines": [{"product_id": product_id.to_string(), "qty": "2"}],
+            }),
+            manager,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["vendor_id"], "Benjamin Moore");
+
+        let (status, body) = get_json(router.clone(), "/vendors", manager).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["name"], "Benjamin Moore");
+        assert_eq!(body[0]["display_name"], "Benjamin Moore");
+        assert_eq!(body[0]["po_count"], 1);
+        assert_eq!(body[0]["open_po_count"], 1);
+        assert!(body[0]["last_po_at"].is_string());
+        assert_eq!(body[0]["contact_name"], serde_json::Value::Null);
+        let vendor_id = body[0]["id"].as_str().unwrap().to_string();
+
+        let (status, body) =
+            get_json(router.clone(), &format!("/vendors/{vendor_id}"), manager).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["purchase_orders"].as_array().unwrap().len(), 1);
+        assert_eq!(body["purchase_orders"][0]["vendor_id"], "Benjamin Moore");
+
+        // Create + update through the vendor endpoints.
+        let (status, body) = post_json(
+            router.clone(),
+            "/vendors",
+            serde_json::json!({"name": "Coast Distributors"}),
+            manager,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["po_count"], 0);
+        assert_eq!(body["last_po_at"], serde_json::Value::Null);
+        let coast_id = body["id"].as_str().unwrap().to_string();
+        let (status, _) = post_json(
+            router.clone(),
+            "/vendors",
+            serde_json::json!({"name": "Coast Distributors"}),
+            manager,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, body) = post_json(
+            router.clone(),
+            &format!("/vendors/{coast_id}"),
+            serde_json::json!({"display_name": "Coast", "edi_enabled": true}),
+            manager,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["name"], "Coast Distributors");
+        assert_eq!(body["display_name"], "Coast");
+        assert_eq!(body["edi_enabled"], true);
+
+        // Dashboard on an empty day: zeros + one daily row, and the
+        // KPI endpoint still answers on the same range.
+        let (status, body) = get_json(
+            router.clone(),
+            &format!("/bi/dashboard?store_id={store_id}&start={today}&end={today}"),
+            manager,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["sales"]["sale_count"], 0);
+        assert_eq!(body["sales"]["avg_ticket"], serde_json::Value::Null);
+        assert_eq!(body["daily"].as_array().unwrap().len(), 1);
+        assert_eq!(body["daily"][0]["date"], today.to_string());
+        assert_eq!(body["by_category"], serde_json::json!([]));
+        assert_eq!(body["tenders"], serde_json::json!([]));
+        assert_eq!(body["top_products"], serde_json::json!([]));
+        assert_eq!(body["low_stock"], serde_json::json!([]));
+        let (status, body) = get_json(
+            router.clone(),
+            &format!("/bi/kpi?store_id={store_id}&start={today}&end={today}"),
+            manager,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["sales"]["sale_count"], 0);
     }
 
     #[tokio::test]

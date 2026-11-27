@@ -19,7 +19,7 @@ use crate::codec::*;
 use crate::error::DbError;
 use crate::models::{PurchaseOrderLineRow, PurchaseOrderRow};
 
-fn po_from_row(row: &sqlx::any::AnyRow) -> Result<PurchaseOrderRow, DbError> {
+pub(crate) fn po_from_row(row: &sqlx::any::AnyRow) -> Result<PurchaseOrderRow, DbError> {
     Ok(PurchaseOrderRow {
         id: uuid_col(row, "id")?,
         po_number: text_col(row, "po_number")?,

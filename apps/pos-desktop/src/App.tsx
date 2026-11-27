@@ -38,6 +38,9 @@ import InvoiceView from './components/InvoiceView'
 import OrdersScreen from './components/OrdersScreen'
 import TransfersScreen from './components/TransfersScreen'
 import AccountsScreen from './components/AccountsScreen'
+import ProductsScreen from './components/ProductsScreen'
+import VendorsScreen from './components/VendorsScreen'
+import DashboardsScreen from './components/DashboardsScreen'
 import PaymentModal from './components/PaymentModal'
 import ProductSearch from './components/ProductSearch'
 import Sidebar from './components/Sidebar'
@@ -914,15 +917,13 @@ export default function App() {
       />
       <Sidebar
         activeNav={activeNav}
-        currentThemeLabel={theme.themeDef.label}
         onNavigate={(name) => {
-          if (name === 'Transactions' || name === 'Orders' || name === 'Transfers' || name === 'Customers') {
+          if (name === 'Transactions' || name === 'Orders' || name === 'Transfers' || name === 'Customers' || name === 'Products' || name === 'Vendors' || name === 'Dashboards') {
             setActiveNav(name)
           } else {
             say(`${name} — not wired up in this build yet.`)
           }
         }}
-        onCycleTheme={theme.cycleTheme}
         onChangeLocation={() => say('Location switching is not wired in this build — single store (Main counter).')}
         onSwitchOperator={() => setSwitching(true)}
         onSignOut={() => void doLogout()}
@@ -935,6 +936,12 @@ export default function App() {
           <TransfersScreen storeId={storeId} onToast={say} />
         ) : activeNav === 'Customers' ? (
           <AccountsScreen storeId={storeId} onToast={say} />
+        ) : activeNav === 'Products' ? (
+          <ProductsScreen storeId={storeId} onToast={say} />
+        ) : activeNav === 'Vendors' ? (
+          <VendorsScreen storeId={storeId} onToast={say} />
+        ) : activeNav === 'Dashboards' ? (
+          <DashboardsScreen storeId={storeId} onToast={say} />
         ) : (
           <>
         <section className="register">

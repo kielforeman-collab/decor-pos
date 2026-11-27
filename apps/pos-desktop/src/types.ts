@@ -524,3 +524,124 @@ export function cmpDecimal(a: string, b: string): number {
   const d = n(a) - n(b)
   return d < 0n ? -1 : d > 0n ? 1 : 0
 }
+
+// --- Product import (ported from web-backoffice types.ts) -----------------
+// One parsed row of a Benjamin Moore price list. Category, UPC, MSRP
+// and MAP are not stored (no columns for them on the edge).
+export interface ProductImportRow {
+  row: number
+  sku: string
+  name: string
+  category: string
+  line: string
+  color: string
+  size: string
+  upc: string
+  msrp: string
+  map: string
+  net_price: string
+  list_price: string
+  brand_code: string
+}
+
+export interface ProductImportFailure {
+  row: number
+  sku: string
+  reason: string
+}
+
+export interface ProductImportResponse {
+  created: number
+  updated: number
+  failed: number
+  failures: ProductImportFailure[]
+}
+
+// --- BI dashboards (ported from web-backoffice types.ts) -----------------
+// Shapes mirror the edge JSON (df-reports kpi). Decimals serialize as
+// strings; Money as {amount, currency}.
+export interface KpiSales {
+  sale_count: number
+  return_count: number
+  gross_sales: Money
+  returns: Money
+  net_sales: Money
+  tax_total: Money
+  eco_fee_total: Money
+  grand_total: Money
+  avg_ticket: Money | null
+}
+
+export interface KpiMargin {
+  revenue: Money
+  cogs: Money
+  gross_profit: Money
+  margin_pct: string | null
+}
+
+export interface KpiInventory {
+  on_hand_value: Money
+  avg_inventory_value: Money
+  turns: string | null
+}
+
+export interface FormulaColorUsage {
+  color_code: string
+  color_name: string
+  formulas: number
+}
+
+export interface FormulaUsage {
+  formulas_created: number
+  per_color: FormulaColorUsage[]
+  total_tint_cost: Money
+}
+
+export interface AgingSummary {
+  current: Money
+  days_31_60: Money
+  days_61_90: Money
+  days_91_120: Money
+  over_120: Money
+}
+
+export interface KpiDashboard {
+  org_id: string
+  store_id: string
+  start: string
+  end: string
+  as_of: string
+  currency: 'Usd' | 'Cad'
+  sales: KpiSales
+  margin: KpiMargin
+  inventory: KpiInventory
+  ar_aging: AgingSummary
+  total_open_ar: Money
+  formulas: FormulaUsage
+}
+
+// --- Dashboard aggregate (GET /bi/dashboard contract) --------------------
+export interface DashboardAggregate {
+  store_id: string
+  start: string
+  end: string
+  sales: {
+    sale_count: number
+    return_count: number
+    gross_sales: Money
+    net_sales: Money
+    grand_total: Money
+    avg_ticket: Money | null
+  }
+  daily: { date: string; net_sales: Money; sale_count: number }[]
+  by_category: { category: string; net_sales: Money; share_pct: number }[]
+  tenders: { tender: string; amount: Money; count: number; share_pct: number }[]
+  top_products: { product_id: string; sku: string; name: string; qty: string; revenue: Money }[]
+  top_customers: { customer_id: string; name: string; net_sales: Money; sale_count: number }[]
+  tint: {
+    formulas_created: number
+    total_tint_cost: Money
+    per_color: FormulaColorUsage[]
+  }
+  low_stock: { product_id: string; sku: string; name: string; on_hand: string; min_qty: string | null }[]
+}

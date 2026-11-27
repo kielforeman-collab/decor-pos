@@ -402,6 +402,25 @@ pub struct PriceLevel {
     pub discount_pct: Decimal,
 }
 
+/// One row of `vendors` (migration `0015_vendors`): back-office
+/// master data for the vendor-id string used on purchase orders
+/// (e.g. `"Benjamin Moore"`). `name` is the PO key — it is never
+/// edited after creation — while `display_name` is the human label
+/// shown in the UI. Contact fields are `None` until entered by
+/// hand; the migration backfill leaves them `NULL`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Vendor {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub name: String,
+    pub display_name: Option<String>,
+    pub contact_name: Option<String>,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub edi_enabled: bool,
+    pub created_at: DateTime<Utc>,
+}
+
 /// One row of `transactions` (spec §5.5). Money is `Decimal` at scale 4;
 /// `doc_type` is `sale` | `return` | `quote` | `order` | `layaway`,
 /// `status` is `open` | `parked` | `completed` | `voided`.

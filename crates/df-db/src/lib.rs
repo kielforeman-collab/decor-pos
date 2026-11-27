@@ -103,6 +103,7 @@ pub mod repos;
 pub mod scheduling;
 pub mod tint;
 pub mod transactions;
+pub mod vendors;
 
 pub use ar::*;
 pub use auth::*;
@@ -120,6 +121,7 @@ pub use scheduling::*;
 pub use sqlx::AnyPool;
 pub use tint::*;
 pub use transactions::*;
+pub use vendors::*;
 
 /// Which migration set to apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

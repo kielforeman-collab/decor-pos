@@ -643,8 +643,12 @@ impl Edge {
     }
 
     /// Build the API view of a PO: header + lines with SKUs and
-    /// ledger-derived received quantities.
-    async fn purchase_order_view(&self, id: Uuid) -> Result<PurchaseOrderView, EdgeError> {
+    /// ledger-derived received quantities. `pub(crate)` so the
+    /// vendors module can reuse it for a vendor's PO list.
+    pub(crate) async fn purchase_order_view(
+        &self,
+        id: Uuid,
+    ) -> Result<PurchaseOrderView, EdgeError> {
         let po = df_db::get_purchase_order(self.pool(), id).await?;
         let lines = df_db::list_purchase_order_lines(self.pool(), id).await?;
         let received = df_db::po_received_by_product(self.pool(), id).await?;
@@ -740,6 +744,10 @@ impl Edge {
         };
         let mut db_tx = self.pool().begin().await.map_err(DbError::Sqlx)?;
         df_db::insert_purchase_order(&mut *db_tx, &po).await?;
+        // Every PO vendor has a vendor row: the migration backfill
+        // covers POs that predate the `vendors` table, this covers
+        // POs created after it (a no-op when the row exists).
+        df_db::ensure_vendor_for_po(&mut *db_tx, self.config().org_id, &po.vendor_id, now).await?;
         for line in &lines {
             let mut line = line.clone();
             line.po_id = po_id;

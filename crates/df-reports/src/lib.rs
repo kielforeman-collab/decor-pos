@@ -11,6 +11,10 @@
 //! * [`kpi_dashboard`] — Phase 6: one store's KPI dashboard
 //!   (sales, margin, inventory turns, AR aging, formula usage
 //!   tracked only) plus [`run_inquiry`] ad-hoc inquiries.
+//! * [`dashboard_aggregate`] — Products / Vendors / Dashboards
+//!   screens: one store's dashboard aggregate (sales, daily,
+//!   by-category, tenders, top products / customers, tint, low
+//!   stock), reusing the KPI sales + tint derivations.
 //! * [`eco_remittance_report`] — Phase 6: PaintCare/eco-fee
 //!   remittance by jurisdiction (JSON + [`render_eco_csv`]).
 //! * [`deliver_to_outbox`] — Phase 6: scheduled email delivery
@@ -37,6 +41,7 @@
 //! min/max table lands in Phase 3.
 
 pub mod daily;
+pub mod dashboard;
 pub mod eco;
 pub mod error;
 pub mod kpi;
@@ -46,6 +51,10 @@ pub mod shortage;
 pub mod statement;
 
 pub use daily::{ColorUsage, ColorantUsage, DailyUsageReport, SalesTotals, daily_usage_report};
+pub use dashboard::{
+    CategoryRow, DailySalesRow, DashboardAggregate, DashboardSales, DashboardTint, LowStockRow,
+    TenderRow, TopCustomerRow, TopProductRow, dashboard_aggregate,
+};
 pub use eco::{EcoJurisdictionRow, EcoRemittanceReport, eco_remittance_report, render_eco_csv};
 pub use error::ReportError;
 pub use kpi::{

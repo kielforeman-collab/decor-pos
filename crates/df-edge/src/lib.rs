@@ -56,6 +56,7 @@ pub mod pricing;
 pub mod scheduling;
 pub mod tinting;
 pub mod types;
+pub mod vendors;
 
 pub use ar::PostedArPayment;
 pub use counter::{ProductSearchResult, TransactionView};
@@ -73,6 +74,7 @@ pub use df_edi::{
     InvoiceMatchReport, InvoiceMatchReportRow, PoAcknowledgmentRow, PriceCatalogApplicationRow,
     TransportRecord,
 };
+pub use df_reports::{DashboardAggregate, KpiDashboard};
 pub use edge::Edge;
 pub use edi::{
     CatalogImportError, CatalogImportResponse, EDI_SENDER_ID, IntakeRequest, IntakeResponse,
@@ -112,3 +114,4 @@ pub use types::{
     CompletedSale, EdgeConfig, PricePreview, PricePreviewLine, ReturnLineInput, SaleInput,
     SaleLineInput, TenderInput, ZReport,
 };
+pub use vendors::{CreateVendorRequest, UpdateVendorRequest, VendorDetail, VendorView};
