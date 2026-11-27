@@ -101,6 +101,7 @@ async function httpGetOptional<T>(path: string): Promise<T | null> {
 export const providerSwitchable = isTauri
 
 export async function getStatus(): Promise<{
+  store_id: string
   store_name: string
   provider: string
   pending_outbox: number
@@ -109,6 +110,7 @@ export async function getStatus(): Promise<{
   const health = await http<{ store_id: string; status: string }>('/health')
   const sync = await http<SyncState>('/pos/sync/state')
   return {
+    store_id: health.store_id,
     store_name: `Store ${health.store_id.slice(0, 8)}`,
     provider: 'mock (df-server edge)',
     pending_outbox: sync.pending_count,
@@ -688,4 +690,357 @@ export async function saveTintFormula(body: {
     if (e instanceof Error && e.message === 'HTTP 404') return null
     throw e
   }
+}
+
+// --- stores / orders / transfers / accounts ---
+
+export async function setCustomerPriceLevel(
+  id: string,
+  priceLevelId: string | null,
+): Promise<CustomerSearchResult> {
+  if (isTauri) {
+    const raw = await invoke<RawCustomer>('set_customer_price_level', {
+      id,
+      price_level_id: priceLevelId,
+    })
+    return mapCustomer(raw)
+  }
+  const raw = await http<RawCustomer>(`/pos/customers/${id}/price-level`, {
+    price_level_id: priceLevelId,
+  })
+  return mapCustomer(raw)
+}
+
+export interface Store {
+  id: string
+  org_id: string
+  code: string
+  name: string
+  country_code: string | null
+  region_code: string | null
+  postal_code: string | null
+  currency: string
+  tax_zone_id: string | null
+  timezone: string
+  is_warehouse: boolean
+}
+
+export interface InventoryBalance {
+  product_id: string
+  sku: string
+  name: string
+  base_uom: string
+  // Plain decimal strings on the wire (df_db::InventoryBalance
+  // carries Decimals, not Money).
+  list_price: string
+  standard_cost: string
+  msrp: string | null
+  map: string | null
+  on_hand: string
+  committed: string
+  on_order: string
+  in_transit: string
+}
+
+export interface SuggestedLine {
+  product_id: string
+  sku: string
+  description: string
+  qty: string
+  uom: string
+  unit_cost: string
+  on_hand: string
+  on_order: string
+  min_qty: string
+  max_qty: string
+  velocity_per_day: string
+}
+
+// One preview PO per vendor — the real PO number is assigned on create.
+export interface SuggestedPurchaseOrder {
+  po_number: string
+  vendor_id: string
+  lines: SuggestedLine[]
+}
+
+export interface PurchaseOrderLine {
+  id: string
+  line_no: number
+  product_id: string
+  sku: string
+  description: string
+  qty: string
+  received_qty: string
+  uom: string
+  unit_cost: string
+}
+
+export interface PurchaseOrderView {
+  id: string
+  po_number: string
+  store_id: string
+  vendor_id: string
+  status: string
+  total: string
+  created_at: string
+  lines: PurchaseOrderLine[]
+}
+
+export interface TransferLine {
+  product_id: string
+  qty: string
+  unit_cost: string
+}
+
+export interface Transfer {
+  id: string
+  from_store_id: string
+  to_store_id: string
+  status: string
+  created_at: string
+  lines: TransferLine[]
+}
+
+export interface AgingCustomer {
+  customer_id: string
+  account_number: string
+  balance: Money
+  // [current, 31–60, 61–90, 91–120, 120+]
+  buckets: [Money, Money, Money, Money, Money]
+}
+
+export interface AgingView {
+  as_of: string
+  totals: [Money, Money, Money, Money, Money]
+  customers: AgingCustomer[]
+}
+
+export interface CollectionsCustomer {
+  customer_id: string
+  account_number: string
+  company_name: string | null
+  balance: Money
+  credit_limit: Money
+  credit_hold: boolean
+  overdue: Money
+  oldest_due_date: string | null
+}
+
+export interface CollectionsView {
+  as_of: string
+  customers: CollectionsCustomer[]
+}
+
+export interface PostedArPayment {
+  payment_entry_id: string
+  customer_id: string
+  amount: Money
+  method: string
+  // (charge entry id, allocated amount) pairs, oldest first.
+  allocations: [string, string][]
+}
+
+export interface EdiDocumentRow {
+  id: string
+  doc_type: string
+  direction: string
+  vendor_id: string
+  related_po_id: string | null
+  received_at: string
+}
+
+export interface PoAcknowledgmentRow {
+  id: string
+  po_id: string
+  vendor_id: string
+  acknowledgement_number: string
+  status: string
+  received_at: string
+}
+
+export interface MatchLine {
+  po_line_no: number | null
+  vendor_sku: string
+  po_qty: string
+  received_qty: string
+  invoiced_qty: string
+  po_unit_cost: string
+  invoiced_unit_price: string
+  qty_variance: string
+  price_variance_per_unit: string
+  total_variance_amount: string
+  status: string
+}
+
+export interface InvoiceMatchReport {
+  id: string
+  po_number: string
+  invoice_number: string
+  shipment_id: string
+  status: string
+  lines: MatchLine[]
+  po_total: string
+  invoiced_total: string
+  total_variance_amount: string
+}
+
+export async function listStores(): Promise<Store[]> {
+  if (isTauri) return invoke<Store[]>('list_stores', {})
+  return http<Store[]>('/stores')
+}
+
+export async function inventoryBalances(storeId: string): Promise<InventoryBalance[]> {
+  if (isTauri) return invoke<InventoryBalance[]>('inventory_balances', { store_id: storeId })
+  return http<InventoryBalance[]>(`/inventory/balances?store_id=${storeId}`)
+}
+
+export async function suggestReplenishment(
+  storeId: string | null,
+  days?: number,
+  leadTimeDays?: number,
+): Promise<SuggestedPurchaseOrder[]> {
+  if (isTauri) {
+    return invoke<SuggestedPurchaseOrder[]>('suggest_replenishment', {
+      store_id: storeId,
+      days: days ?? null,
+      lead_time_days: leadTimeDays ?? null,
+    })
+  }
+  return http<SuggestedPurchaseOrder[]>('/purchasing/replenishment/suggest', {
+    store_id: storeId,
+    days: days ?? null,
+    lead_time_days: leadTimeDays ?? null,
+  })
+}
+
+export async function listPurchaseOrders(storeId: string): Promise<PurchaseOrderView[]> {
+  if (isTauri) return invoke<PurchaseOrderView[]>('list_purchase_orders', { store_id: storeId })
+  return http<PurchaseOrderView[]>(`/purchasing/orders?store_id=${storeId}`)
+}
+
+export interface PoLineInput {
+  product_id: string
+  qty: string
+  uom?: string
+  unit_cost?: string
+}
+
+export async function createPurchaseOrder(
+  vendorId: string,
+  storeId: string | null,
+  lines: PoLineInput[],
+): Promise<PurchaseOrderView> {
+  if (isTauri) {
+    return invoke<PurchaseOrderView>('create_purchase_order', {
+      vendor_id: vendorId,
+      store_id: storeId,
+      lines,
+    })
+  }
+  return http<PurchaseOrderView>('/purchasing/orders', {
+    vendor_id: vendorId,
+    store_id: storeId,
+    lines,
+  })
+}
+
+export async function receivePurchaseOrder(
+  id: string,
+  lines: { product_id: string; qty: string }[],
+): Promise<PurchaseOrderView> {
+  if (isTauri) return invoke<PurchaseOrderView>('receive_purchase_order', { id, lines })
+  return http<PurchaseOrderView>(`/purchasing/orders/${id}/receive`, { lines })
+}
+
+export async function listTransfers(storeId: string): Promise<Transfer[]> {
+  if (isTauri) return invoke<Transfer[]>('list_transfers', { store_id: storeId })
+  return http<Transfer[]>(`/inventory/transfers?store_id=${storeId}`)
+}
+
+export async function createTransfer(
+  fromStoreId: string,
+  toStoreId: string,
+  lines: TransferLine[],
+): Promise<Transfer> {
+  if (isTauri) {
+    return invoke<Transfer>('create_transfer', {
+      from_store_id: fromStoreId,
+      to_store_id: toStoreId,
+      lines,
+    })
+  }
+  return http<Transfer>('/inventory/transfers', {
+    from_store_id: fromStoreId,
+    to_store_id: toStoreId,
+    lines,
+  })
+}
+
+export async function shipTransfer(id: string): Promise<Transfer> {
+  if (isTauri) return invoke<Transfer>('ship_transfer', { id })
+  return http<Transfer>(`/inventory/transfers/${id}/ship`, {})
+}
+
+export async function receiveTransfer(id: string): Promise<Transfer> {
+  if (isTauri) return invoke<Transfer>('receive_transfer', { id })
+  return http<Transfer>(`/inventory/transfers/${id}/receive`, {})
+}
+
+export async function getArAging(storeId: string): Promise<AgingView> {
+  if (isTauri) return invoke<AgingView>('get_ar_aging', { store_id: storeId, as_of: null })
+  return http<AgingView>(`/ar/aging?store_id=${storeId}`)
+}
+
+export async function getArCollections(storeId: string): Promise<CollectionsView> {
+  if (isTauri) {
+    return invoke<CollectionsView>('get_ar_collections', { store_id: storeId, as_of: null })
+  }
+  return http<CollectionsView>(`/ar/collections?store_id=${storeId}`)
+}
+
+export async function postArPayment(
+  customerId: string,
+  amount: Money,
+  method: string,
+): Promise<PostedArPayment> {
+  if (isTauri) {
+    return invoke<PostedArPayment>('post_ar_payment', {
+      customer_id: customerId,
+      amount,
+      method,
+    })
+  }
+  return http<PostedArPayment>('/ar/payments', { customer_id: customerId, amount, method })
+}
+
+export async function sendPurchaseOrder(
+  id: string,
+  outDir?: string,
+): Promise<{ po_id: string; path: string; raw: string }> {
+  if (isTauri) {
+    return invoke<{ po_id: string; path: string; raw: string }>('send_purchase_order', {
+      id,
+      out_dir: outDir ?? null,
+    })
+  }
+  return http<{ po_id: string; path: string; raw: string }>(`/edi/purchase-orders/${id}/send`, {
+    out_dir: outDir ?? null,
+  })
+}
+
+export async function listEdiDocuments(poId: string): Promise<EdiDocumentRow[]> {
+  if (isTauri) return invoke<EdiDocumentRow[]>('list_edi_documents', { po_id: poId })
+  return http<EdiDocumentRow[]>(`/edi/documents?po_id=${poId}`)
+}
+
+export async function listPoAcknowledgments(poId: string): Promise<PoAcknowledgmentRow[]> {
+  if (isTauri) {
+    return invoke<PoAcknowledgmentRow[]>('list_po_acknowledgments', { po_id: poId })
+  }
+  return http<PoAcknowledgmentRow[]>(`/edi/acknowledgments?po_id=${poId}`)
+}
+
+export async function threeWayMatch(poId: string): Promise<InvoiceMatchReport> {
+  if (isTauri) return invoke<InvoiceMatchReport>('three_way_match', { po_id: poId })
+  return http<InvoiceMatchReport>(`/edi/three-way-match?po_id=${poId}`)
 }

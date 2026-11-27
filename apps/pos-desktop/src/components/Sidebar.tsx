@@ -14,7 +14,7 @@ const GROUPS: { title: string; items: { name: string; badge?: string }[] }[] = [
     title: 'Point of sale',
     items: [
       { name: 'Transactions' },
-      { name: 'Receivables' },
+      { name: 'Accounts' },
       { name: 'Cash drawers' },
       { name: 'Deliveries', badge: '2' },
     ],

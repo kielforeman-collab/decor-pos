@@ -716,3 +716,104 @@ table.sheet-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .login .actions button { font-family: 'Courier New', Courier, monospace; padding: 8px 14px; font-size: 0.95rem; border: 1px solid #1c1c1c; border-radius: 4px; background: #1c1c1c; color: #fff; cursor: pointer; }
 .login .error { font-family: 'Courier New', Courier, monospace; }
 kbd { background: #eee; border: 1px solid #999; border-radius: 3px; padding: 0 5px; font-family: inherit; }
+
+/* --- Orders / Transfers / Accounts screens --- */
+/* Screens span both main columns (register + till aside are hidden
+   while a screen is active). Dense tables, compact rows, theme
+   tokens only — no hard-coded colours. */
+.screen {
+  grid-column: 1 / -1;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+  max-height: calc(100vh - 150px);
+}
+.screen-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.screen-head h2 { font-size: 1.05rem; margin: 0; font-family: var(--font-display); flex: 1; }
+.screen-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.screen-btn {
+  min-height: 32px; padding: 4px 12px; border: 1px solid var(--line-strong);
+  background: var(--panel-2); color: var(--ink); border-radius: var(--pill);
+  font: inherit; font-size: 0.9rem; cursor: pointer; white-space: nowrap;
+}
+.screen-btn:disabled { opacity: 0.45; cursor: default; }
+.screen-btn-primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
+.screen-btn-ghost { background: transparent; }
+.screen-input {
+  background: var(--field); color: var(--ink); border: 1px solid var(--line-strong);
+  border-radius: var(--pill); padding: 5px 8px; font: inherit; font-size: 0.95rem;
+  min-height: 32px; width: 100%;
+}
+.screen-input:disabled { opacity: 0.55; }
+.screen-qty { width: 84px; text-align: right; font-family: var(--font-mono); }
+.screen-panel {
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 6px; padding: 8px 10px; min-width: 0;
+}
+.screen-panel h3 { margin: 0 0 6px; font-size: 0.95rem; font-family: var(--font-display); }
+.screen-panel h4 { margin: 0 0 4px; font-size: 0.9rem; }
+.screen-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 10px; align-items: start; }
+.screen-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+.screen-table th, .screen-table td { padding: 3px 6px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.screen-table th { color: var(--ink-3); font-weight: 600; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.03em; }
+.screen-table .num { text-align: right; font-family: var(--font-mono); }
+.screen-table .mono, .screen .mono { font-family: var(--font-mono); }
+.screen-table-clickable tbody tr { cursor: pointer; }
+.screen-table-clickable tbody tr:hover { background: var(--sel); }
+.screen-table tbody tr.selected { background: var(--sel); outline: 1px solid var(--line-strong); outline-offset: -1px; }
+.screen-empty { color: var(--ink-3); margin: 6px 0; font-size: 0.92rem; }
+.screen-meta { margin: 0 0 6px; font-size: 0.92rem; color: var(--ink-2); }
+.screen-note { color: var(--ink-3); font-size: 0.9rem; margin: 0; }
+.screen-note-inline { color: var(--ink-3); font-size: 0.88rem; }
+.screen-sub { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 8px; }
+.screen-form-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 8px; }
+.screen-form-row label { display: flex; flex-direction: column; gap: 3px; font-size: 0.85rem; color: var(--ink-3); min-width: 180px; flex: 1; max-width: 320px; }
+.screen-group { margin-bottom: 10px; }
+.screen-group-head { display: flex; gap: 10px; align-items: center; margin-bottom: 4px; }
+.screen-group-head span:first-child { font-weight: 700; }
+.screen-group-head span:nth-child(2) { color: var(--ink-3); font-size: 0.88rem; }
+.screen-group-head .screen-btn { margin-left: auto; }
+.screen-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.screen-tabs button {
+  padding: 4px 12px; min-height: 30px; border: 1px solid var(--line-strong);
+  background: var(--panel); color: var(--ink); border-radius: var(--pill);
+  font: inherit; font-size: 0.9rem; cursor: pointer;
+}
+.screen-tabs button.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
+.screen-picker { position: relative; margin-bottom: 8px; }
+.screen-picker-results {
+  position: absolute; z-index: 20; left: 0; right: 0; top: 100%; margin: 2px 0 0; padding: 0;
+  list-style: none; background: var(--field); border: 1px solid var(--line-strong);
+  border-radius: var(--pill); max-height: 240px; overflow: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+.screen-picker-results button {
+  display: flex; gap: 8px; width: 100%; text-align: left; padding: 6px 8px;
+  background: none; border: 0; color: var(--ink); font: inherit; font-size: 0.92rem; cursor: pointer;
+}
+.screen-picker-results button:hover { background: var(--sel); }
+.screen-picker-sku { font-family: var(--font-mono); flex-shrink: 0; }
+.screen-picker-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.screen-picker-price { font-family: var(--font-mono); flex-shrink: 0; }
+.screen-picker-empty {
+  position: absolute; z-index: 20; left: 0; right: 0; top: 100%; margin-top: 2px;
+  background: var(--field); border: 1px solid var(--line-strong); border-radius: var(--pill);
+  padding: 6px 8px; color: var(--ink-3); font-size: 0.9rem;
+}
+.screen-list { list-style: none; margin: 6px 0 0; padding: 0; max-height: 300px; overflow: auto; }
+.screen-list button {
+  display: flex; gap: 10px; justify-content: space-between; width: 100%; text-align: left;
+  padding: 6px 8px; background: none; border: 0; border-bottom: 1px solid var(--line);
+  color: var(--ink); font: inherit; font-size: 0.92rem; cursor: pointer;
+}
+.screen-list button:hover, .screen-list button.selected { background: var(--sel); }
+.screen-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 6px 14px; margin: 0 0 10px; }
+.screen-facts div { display: flex; flex-direction: column; gap: 1px; }
+.screen-facts dt { font-size: 0.8rem; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.03em; }
+.screen-facts dd { margin: 0; font-size: 1rem; }

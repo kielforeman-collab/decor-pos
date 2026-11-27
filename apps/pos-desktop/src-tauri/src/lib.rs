@@ -25,9 +25,13 @@ use std::sync::{Arc, Mutex};
 
 use df_domain::Money;
 use df_edge::{
-    ArCustomerSummary, ColorantsResponse, CompletedSale, CreateTintFormulaRequest, Edge,
-    EdgeConfig, InvoiceView, PricePreview, ProductSearchResult, ReturnLineInput, SaleInput,
-    TenderInput, TransactionView, ZReport,
+    AgingView, ArCustomerSummary, CollectionsView, ColorantsResponse, CompletedSale,
+    CreatePoLineRequest, CreatePurchaseOrderRequest, CreateTintFormulaRequest,
+    CreateTransferRequest, Edge, EdgeConfig, InvoiceMatchReport, InvoiceView, PoAcknowledgmentRow,
+    PostedArPayment, PricePreview, ProductSearchResult, PurchaseOrderView, ReceivePoLineRequest,
+    ReceivePurchaseOrderRequest, ReplenishmentSuggestRequest, ReturnLineInput, SaleInput,
+    SendPoResponse, SuggestedPurchaseOrder, TenderInput, TransactionView, Transfer,
+    TransferLineView, ZReport,
 };
 use df_hw::{BarcodeEntry, MockPrinter, parse_scanner_input};
 use df_payments::{MockTerminal, PaymentProvider, StandaloneTerminal};
@@ -62,6 +66,20 @@ pub struct PosApp {
     /// Phase 1 exit test syncs against; a PostgreSQL HQ replaces it
     /// in a later phase).
     hq: Arc<df_sync::MemoryHq>,
+}
+
+/// `?as_of=YYYY-MM-DD`, defaulting to today (UTC). A malformed
+/// date is an error, not a silent default — same rule as the HTTP
+/// `aging_date` helper in `df-edge`.
+fn aging_date_or_today(as_of: Option<String>) -> Result<chrono::NaiveDate, PosError> {
+    match as_of {
+        None => Ok(chrono::Utc::now().date_naive()),
+        Some(text) => chrono::NaiveDate::from_str(&text).map_err(|_| {
+            PosError::Edge(df_edge::EdgeError::InvalidInput(format!(
+                "as_of must be YYYY-MM-DD, got {text:?}"
+            )))
+        }),
+    }
 }
 
 impl PosApp {
@@ -290,6 +308,203 @@ impl PosApp {
         Ok(self.edge.create_tint_formula(request).await?)
     }
 
+    // --- Orders / Transfers / Accounts screens: the same Edge
+    // methods the back office calls over HTTP, wrapped so the
+    // Tauri commands below (and the tests) can use them directly. ---
+
+    /// Stores in this org, by code — the destination picker for
+    /// inter-store transfers.
+    pub async fn list_stores(&self) -> Result<Vec<df_db::models::Store>, PosError> {
+        df_db::list_stores_for_org(self.edge.pool(), self.edge.config().org_id)
+            .await
+            .map_err(|e| PosError::Edge(e.into()))
+    }
+
+    /// Stock positions for every product at a store.
+    pub async fn inventory_balances(
+        &self,
+        store_id: Uuid,
+    ) -> Result<Vec<df_db::InventoryBalance>, PosError> {
+        Ok(self.edge.inventory_balances(store_id).await?)
+    }
+
+    /// Replenishment suggestions for a store (nothing is ordered
+    /// until a PO is created from one).
+    pub async fn suggest_replenishment(
+        &self,
+        store_id: Option<Uuid>,
+        days: Option<i64>,
+        lead_time_days: Option<i64>,
+    ) -> Result<Vec<SuggestedPurchaseOrder>, PosError> {
+        Ok(self
+            .edge
+            .suggest_replenishment(ReplenishmentSuggestRequest {
+                store_id,
+                days,
+                lead_time_days,
+            })
+            .await?)
+    }
+
+    /// Purchase orders for a store, newest first.
+    pub async fn list_purchase_orders(
+        &self,
+        store_id: Uuid,
+    ) -> Result<Vec<PurchaseOrderView>, PosError> {
+        Ok(self.edge.list_purchase_orders(store_id).await?)
+    }
+
+    /// Create a draft PO from explicit lines.
+    pub async fn create_purchase_order(
+        &self,
+        vendor_id: String,
+        store_id: Option<Uuid>,
+        lines: Vec<CreatePoLineRequest>,
+    ) -> Result<PurchaseOrderView, PosError> {
+        Ok(self
+            .edge
+            .create_purchase_order(CreatePurchaseOrderRequest {
+                vendor_id,
+                store_id,
+                lines,
+            })
+            .await?)
+    }
+
+    /// Receive against a PO (per-line quantities).
+    pub async fn receive_purchase_order(
+        &self,
+        id: Uuid,
+        lines: Vec<ReceivePoLineRequest>,
+    ) -> Result<PurchaseOrderView, PosError> {
+        Ok(self
+            .edge
+            .receive_purchase_order(id, ReceivePurchaseOrderRequest { lines })
+            .await?)
+    }
+
+    /// Transfers out of or into a store, newest first.
+    pub async fn list_transfers(&self, store_id: Uuid) -> Result<Vec<Transfer>, PosError> {
+        Ok(self.edge.list_transfers(store_id).await?)
+    }
+
+    /// Draft a transfer. Nothing moves until it is shipped.
+    pub async fn create_transfer(
+        &self,
+        from_store_id: Uuid,
+        to_store_id: Uuid,
+        lines: Vec<TransferLineView>,
+    ) -> Result<Transfer, PosError> {
+        Ok(self
+            .edge
+            .create_transfer(CreateTransferRequest {
+                from_store_id,
+                to_store_id,
+                lines,
+            })
+            .await?)
+    }
+
+    /// Ship a draft transfer (stock leaves the source store).
+    pub async fn ship_transfer(&self, id: Uuid) -> Result<Transfer, PosError> {
+        Ok(self.edge.ship_transfer(id).await?)
+    }
+
+    /// Receive a shipped transfer (stock lands at the destination).
+    pub async fn receive_transfer(&self, id: Uuid) -> Result<Transfer, PosError> {
+        Ok(self.edge.receive_transfer(id).await?)
+    }
+
+    /// AR aging for a store (buckets current / 31–60 / 61–90 /
+    /// 91–120 / 120+).
+    pub async fn ar_aging(
+        &self,
+        store_id: Uuid,
+        as_of: Option<String>,
+    ) -> Result<AgingView, PosError> {
+        Ok(self
+            .edge
+            .ar_aging(store_id, aging_date_or_today(as_of)?)
+            .await?)
+    }
+
+    /// Collections workspace for a store (accounts with a balance).
+    pub async fn ar_collections(
+        &self,
+        store_id: Uuid,
+        as_of: Option<String>,
+    ) -> Result<CollectionsView, PosError> {
+        Ok(self
+            .edge
+            .ar_collections(store_id, aging_date_or_today(as_of)?)
+            .await?)
+    }
+
+    /// Take a payment on a charge account (FIFO allocation).
+    /// `method` is a label only — no provider authorization here.
+    pub async fn post_ar_payment(
+        &self,
+        customer_id: Uuid,
+        amount: Money,
+        method: String,
+    ) -> Result<PostedArPayment, PosError> {
+        Ok(self
+            .edge
+            .post_ar_payment(customer_id, amount, &method)
+            .await?)
+    }
+
+    /// Set (or clear, with `None`) a customer's price level.
+    pub async fn set_customer_price_level(
+        &self,
+        id: Uuid,
+        price_level_id: Option<Uuid>,
+    ) -> Result<df_db::models::Customer, PosError> {
+        Ok(self
+            .edge
+            .set_customer_price_level(id, price_level_id)
+            .await?)
+    }
+
+    /// Send a draft PO as X12 850 (stages the file; without an
+    /// out-dir nothing is written anywhere).
+    pub async fn send_purchase_order(
+        &self,
+        id: Uuid,
+        out_dir: Option<String>,
+    ) -> Result<SendPoResponse, PosError> {
+        Ok(self.edge.send_purchase_order(id, out_dir).await?)
+    }
+
+    /// EDI documents linked to a PO (sent 850s, received 856/810/
+    /// 855/832). Returned as plain JSON values — `EdiDocument`
+    /// lives in `df-edi`, which this crate does not depend on.
+    pub async fn list_edi_documents(
+        &self,
+        po_id: Uuid,
+    ) -> Result<Vec<serde_json::Value>, PosError> {
+        let docs = self.edge.list_edi_documents(po_id).await?;
+        docs.iter()
+            .map(|d| {
+                serde_json::to_value(d)
+                    .map_err(|e| PosError::Edge(df_edge::EdgeError::InvalidInput(e.to_string())))
+            })
+            .collect()
+    }
+
+    /// 855 acknowledgments for a PO.
+    pub async fn list_po_acknowledgments(
+        &self,
+        po_id: Uuid,
+    ) -> Result<Vec<PoAcknowledgmentRow>, PosError> {
+        Ok(self.edge.list_po_acknowledgments(po_id).await?)
+    }
+
+    /// 3-way match for a PO (ordered vs shipped vs billed).
+    pub async fn three_way_match(&self, po_id: Uuid) -> Result<InvoiceMatchReport, PosError> {
+        Ok(self.edge.three_way_match(po_id).await?)
+    }
+
     /// Drain the outbox into the in-process HQ sink.
     pub async fn sync_now(&self) -> Result<ApplyReport, PosError> {
         Ok(self.edge.sync_now(self.hq.as_ref()).await?)
@@ -372,6 +587,7 @@ mod commands {
     #[tauri::command]
     pub async fn get_status(app: State<'_, PosApp>) -> Result<serde_json::Value, String> {
         Ok(serde_json::json!({
+            "store_id": app.edge().config().store_id,
             "store_name": app.store_name(),
             "provider": app.provider_name(),
             "pending_outbox": app.pending_outbox_count().await.map_err(cmd_err)?,
@@ -611,6 +827,168 @@ mod commands {
         .map_err(cmd_err)
     }
 
+    // --- Orders / Transfers / Accounts screens (same JSON shapes
+    // as the edge HTTP API; the frontend's `api.ts` mappers handle
+    // both paths). ---
+
+    #[tauri::command]
+    pub async fn list_stores(app: State<'_, PosApp>) -> Result<Vec<df_db::models::Store>, String> {
+        app.list_stores().await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn inventory_balances(
+        app: State<'_, PosApp>,
+        store_id: Uuid,
+    ) -> Result<Vec<df_db::InventoryBalance>, String> {
+        app.inventory_balances(store_id).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn suggest_replenishment(
+        app: State<'_, PosApp>,
+        store_id: Option<Uuid>,
+        days: Option<i64>,
+        lead_time_days: Option<i64>,
+    ) -> Result<Vec<SuggestedPurchaseOrder>, String> {
+        app.suggest_replenishment(store_id, days, lead_time_days)
+            .await
+            .map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn list_purchase_orders(
+        app: State<'_, PosApp>,
+        store_id: Uuid,
+    ) -> Result<Vec<PurchaseOrderView>, String> {
+        app.list_purchase_orders(store_id).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn create_purchase_order(
+        app: State<'_, PosApp>,
+        vendor_id: String,
+        store_id: Option<Uuid>,
+        lines: Vec<CreatePoLineRequest>,
+    ) -> Result<PurchaseOrderView, String> {
+        app.create_purchase_order(vendor_id, store_id, lines)
+            .await
+            .map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn receive_purchase_order(
+        app: State<'_, PosApp>,
+        id: Uuid,
+        lines: Vec<ReceivePoLineRequest>,
+    ) -> Result<PurchaseOrderView, String> {
+        app.receive_purchase_order(id, lines).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn list_transfers(
+        app: State<'_, PosApp>,
+        store_id: Uuid,
+    ) -> Result<Vec<Transfer>, String> {
+        app.list_transfers(store_id).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn create_transfer(
+        app: State<'_, PosApp>,
+        from_store_id: Uuid,
+        to_store_id: Uuid,
+        lines: Vec<TransferLineView>,
+    ) -> Result<Transfer, String> {
+        app.create_transfer(from_store_id, to_store_id, lines)
+            .await
+            .map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn ship_transfer(app: State<'_, PosApp>, id: Uuid) -> Result<Transfer, String> {
+        app.ship_transfer(id).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn receive_transfer(app: State<'_, PosApp>, id: Uuid) -> Result<Transfer, String> {
+        app.receive_transfer(id).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn get_ar_aging(
+        app: State<'_, PosApp>,
+        store_id: Uuid,
+        as_of: Option<String>,
+    ) -> Result<AgingView, String> {
+        app.ar_aging(store_id, as_of).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn get_ar_collections(
+        app: State<'_, PosApp>,
+        store_id: Uuid,
+        as_of: Option<String>,
+    ) -> Result<CollectionsView, String> {
+        app.ar_collections(store_id, as_of).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn post_ar_payment(
+        app: State<'_, PosApp>,
+        customer_id: Uuid,
+        amount: Money,
+        method: String,
+    ) -> Result<PostedArPayment, String> {
+        app.post_ar_payment(customer_id, amount, method)
+            .await
+            .map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn set_customer_price_level(
+        app: State<'_, PosApp>,
+        id: Uuid,
+        price_level_id: Option<Uuid>,
+    ) -> Result<df_db::models::Customer, String> {
+        app.set_customer_price_level(id, price_level_id)
+            .await
+            .map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn send_purchase_order(
+        app: State<'_, PosApp>,
+        id: Uuid,
+        out_dir: Option<String>,
+    ) -> Result<SendPoResponse, String> {
+        app.send_purchase_order(id, out_dir).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn list_edi_documents(
+        app: State<'_, PosApp>,
+        po_id: Uuid,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        app.list_edi_documents(po_id).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn list_po_acknowledgments(
+        app: State<'_, PosApp>,
+        po_id: Uuid,
+    ) -> Result<Vec<PoAcknowledgmentRow>, String> {
+        app.list_po_acknowledgments(po_id).await.map_err(cmd_err)
+    }
+
+    #[tauri::command]
+    pub async fn three_way_match(
+        app: State<'_, PosApp>,
+        po_id: Uuid,
+    ) -> Result<InvoiceMatchReport, String> {
+        app.three_way_match(po_id).await.map_err(cmd_err)
+    }
+
     // --- auth commands (Phase 7): the same login / setup / switch /
     // logout / override surface as the edge HTTP `/pos/auth/*`
     // endpoints, backed by the same `df_db` functions the HTTP
@@ -790,6 +1168,24 @@ pub fn run(app: PosApp) {
             commands::list_tint_colorants,
             commands::list_tint_formulas,
             commands::create_tint_formula,
+            commands::list_stores,
+            commands::inventory_balances,
+            commands::suggest_replenishment,
+            commands::list_purchase_orders,
+            commands::create_purchase_order,
+            commands::receive_purchase_order,
+            commands::list_transfers,
+            commands::create_transfer,
+            commands::ship_transfer,
+            commands::receive_transfer,
+            commands::get_ar_aging,
+            commands::get_ar_collections,
+            commands::post_ar_payment,
+            commands::set_customer_price_level,
+            commands::send_purchase_order,
+            commands::list_edi_documents,
+            commands::list_po_acknowledgments,
+            commands::three_way_match,
             commands::auth_login,
             commands::auth_setup,
             commands::auth_setup_status,
@@ -876,6 +1272,47 @@ mod tests {
         assert!(app.scan_barcode("999999999999", &catalog).is_err());
         assert_eq!(app.receipt_count(), 0);
         assert_eq!(app.last_receipt_text(), "");
+    }
+
+    #[tokio::test]
+    async fn pos_app_orders_transfers_accounts_methods() {
+        let app = PosApp::open(test_config()).await.unwrap();
+        let store_id = Uuid::from_u128(0xA000);
+
+        // One store is seeded on first boot; nothing else exists yet.
+        let stores = app.list_stores().await.unwrap();
+        assert_eq!(stores.len(), 1);
+        assert_eq!(stores[0].id, store_id);
+
+        assert!(app.list_purchase_orders(store_id).await.unwrap().is_empty());
+        assert!(app.list_transfers(store_id).await.unwrap().is_empty());
+        assert!(app.inventory_balances(store_id).await.unwrap().is_empty());
+        assert!(
+            app.suggest_replenishment(Some(store_id), None, None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let aging = app.ar_aging(store_id, None).await.unwrap();
+        assert!(aging.customers.is_empty());
+        let collections = app.ar_collections(store_id, None).await.unwrap();
+        assert!(collections.customers.is_empty());
+
+        // Unknown ids are errors, not empty values.
+        let missing = Uuid::now_v7();
+        assert!(
+            app.post_ar_payment(
+                missing,
+                Money::new(Decimal::from(10), Currency::Usd),
+                "Cash".into()
+            )
+            .await
+            .is_err()
+        );
+        assert!(app.set_customer_price_level(missing, None).await.is_err());
+        assert!(app.ship_transfer(missing).await.is_err());
+        assert!(app.receive_transfer(missing).await.is_err());
+        assert!(app.three_way_match(missing).await.is_err());
     }
 
     #[tokio::test]

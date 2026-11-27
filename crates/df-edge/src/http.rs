@@ -190,6 +190,7 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use uuid::Uuid;
 
+use crate::ar::PostedArPayment;
 use crate::counter::{ProductSearchResult, TransactionView};
 use crate::crm::{
     CreateActivityRequest, CreateAppointmentRequest, CreateSavedViewRequest, LapsedReport,
@@ -233,7 +234,7 @@ use df_db::InventoryBalance;
 use df_db::models::{
     Appointment, ColorCatalogEntry, CrmActivity, CrmSavedView, Customer, DeliveryPod,
     PortalPaymentRow, PriceLevel, PricingRuleRow, Product, ReorderPoint, ShiftTemplate, StaffShift,
-    StatementRow, TillSession, TimeclockEntry, TintFormula, Transaction,
+    StatementRow, Store, TillSession, TimeclockEntry, TintFormula, Transaction,
 };
 use df_domain::Money;
 use df_edi::EdiDocument;
@@ -841,6 +842,18 @@ pub struct ArAgingQuery {
     pub as_of: Option<String>,
 }
 
+/// Counter AR payment (`POST /ar/payments`): record a payment
+/// against a charge account. `method` is a label only (`Cash`,
+/// `Card`, `E-Transfer`, `Cheque`) — no provider authorization
+/// happens here; the payment posts to the AR ledger with FIFO
+/// allocation via `Edge::post_ar_payment`.
+#[derive(Debug, Deserialize)]
+pub struct ArPaymentRequest {
+    pub customer_id: Uuid,
+    pub amount: Money,
+    pub method: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreQuery {
     pub store_id: Option<Uuid>,
@@ -873,6 +886,17 @@ async fn get_balances(
     edge.inventory_balances(store_or_default(&edge, query.store_id))
         .await
         .map(Json)
+        .map_err(err_response)
+}
+
+/// Stores in this org, by code — the destination picker for
+/// inter-store transfers (the back office only ever typed a store
+/// UUID by hand; there was no list endpoint).
+async fn list_stores(State(edge): State<Arc<Edge>>) -> HandlerResult<Vec<Store>> {
+    df_db::list_stores_for_org(edge.pool(), edge.config().org_id)
+        .await
+        .map(Json)
+        .map_err(EdgeError::from)
         .map_err(err_response)
 }
 
@@ -1076,6 +1100,16 @@ async fn ar_collections(
 ) -> Result<Json<CollectionsView>, (StatusCode, Json<ErrorResponse>)> {
     let as_of = aging_date(&query.as_of)?;
     edge.ar_collections(store_or_default(&edge, query.store_id), as_of)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+async fn post_ar_payment(
+    State(edge): State<Arc<Edge>>,
+    Json(body): Json<ArPaymentRequest>,
+) -> HandlerResult<PostedArPayment> {
+    edge.post_ar_payment(body.customer_id, body.amount, &body.method)
         .await
         .map(Json)
         .map_err(err_response)
@@ -2113,6 +2147,7 @@ pub fn router(edge: Edge) -> Router {
     let po_receive_gate = gate(AuthRule::AnyOf(vec![Permission::PoReceive]));
     let pricing_gate = gate(AuthRule::AnyOf(vec![Permission::PricingManage]));
     let ar_view_gate = gate(AuthRule::AnyOf(vec![Permission::ArView]));
+    let ar_payment_gate = gate(AuthRule::AnyOf(vec![Permission::ArPayment]));
     let customer_gate = gate(AuthRule::AnyOf(vec![Permission::CustomerManage]));
     let delivery_gate = gate(AuthRule::AnyOf(vec![
         Permission::PosCheckout,
@@ -2228,6 +2263,7 @@ pub fn router(edge: Edge) -> Router {
         .route("/inventory/counts", get(list_counts))
         .route("/inventory/shelf-tags", get(shelf_tag))
         .route("/purchasing/orders", get(list_purchase_orders))
+        .route("/stores", get(list_stores))
         .route_layer(inventory_view_gate);
 
     let inventory_adjust_routes = Router::new()
@@ -2263,6 +2299,10 @@ pub fn router(edge: Edge) -> Router {
         .route("/ar/aging", get(ar_aging))
         .route("/ar/collections", get(ar_collections))
         .route_layer(ar_view_gate);
+
+    let ar_payment_routes = Router::new()
+        .route("/ar/payments", post(post_ar_payment))
+        .route_layer(ar_payment_gate);
 
     let crm_routes = Router::new()
         .route("/pos/customers/search", get(search_customers))
@@ -2390,6 +2430,7 @@ pub fn router(edge: Edge) -> Router {
         .merge(receive_routes)
         .merge(suggest_routes)
         .merge(ar_routes)
+        .merge(ar_payment_routes)
         .merge(crm_routes)
         .merge(delivery_routes)
         .merge(edi_routes)

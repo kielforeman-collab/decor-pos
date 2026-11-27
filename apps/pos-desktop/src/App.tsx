@@ -35,6 +35,9 @@ import Login from './Login'
 import OverridePrompt from './OverridePrompt'
 import HistoryModal from './components/HistoryModal'
 import InvoiceView from './components/InvoiceView'
+import OrdersScreen from './components/OrdersScreen'
+import TransfersScreen from './components/TransfersScreen'
+import AccountsScreen from './components/AccountsScreen'
 import PaymentModal from './components/PaymentModal'
 import ProductSearch from './components/ProductSearch'
 import Sidebar from './components/Sidebar'
@@ -246,6 +249,7 @@ export default function App() {
   } | null>(null)
   const [pendingEntry, setPendingEntry] = useState<LineSnapshot | null>(null)
   const [storeName, setStoreName] = useState('Decor POS')
+  const [storeId, setStoreId] = useState<string | null>(null)
   const [provider, setProviderState] = useState('mock')
   const [sync, setSync] = useState<SyncState | null>(null)
   const [tillId, setTillId] = useState<string | null>(null)
@@ -302,6 +306,7 @@ export default function App() {
     try {
       const status = await getStatus()
       setStoreName(status.store_name)
+      setStoreId(status.store_id)
       setProviderState(status.provider)
       const state = await syncState()
       setSync(state)
@@ -912,7 +917,7 @@ export default function App() {
         tillOpen={!!tillId}
         currentThemeLabel={theme.themeDef.label}
         onNavigate={(name) => {
-          if (name === 'Transactions') {
+          if (name === 'Transactions' || name === 'Orders' || name === 'Transfers' || name === 'Accounts') {
             setActiveNav(name)
           } else {
             say(`${name} — not wired up in this build yet.`)
@@ -925,6 +930,14 @@ export default function App() {
       />
 
       <main className="main">
+        {activeNav === 'Orders' ? (
+          <OrdersScreen storeId={storeId} onToast={say} />
+        ) : activeNav === 'Transfers' ? (
+          <TransfersScreen storeId={storeId} onToast={say} />
+        ) : activeNav === 'Accounts' ? (
+          <AccountsScreen storeId={storeId} onToast={say} />
+        ) : (
+          <>
         <section className="register">
           {error && (
             <div className="error" role="alert">
@@ -1230,6 +1243,8 @@ export default function App() {
             <p className="hint">Mode: {isTauri ? 'Tauri app' : 'dev (HTTP → df-server edge)'} · Pending sync: {sync?.pending_count ?? '?'}</p>
           </details>
         </aside>
+          </>
+        )}
       </main>
 
       <footer className="fnbar">
