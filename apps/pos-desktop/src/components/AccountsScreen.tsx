@@ -163,9 +163,9 @@ export default function AccountsScreen({
   const levelName = levels.find((l) => l.id === selected?.price_level_id)?.name ?? 'Retail (default)'
 
   return (
-    <section className="screen" aria-label="Accounts">
+    <section className="screen" aria-label="Customers">
       <div className="screen-head">
-        <h2>Accounts</h2>
+        <h2>Customers</h2>
         <div className="screen-actions">
           <button type="button" className="screen-btn" disabled={loading} onClick={() => void loadAr()}>
             Refresh
