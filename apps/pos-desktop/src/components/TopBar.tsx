@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { searchProducts } from '../api'
 import { fmtMoney, cad, type ProductSearchResult } from '../types'
+import ThemeBar from './ThemeBar'
+import type { ThemeDef, ThemeId } from '../themes'
 
 /** Inline-SVG nebula monitors (TOS only — CSS hides them on other
  * themes). No raster files, no external images. Each is 4:3. */
@@ -75,9 +77,30 @@ interface TopBarProps {
   clerkName: string
   onOmniAdd: (p: ProductSearchResult) => void
   onToast: (msg: string) => void
+  themes: ThemeDef[]
+  themeId: ThemeId
+  themeNote: string
+  liveMonitors: boolean
+  onSetTheme: (id: ThemeId) => void
+  onToggleLiveMonitors: (on: boolean) => void
+  onAddCustomTheme: (t: { name: string; bg: string; ink: string; accent: string }) => void
 }
 
-export default function TopBar({ storeName, tillOpen, openingFloat, clerkName, onOmniAdd, onToast }: TopBarProps) {
+export default function TopBar({
+  storeName,
+  tillOpen,
+  openingFloat,
+  clerkName,
+  onOmniAdd,
+  onToast,
+  themes,
+  themeId,
+  themeNote,
+  liveMonitors,
+  onSetTheme,
+  onToggleLiveMonitors,
+  onAddCustomTheme,
+}: TopBarProps) {
   const [now, setNow] = useState(() => new Date())
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<ProductSearchResult[]>([])
@@ -147,6 +170,16 @@ export default function TopBar({ storeName, tillOpen, openingFloat, clerkName, o
       </div>
       <BridgeMonitors />
       <div className="topbar-spacer" />
+      <ThemeBar
+        themes={themes}
+        themeId={themeId}
+        themeNote={themeNote}
+        liveMonitors={liveMonitors}
+        onSetTheme={onSetTheme}
+        onToggleLiveMonitors={onToggleLiveMonitors}
+        onAddCustomTheme={onAddCustomTheme}
+        onToast={onToast}
+      />
       <div className="omni" ref={boxRef}>
         <svg className="omni-icon" viewBox="0 0 24 24" aria-hidden="true">
           <circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" strokeWidth="2" />

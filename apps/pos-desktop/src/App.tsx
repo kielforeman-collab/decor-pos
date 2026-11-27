@@ -38,7 +38,6 @@ import InvoiceView from './components/InvoiceView'
 import PaymentModal from './components/PaymentModal'
 import ProductSearch from './components/ProductSearch'
 import Sidebar from './components/Sidebar'
-import ThemeBar from './components/ThemeBar'
 import Ticket from './components/Ticket'
 import TillPanel, { type FulfilmentMode } from './components/TillPanel'
 import TintModal from './components/TintModal'
@@ -934,8 +933,6 @@ export default function App() {
         clerkName={clerkName}
         onOmniAdd={(p) => addSearchProduct(p, '1')}
         onToast={say}
-      />
-      <ThemeBar
         themes={theme.allThemes}
         themeId={theme.themeId}
         themeNote={theme.themeDef.note}
@@ -943,7 +940,6 @@ export default function App() {
         onSetTheme={theme.setTheme}
         onToggleLiveMonitors={theme.setLiveMonitors}
         onAddCustomTheme={theme.addCustomTheme}
-        onToast={say}
       />
       <Sidebar
         activeNav={activeNav}
@@ -964,8 +960,18 @@ export default function App() {
 
       <main className="main">
         <section className="register">
-          {error && <div className="error" role="alert">{error}</div>}
-          {notice && <div className="notice">{notice}</div>}
+          {error && (
+            <div className="error" role="alert">
+              <span>{error}</span>
+              <button type="button" className="banner-x" aria-label="Dismiss error" onClick={() => setError(null)}>✕</button>
+            </div>
+          )}
+          {notice && (
+            <div className="notice">
+              <span>{notice}</span>
+              <button type="button" className="banner-x" aria-label="Dismiss message" onClick={() => setNotice(null)}>✕</button>
+            </div>
+          )}
 
           <div className="txn-tabs" role="tablist" aria-label="Transactions">
             {(

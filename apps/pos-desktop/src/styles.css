@@ -110,38 +110,45 @@ button:disabled { opacity: 0.45; cursor: default; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .mono, .ticket, .sheet { font-family: var(--font-mono); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-.hint { font-size: 0.85rem; color: var(--ink-2); }
-.error { background: #fde8e8; border: 1px solid #c00; color: #900; padding: 10px; border-radius: 4px; margin: 12px 0; }
-.notice { background: #e6f4ea; border: 1px solid #2e7d32; color: #1b5e20; padding: 10px; border-radius: 4px; margin: 12px 0; }
+/* Slim one-line banners: they cost one short row only while shown,
+   and the × dismisses them so they cost nothing afterwards. */
+.error, .notice {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 10px; border-radius: 4px; margin: 0 0 8px;
+  font-size: 0.85rem;
+}
+.error { background: #fde8e8; border: 1px solid #c00; color: #900; }
+.notice { background: #e6f4ea; border: 1px solid #2e7d32; color: #1b5e20; }
+.error span, .notice span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.banner-x { background: none; border: none; padding: 0 4px; min-height: 0; font-size: 0.85rem; color: inherit; flex-shrink: 0; }
 :root[data-theme="expanse"] .error, :root[data-theme="dark"] .error, :root[data-theme="lcars"] .error { background: #3a0d16; border-color: var(--bad); color: #ffb3c1; }
 :root[data-theme="expanse"] .notice, :root[data-theme="dark"] .notice, :root[data-theme="lcars"] .notice { background: #0d2b18; border-color: var(--good); color: #b9f2cd; }
 .link-btn { background: none; border: none; padding: 0 4px; color: var(--accent); text-decoration: underline; min-height: 0; font-size: inherit; }
 
-/* --- App frame --- */
+/* --- App frame: no theme row — the switcher lives in the top bar --- */
 .app {
   display: grid;
   grid-template-columns: 208px minmax(0, 1fr);
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-  grid-template-areas: 'top top' 'theme theme' 'side main' 'side fnbar';
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas: 'top top' 'side main' 'side fnbar';
   min-height: 100vh;
 }
 .app-login { display: block; max-width: 1200px; margin: 0 auto; padding: 12px 16px 32px; }
 .topbar { grid-area: top; }
-.theme-col { grid-area: theme; }
 .sidebar { grid-area: side; }
 .main { grid-area: main; }
 .fnbar { grid-area: fnbar; }
 
-/* --- Top bar --- */
+/* --- Top bar (slim: 44px; search stays a 34px touch target) --- */
 .topbar {
-  display: flex; align-items: center; gap: 14px; padding: 0 14px;
-  min-height: 56px; background: var(--panel); border-bottom: 1px solid var(--line-strong);
+  display: flex; align-items: center; gap: 10px; padding: 0 10px;
+  min-height: 44px; background: var(--panel); border-bottom: 1px solid var(--line-strong);
 }
 .menu-btn { display: none; background: none; border: 1px solid var(--line-strong); border-radius: 4px; min-width: 2.25rem; }
 .brand { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .brand-name {
   display: flex; align-items: center; gap: 6px;
-  font-family: var(--font-display); font-size: 17px; font-weight: 800; letter-spacing: 0.04em;
+  font-family: var(--font-display); font-size: 15px; font-weight: 800; letter-spacing: 0.04em;
 }
 .delta-shield { width: 18px; height: 18px; }
 .brand-chip {
@@ -151,12 +158,12 @@ button:disabled { opacity: 0.45; cursor: default; }
 .till-text { font-size: 12.5px; color: var(--ink-2); white-space: nowrap; flex-shrink: 0; }
 .topbar-spacer { flex: 1; }
 .omni {
-  position: relative; flex: 0 1 auto; width: min(380px, 38vw); min-height: 36px;
+  position: relative; flex: 0 1 auto; width: min(380px, 38vw); min-height: 34px;
   display: flex; align-items: center; gap: 8px; padding: 0 12px;
   background: var(--field); border: 1px solid var(--line-strong); border-radius: 999px;
 }
 .omni-icon { width: 16px; height: 16px; flex-shrink: 0; color: var(--ink-2); }
-.omni input { flex: 1; min-width: 0; border: none; background: transparent; padding: 0; min-height: 34px; }
+.omni input { flex: 1; min-width: 0; border: none; background: transparent; padding: 0; min-height: 32px; }
 .omni input:focus { outline: none; }
 .omni:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .omni-results {
@@ -185,7 +192,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 :root[data-theme="tos"] .topbar-spacer { flex: 0 0 auto; }
 .monitor {
-  flex: 1 1 0; min-width: 56px; max-width: 100px; aspect-ratio: 4 / 3;
+  flex: 1 1 0; min-width: 56px; max-width: 76px; aspect-ratio: 4 / 3;
   background: #0a0a0a; border: 3px solid #000; border-radius: 10px; overflow: hidden;
   box-shadow: 0 0 0 1px #2c2c2c;
 }
@@ -203,46 +210,34 @@ button:disabled { opacity: 0.45; cursor: default; }
   :root.mon-live[data-theme="tos"] .monitor .stars { animation: none; }
 }
 
-/* --- Theme bar / captain's strip / custom lab --- */
-.theme-col { background: var(--panel-2); border-bottom: 1px solid var(--line-strong); }
-.themebar { display: flex; align-items: center; gap: var(--block-gap); padding: 6px 14px; }
-.theme-switch { display: flex; align-items: center; gap: var(--block-gap); flex-wrap: wrap; }
-.theme-label { font-size: 0.85rem; color: var(--ink-2); }
-.theme-btn {
-  min-height: 2rem; padding: 4px 12px; border: 1px solid var(--line-strong); border-radius: var(--pill);
-  background: var(--panel); color: var(--ink);
+/* --- Compact theme switcher (inside the top bar, not its own row) --- */
+.theme-switch-compact {
+  position: relative; display: flex; align-items: center; gap: 6px; flex-shrink: 0;
 }
-.theme-btn[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-.theme-note { margin-left: auto; font-size: 0.85rem; color: var(--ink-2); text-align: right; }
-.captains-strip { display: none; }
-:root[data-theme="tos"] .captains-strip {
-  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
-  padding: 6px 14px; border-top: 2px solid var(--tos-wood);
-  background: linear-gradient(90deg, #3a2a12, #6b4a1f 30%, #3a2a12 60%, #2c2110);
-  color: var(--tos-cream); border-left: 6px solid var(--tos-wood); border-right: 6px solid var(--tos-wood);
+.theme-select-label { font-size: 0.85rem; color: var(--ink-2); }
+.theme-select {
+  height: 32px; min-height: 32px; padding: 2px 6px; font-size: 0.9rem;
+  background: var(--field); border: 1px solid var(--line-strong); border-radius: var(--pill);
 }
-.cap-log { font-family: var(--font-display); font-size: 13px; letter-spacing: 0.05em; }
-.cap-stardate { font-family: var(--font-mono); font-size: 12px; }
-.cap-div { font-family: var(--font-cond); font-size: 14px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 8px; border-radius: 3px; }
-.cap-command { background: var(--tos-gold); color: #121212; }
-.cap-science { background: var(--tos-blue-hi); color: #fff; }
-.cap-ops { background: var(--tos-red-hi); color: #fff; }
-.cap-lamps { display: flex; gap: 6px; }
-.lamp { width: 12px; height: 12px; display: inline-block; border: 1px solid #000; }
-.lamp-gold { background: var(--tos-gold-hi); }
-.lamp-blue { background: var(--tos-blue-hi); }
-.lamp-red { background: var(--tos-red-hi); }
-.lamp-green { background: var(--tos-green); }
+.theme-add-btn {
+  min-height: 32px; padding: 2px 10px; font-size: 0.85rem;
+  background: var(--panel-2); border: 1px solid var(--line-strong); border-radius: var(--pill);
+}
+/* Live-monitors toggle, TOS only — sits in the top bar next to the
+   theme select now that the captain's strip row is gone. */
 .live-toggle {
-  margin-left: auto; display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px;
   background: #121212; color: var(--tos-gold-hi); border: 2px solid var(--tos-gold);
   border-radius: 999px; padding: 4px 12px; min-height: 2rem;
 }
 .live-dot { width: 10px; height: 10px; border-radius: 50%; background: #666; }
 .live-toggle[aria-checked="true"] .live-dot { background: #3dff7a; box-shadow: 0 0 8px #3dff7a; }
+.topbar .live-toggle { margin-left: 0; }
 .custom-lab {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
   display: flex; align-items: end; gap: 10px; flex-wrap: wrap;
-  padding: 10px 14px; border-top: 1px solid var(--line); background: var(--panel);
+  padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); background: var(--panel);
 }
 .custom-lab label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; }
 .custom-lab input[type="color"] { padding: 2px; min-height: 2.25rem; width: 56px; }
@@ -250,7 +245,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 /* --- Sidebar --- */
 .sidebar {
   background: var(--panel); border-right: 2px solid var(--line-strong);
-  padding: 12px 10px; display: flex; flex-direction: column; gap: var(--block-gap);
+  padding: 8px 10px; display: flex; flex-direction: column; gap: var(--block-gap);
 }
 .nav-group { display: flex; flex-direction: column; gap: var(--block-gap); margin-bottom: 8px; }
 .nav-group-title { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3); padding: 0 6px; }
@@ -270,7 +265,6 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 
 /* Expanse chamfers */
-:root[data-theme="expanse"] .theme-btn,
 :root[data-theme="expanse"] .nav-item,
 :root[data-theme="expanse"] .side-foot-btn,
 :root[data-theme="expanse"] .till-section,
@@ -285,42 +279,41 @@ button:disabled { opacity: 0.45; cursor: default; }
 /* Mono thick rules */
 :root[data-theme="mono"] .topbar, :root[data-theme="dark"] .topbar { border-bottom-width: 3px; }
 :root[data-theme="mono"] .sidebar, :root[data-theme="dark"] .sidebar { border-right-width: 2px; }
-:root[data-theme="mono"] .theme-col, :root[data-theme="dark"] .theme-col { border-bottom-width: 3px; }
 :root[data-theme="mono"] .nav-item.active, :root[data-theme="dark"] .nav-item.active { background: #111; color: #fff; }
 :root[data-theme="dark"] .nav-item.active { background: #f2f2f2; color: #0b0b0b; }
 
 /* --- Main layout --- */
 .main {
-  display: grid; grid-template-columns: minmax(0, 1fr) 348px; gap: 14px;
-  padding: 14px; align-items: start; min-width: 0;
+  display: grid; grid-template-columns: minmax(0, 1fr) 348px; gap: 10px;
+  padding: 10px; align-items: start; min-width: 0;
 }
 .register, .till-aside > * {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px;
 }
-.till-aside { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.till-aside { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .register { min-width: 0; }
-.register h2, .till-section h2 { font-size: 1.05rem; margin: 0 0 10px; font-family: var(--font-display); }
+.register h2, .till-section h2 { font-size: 1.05rem; margin: 0 0 6px; font-family: var(--font-display); }
 :root[data-theme="tos"] .register h2, :root[data-theme="tos"] .till-section h2 { font-family: var(--font-display); font-size: 0.95rem; letter-spacing: 0.05em; }
 
-/* --- Txn tabs --- */
-.txn-tabs { display: flex; gap: var(--block-gap); margin-bottom: 12px; flex-wrap: wrap; }
+/* --- Txn tabs (compact: 32px; TOS 40px) --- */
+.txn-tabs { display: flex; gap: var(--block-gap); margin-bottom: 8px; flex-wrap: wrap; }
 .txn-tab {
-  min-height: 2.5rem; padding: 6px 16px; border: 1px solid var(--line-strong);
+  min-height: 2rem; padding: 4px 12px; border: 1px solid var(--line-strong);
   background: var(--panel-2); color: var(--ink); border-radius: var(--pill);
   font-family: var(--font-cond); font-weight: 600; letter-spacing: 0.04em;
 }
 .txn-tab.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .txn-count { font-family: var(--font-mono); font-size: 0.8rem; opacity: 0.8; margin-left: 4px; }
-:root[data-theme="tos"] .txn-tab { min-height: 52px; border: 3px solid #000; border-radius: 5px; box-shadow: 0 4px 0 #000; font-size: 16px; }
+:root[data-theme="tos"] .txn-tab { min-height: 40px; border: 3px solid #000; border-radius: 5px; box-shadow: 0 4px 0 #000; font-size: 15px; }
 :root[data-theme="tos"] .txn-sale { background: var(--tos-gold); color: #121212; }
 :root[data-theme="tos"] .txn-held { background: var(--tos-red); color: #fff; }
 :root[data-theme="tos"] .txn-completed { background: var(--tos-blue); color: #fff; }
 :root[data-theme="tos"] .txn-voided { background: var(--tos-teal); color: #fff; }
 :root[data-theme="tos"] .txn-tab.active { background: #fff; color: #121212; transform: translateY(3px); box-shadow: 0 1px 0 #000; }
-:root[data-theme="lcars"] .txn-tab { min-height: 52px; border-radius: 999px; padding: 10px 18px; font-family: var(--font-display); font-size: 15px; letter-spacing: 0.06em; text-transform: uppercase; }
+:root[data-theme="lcars"] .txn-tab { min-height: 44px; border-radius: 999px; padding: 8px 26px; font-family: var(--font-display); font-size: 15px; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; }
 
 /* --- Fulfilment seg --- */
-.seg { display: flex; gap: var(--block-gap); align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.seg { display: flex; gap: var(--block-gap); align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
 .seg button {
   min-height: var(--touch-min); padding: 8px 16px; border: 1px solid var(--line-strong);
   background: var(--panel-2); color: var(--ink); border-radius: var(--pill);
@@ -329,7 +322,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 .seg-note { font-size: 0.85rem; color: var(--ink-2); }
 
 /* --- Elbow frames (LCARS) --- */
-.elbow-frame { margin-bottom: 12px; }
+.elbow-frame { margin-bottom: 8px; }
 :root[data-layout="lcars"] .elbow-frame {
   margin: 6px; padding: 16px 16px 16px 24px; border-radius: 36px 14px 14px 36px;
   border: 1px solid #2c2c2c; box-shadow: inset 16px 0 0 var(--lcars-orange);
@@ -355,10 +348,10 @@ button:disabled { opacity: 0.45; cursor: default; }
   border: 1px solid var(--accent); border-radius: var(--pill); font-weight: 700; flex-shrink: 0;
 }
 :root[data-theme="tos"] .add-btn, :root[data-theme="tos"] button { font-family: var(--font-cond); }
-:root[data-theme="tos"] button:not(.link-btn):not(.modal-x):not(.theme-btn):not(.live-toggle):not(.menu-btn) {
+:root[data-theme="tos"] button:not(.link-btn):not(.modal-x):not(.theme-add-btn):not(.live-toggle):not(.menu-btn) {
   border: 3px solid #000; border-radius: 5px; box-shadow: 0 4px 0 #000;
 }
-:root[data-theme="tos"] button:not(.link-btn):not(.modal-x):not(.theme-btn):not(.live-toggle):not(.menu-btn):active {
+:root[data-theme="tos"] button:not(.link-btn):not(.modal-x):not(.theme-add-btn):not(.live-toggle):not(.menu-btn):active {
   transform: translateY(2px); box-shadow: 0 1px 0 #000;
 }
 :root[data-theme="tos"] button:disabled { box-shadow: none; }
@@ -387,7 +380,7 @@ input, select, textarea {
 .search-status { padding: 10px; font-size: 0.9rem; color: var(--ink-2); }
 
 /* --- Quick picks --- */
-.quick-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.quick-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 .quick-chip {
   display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
   padding: 8px 12px; background: var(--panel-2); border: 1px solid var(--line-strong);
@@ -424,13 +417,13 @@ table.ticket { width: 100%; border-collapse: collapse; margin-top: 8px; font-siz
 .disc-input { min-height: 2rem; }
 
 /* --- Notes / manual entry --- */
-.notes { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
-.manual-entry { margin-top: 12px; }
+.notes { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+.manual-entry { margin-top: 8px; }
 .manual-entry summary { cursor: pointer; font-size: 0.9rem; color: var(--ink-2); }
 .entry { display: grid; grid-template-columns: 1fr 2fr 70px 1fr 1fr auto; gap: 6px; margin: 8px 0; }
 .totals > div { display: flex; justify-content: space-between; padding: 3px 0; }
 .totals .grand { border-top: 2px solid var(--ink); margin-top: 4px; padding-top: 6px; font-size: 1.1rem; }
-.preview-strip { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.preview-strip { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
 
 /* --- Tab lists (held / completed / voided) --- */
 .tab-list h2 { font-family: var(--font-display); font-size: 1.05rem; }
@@ -439,8 +432,8 @@ table.ticket { width: 100%; border-collapse: collapse; margin-top: 8px; font-siz
 .receipt-mini pre { background: var(--panel-2); border: 1px solid var(--line); padding: 10px; white-space: pre-wrap; font-size: 0.8rem; max-height: 320px; overflow: auto; }
 
 /* --- Till panel --- */
-.till-panel { display: flex; flex-direction: column; gap: 14px; }
-.till-section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.till-panel { display: flex; flex-direction: column; gap: 10px; }
+.till-section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
 :root[data-theme="tos"] .till-section { border-top: 9px solid var(--tos-blue); }
 :root[data-theme="tos"] .till-section:nth-child(2) { border-top-color: var(--tos-gold); }
 :root[data-theme="tos"] .till-section:nth-child(3) { border-top-color: var(--tos-teal); }
@@ -461,16 +454,17 @@ table.ticket { width: 100%; border-collapse: collapse; margin-top: 8px; font-siz
 .history-btn { align-self: flex-start; background: var(--panel-2); border: 1px solid var(--line-strong); border-radius: var(--pill); }
 .price-level { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; margin-top: 10px; }
 .total-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; gap: 8px; }
-.total-row.grand { border-top: 2px solid var(--ink); margin-top: 6px; padding-top: 8px; font-size: 26px; font-weight: 800; }
-.total-row.grand strong { font-size: 26px; }
+.total-row.grand { border-top: 2px solid var(--ink); margin-top: 6px; padding-top: 8px; font-size: 22px; font-weight: 800; }
+.total-row.grand strong { font-size: 22px; }
 .delivery-input { width: 96px; text-align: right; padding: 4px 8px; min-height: 2rem; }
-.actions-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.actions-grid button { min-height: var(--touch-min); border: 1px solid var(--line-strong); background: var(--panel-2); color: var(--ink); border-radius: var(--pill); }
+/* Till actions, compact but still tappable (44px; complete 48px). */
+.actions-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.actions-grid button { min-height: 44px; border: 1px solid var(--line-strong); background: var(--panel-2); color: var(--ink); border-radius: var(--pill); }
 .actions-grid .complete-btn {
-  grid-column: 1 / -1; min-height: 56px; font-size: 16.5px; font-weight: 700;
+  grid-column: 1 / -1; min-height: 48px; font-size: 15px; font-weight: 700;
   background: var(--accent); color: var(--accent-ink); border-color: var(--accent);
 }
-.till-foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 10px; font-size: 0.85rem; color: var(--ink-2); flex-wrap: wrap; }
+.till-foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: 0.85rem; color: var(--ink-2); flex-wrap: wrap; }
 .till-open { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
 .till-open label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; flex: 1; min-width: 120px; }
 .sync-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0; }
@@ -482,20 +476,20 @@ table.ticket { width: 100%; border-collapse: collapse; margin-top: 8px; font-siz
 
 /* --- Fn bar --- */
 .fnbar {
-  display: flex; align-items: center; gap: 10px; padding: 6px 14px; min-height: 52px;
+  display: flex; align-items: center; gap: 10px; padding: 4px 12px; min-height: 44px;
   background: var(--panel); border-top: 1px solid var(--line-strong); flex-wrap: wrap;
 }
 .fn-keys { display: flex; gap: var(--block-gap); flex-wrap: wrap; }
 .fn-keys button { min-height: 2rem; padding: 4px 10px; background: var(--panel-2); border: 1px solid var(--line-strong); border-radius: var(--pill); }
 .fn-status { margin-left: auto; font-family: var(--font-mono); font-size: 0.85rem; color: var(--ink-2); white-space: nowrap; }
 :root[data-theme="tos"] .fnbar {
-  background: #121212; color: var(--tos-cream); border-top: 10px solid var(--tos-red);
+  background: #121212; color: var(--tos-cream); border-top: 6px solid var(--tos-red);
   background-image: radial-gradient(1px 1px at 20% 30%, #fff, transparent), radial-gradient(1px 1px at 70% 60%, #fff, transparent), radial-gradient(2px 2px at 40% 80%, #ffe9a8, transparent);
 }
 :root[data-theme="tos"] .fnbar .fn-keys button { background: #1d1d1d; color: var(--tos-cream); border-color: #444; box-shadow: none; }
 :root[data-theme="tos"] .fnbar .fn-status { color: var(--tos-gold-hi); }
 :root[data-theme="tos"] .topbar {
-  background: #121212; color: var(--tos-cream); min-height: 62px; border-bottom: 10px solid var(--tos-red);
+  background: #121212; color: var(--tos-cream); min-height: 48px; border-bottom: 6px solid var(--tos-red);
   background-image:
     radial-gradient(1px 1px at 12% 20%, #fff, transparent),
     radial-gradient(1px 1px at 32% 70%, #fff, transparent),
@@ -505,26 +499,46 @@ table.ticket { width: 100%; border-collapse: collapse; margin-top: 8px; font-siz
 }
 :root[data-theme="tos"] .topbar .till-text, :root[data-theme="tos"] .topbar .top-meta { color: var(--tos-cream); }
 :root[data-theme="tos"] .topbar .brand-name {
-  background: var(--tos-gold); color: #121212; padding: 6px 10px;
+  background: var(--tos-gold); color: #121212; padding: 4px 8px;
   clip-path: polygon(8px 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
-  font-family: var(--font-display); font-size: 15px;
+  font-family: var(--font-display); font-size: 14px;
 }
 :root[data-theme="tos"] .topbar .brand-chip { background: var(--tos-red); color: #fff; }
 :root[data-theme="tos"] .topbar .omni { background: var(--tos-cream); border-color: #000; }
 :root[data-theme="tos"] .topbar .omni input { color: #121212; }
 :root[data-theme="lcars"] .topbar { border-bottom: 3px solid var(--lcars-orange); }
 :root[data-theme="lcars"] .fnbar { border-top: 3px solid var(--lcars-orange); }
-:root[data-theme="lcars"] .fn-keys button, :root[data-theme="lcars"] .theme-btn {
-  border-radius: 999px; min-height: 52px; padding: 10px 18px; font-family: var(--font-display);
-  font-size: 15px; letter-spacing: 0.06em; text-transform: uppercase;
+/* LCARS pills: labels must clear the curved ends. A 999px-radius pill
+   needs wide horizontal padding so text never touches the curve, and
+   no-wrap so a label can't fold into the ends. Every pill button gets
+   the same treatment — not just one instance. */
+:root[data-theme="lcars"] .fn-keys button {
+  border-radius: 999px; min-height: 44px; padding: 8px 26px; font-family: var(--font-display);
+  font-size: 15px; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap;
 }
+:root[data-theme="lcars"] .seg button,
+:root[data-theme="lcars"] .actions-grid button,
+:root[data-theme="lcars"] .modal-foot button,
+:root[data-theme="lcars"] .tender-btn,
+:root[data-theme="lcars"] .cash-quick button,
+:root[data-theme="lcars"] .side-foot-btn,
+:root[data-theme="lcars"] .add-btn,
+:root[data-theme="lcars"] .history-btn,
+:root[data-theme="lcars"] .walkin-btn,
+:root[data-theme="lcars"] .theme-select,
+:root[data-theme="lcars"] .live-toggle {
+  padding-left: 26px; padding-right: 26px; white-space: nowrap;
+}
+:root[data-theme="lcars"] .quick-chip { padding-left: 22px; padding-right: 22px; }
 :root[data-theme="lcars"] input, :root[data-theme="lcars"] select {
   background: #000; color: var(--lcars-peach); border: 3px solid var(--lcars-orange); border-radius: 999px; min-height: 52px;
+  padding: 8px 20px;
 }
-:root[data-theme="lcars"] .omni { background: #000; border: 3px solid var(--lcars-orange); border-radius: 999px; min-height: 48px; }
-:root[data-theme="lcars"] .omni input { border: none; background: transparent; min-height: 0; }
+:root[data-theme="lcars"] .theme-select { min-height: 32px; height: 32px; padding: 2px 22px; }
+:root[data-theme="lcars"] .omni { background: #000; border: 3px solid var(--lcars-orange); border-radius: 999px; min-height: 40px; padding: 0 20px; }
+:root[data-theme="lcars"] .omni input { border: none; background: transparent; min-height: 0; padding: 0; }
 :root[data-theme="lcars"] button { font-family: var(--font-display); letter-spacing: 0.04em; }
-:root[data-theme="lcars"] .nav-item { border-radius: 999px; min-height: 52px; padding: 10px 18px; font-family: var(--font-display); font-size: 15px; letter-spacing: 0.06em; text-transform: uppercase; justify-content: flex-end; }
+:root[data-theme="lcars"] .nav-item { border-radius: 999px; min-height: 44px; padding: 10px 26px; font-family: var(--font-display); font-size: 15px; letter-spacing: 0.06em; text-transform: uppercase; justify-content: flex-end; white-space: nowrap; }
 
 /* --- Modals --- */
 .modal-overlay {
@@ -664,7 +678,7 @@ table.sheet-table { width: 100%; border-collapse: collapse; font-size: 12px; }
   :root[data-theme="tos"] .monitor.mon-2 { display: none; }
 }
 @media (max-width: 900px) {
-  .app { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'top' 'theme' 'main' 'fnbar'; }
+  .app { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'top' 'main' 'fnbar'; }
   .sidebar {
     position: fixed; top: 0; left: 0; bottom: 0; width: 240px; z-index: 90;
     transform: translateX(-100%); transition: transform 0.2s ease; box-shadow: 8px 0 24px rgba(0, 0, 0, 0.3);

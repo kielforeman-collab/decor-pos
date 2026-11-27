@@ -12,12 +12,13 @@ interface ThemeBarProps {
   onToast: (msg: string) => void
 }
 
-function stardate(now: Date): string {
-  const start = new Date(now.getFullYear(), 0, 0)
-  const day = Math.floor((now.getTime() - start.getTime()) / 86400000)
-  return `${now.getFullYear()}.${String(day).padStart(3, '0')}`
-}
-
+/**
+ * Compact theme switcher — lives inside the top bar, not its own row.
+ * A native <select> keeps it to one control (~32px tall) that never
+ * grows the bar, and it still switches every theme. The custom-theme
+ * lab opens as a popover under the bar instead of a permanent row.
+ * The Live monitors toggle is TOS-only (the monitors are TOS-only).
+ */
 export default function ThemeBar({
   themes,
   themeId,
@@ -35,45 +36,32 @@ export default function ThemeBar({
   const [accent, setAccent] = useState('#00d9ff')
 
   return (
-    <div className="theme-col">
-      <div className="themebar">
-        <div className="theme-switch" role="group" aria-label="Theme">
-          <span className="theme-label">Theme</span>
-          {themes.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              className="theme-btn"
-              aria-pressed={themeId === t.id}
-              onClick={() => onSetTheme(t.id)}
-            >
-              {t.shortLabel}
-            </button>
-          ))}
-          <button
-            type="button"
-            className="theme-btn theme-add"
-            aria-pressed={labOpen}
-            onClick={() => setLabOpen((v) => !v)}
-          >
-            + Custom
-          </button>
-        </div>
-        <span id="themeLayoutNote" className="theme-note">{themeNote}</span>
-      </div>
-
-      <div className="captains-strip" aria-label="Captain's chair strip">
-        <span className="cap-log">Captain&rsquo;s Log</span>
-        <span className="cap-stardate">Stardate {stardate(new Date())}</span>
-        <span className="cap-div cap-command">Command</span>
-        <span className="cap-div cap-science">Science</span>
-        <span className="cap-div cap-ops">Operations</span>
-        <span className="cap-lamps" aria-hidden="true">
-          <i className="lamp lamp-gold" />
-          <i className="lamp lamp-blue" />
-          <i className="lamp lamp-red" />
-          <i className="lamp lamp-green" />
-        </span>
+    <div className="theme-switch-compact">
+      <label className="theme-select-label" htmlFor="theme-select">Theme</label>
+      <select
+        id="theme-select"
+        className="theme-select"
+        value={themeId}
+        title={themeNote}
+        aria-label="Theme"
+        onChange={(e) => onSetTheme(e.target.value as ThemeId)}
+      >
+        {themes.map((t) => (
+          <option key={t.id} value={t.id}>
+            {t.label}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        className="theme-add-btn"
+        aria-expanded={labOpen}
+        title="Add a custom theme"
+        onClick={() => setLabOpen((v) => !v)}
+      >
+        + Custom
+      </button>
+      {themeId === 'tos' && (
         <button
           type="button"
           className="live-toggle"
@@ -82,9 +70,9 @@ export default function ThemeBar({
           onClick={() => onToggleLiveMonitors(!liveMonitors)}
         >
           <span className="live-dot" aria-hidden="true" />
-          Live monitors {liveMonitors ? 'On' : 'Off'}
+          Live {liveMonitors ? 'On' : 'Off'}
         </button>
-      </div>
+      )}
 
       {labOpen && (
         <form
