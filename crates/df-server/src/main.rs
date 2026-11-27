@@ -2178,7 +2178,7 @@ mod tests {
 
     /// The reporting primitive `migrate schema` and `hq` share: a
     /// fresh database reports no applied versions, `migrate`
-    /// applies 0001–0013 (0008 does not exist), and a second run
+    /// applies 0001–0015 (0008 does not exist), and a second run
     /// changes nothing.
     #[tokio::test]
     async fn migration_report_is_idempotent() {
@@ -2186,7 +2186,10 @@ mod tests {
         assert!(applied_migration_versions(&pool).await.is_empty());
         df_db::migrate(&pool, df_db::Dialect::Sqlite).await.unwrap();
         let applied = applied_migration_versions(&pool).await;
-        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14]);
+        assert_eq!(
+            applied,
+            vec![1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15]
+        );
         df_db::migrate(&pool, df_db::Dialect::Sqlite).await.unwrap();
         assert_eq!(applied_migration_versions(&pool).await, applied);
     }
