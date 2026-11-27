@@ -56,7 +56,7 @@ export default function InvoiceView({ invoice, reprint, autoEmail, onClose, onNe
     }
     window.location.href = mailto
   }
-  // No PDF library ships in the webview and the mockup's hand-rolled
+  // No PDF library ships in the webview and a hand-rolled
   // %PDF-1.4 blob is deliberately NOT reproduced: the print dialog's
   // "Save as PDF" produces the real letter PDF from this same sheet.
   const doPdf = () => {

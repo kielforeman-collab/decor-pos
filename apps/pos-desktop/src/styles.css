@@ -151,10 +151,6 @@ button:disabled { opacity: 0.45; cursor: default; }
   font-family: var(--font-display); font-size: 15px; font-weight: 800; letter-spacing: 0.04em;
 }
 .delta-shield { width: 18px; height: 18px; }
-.brand-chip {
-  font-size: 10px; font-weight: 700; letter-spacing: 0.14em;
-  background: var(--chip); color: var(--chip-ink); padding: 3px 6px; border-radius: 3px;
-}
 .till-text { font-size: 12.5px; color: var(--ink-2); white-space: nowrap; flex-shrink: 0; }
 .topbar-spacer { flex: 1; }
 .omni {
@@ -514,7 +510,6 @@ table.ticket { width: 100%; border-collapse: collapse; margin-top: 8px; font-siz
   clip-path: polygon(8px 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
   font-family: var(--font-display); font-size: 14px;
 }
-:root[data-theme="tos"] .topbar .brand-chip { background: var(--tos-red); color: #fff; }
 :root[data-theme="tos"] .topbar .omni { background: var(--tos-cream); border-color: #000; }
 :root[data-theme="tos"] .topbar .omni input { color: #121212; }
 :root[data-theme="lcars"] .topbar { border-bottom: 3px solid var(--lcars-orange); }

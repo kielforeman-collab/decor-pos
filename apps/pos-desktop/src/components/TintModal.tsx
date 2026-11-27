@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { listTintColorants, listTintColors, listTintFormulas, saveTintFormula } from '../api'
 import type { CartLine, TintColorEntry, TintColorantAmount, TintColorantEntry, TintFormulaEntry, TintInfo } from '../types'
 
-/** The mockup's 10-colour grid — real Benjamin Moore colours, used
+/** The 10-colour grid — real Benjamin Moore colours, used
  * only when the colour endpoint returns nothing. No ounces are
  * attached here: ounces come from a stored formula or the clerk. */
 const FALLBACK_COLORS: { code: string; name: string; hex: string; base: string }[] = [

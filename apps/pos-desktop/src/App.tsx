@@ -76,7 +76,7 @@ import {
 /**
  * Quick-pick chips — REAL SKUs + REAL list prices, verified against
  * price book 10005510 (EXCEL sheet, effective July 17, 2026).
- * NOTE: the mockup's chip prices were the MSRP column ($97.99 etc.);
+ * NOTE: the chip prices were originally the MSRP column ($97.99 etc.);
  * the List Price column is what is used here, per the brief.
  * NET is the dealer's cost and backs the below-cost gate.
  */
@@ -915,7 +915,7 @@ export default function App() {
           if (name === 'Transactions') {
             setActiveNav(name)
           } else {
-            say(`${name} — this mockup wires up the register screen only.`)
+            say(`${name} — not wired up in this build yet.`)
           }
         }}
         onCycleTheme={theme.cycleTheme}

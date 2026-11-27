@@ -3,7 +3,7 @@
 // read CSS custom properties. `setTheme` sets <html data-theme> +
 // data-layout, aria-pressed on the theme buttons, and the theme
 // button label. Theme choice, custom themes and the live-monitor
-// state persist in localStorage (session-only in the mockup).
+// state persist in localStorage (session-only in this app).
 
 import { useCallback, useEffect, useState } from 'react'
 

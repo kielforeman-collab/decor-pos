@@ -163,7 +163,6 @@ export default function TopBar({
           </svg>
           DECOR POS
         </span>
-        <span className="brand-chip">UI MOCKUP</span>
       </div>
       <div className="till-text">
         Register 1 · Main counter · {tillOpen ? `Drawer open · ${fmtMoney(cad(openingFloat || '0.0000'))} float` : 'Drawer closed'}
