@@ -119,6 +119,12 @@ async fn seeded_edge() -> (Edge, SeededUsers) {
             eco_fee_category: None,
             tax_class_id: Uuid::now_v7(),
             prompt_template_id: None,
+            upc: None,
+            category: None,
+            line_code: None,
+            color_name: None,
+            size_code: None,
+            source_metadata: None,
             is_active: true,
             map: None,
             msrp: None,
@@ -275,4 +281,128 @@ async fn import_rejects_unknown_store() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+async fn get_json(edge: &Edge, uri: &str, token: &str) -> (StatusCode, serde_json::Value) {
+    let response = edge
+        .router()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .method("GET")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+#[tokio::test]
+async fn import_upc_and_source_metadata_flow_through_search_balances_and_shelf_tags() {
+    let (edge, users) = seeded_edge().await;
+    let rows = serde_json::json!([
+        {
+            "row": 2,
+            "sku": "N5241X-001",
+            "name": "AURA BATH & SPA MATTE WHITE",
+            "category": "AURA INTERIOR",
+            "line": "0N524",
+            "color": "1X",
+            "size": "001",
+            "upc": "023906998877",
+            "msrp": "$119.99",
+            "map": "$109.99",
+            "net_price": "$64.50",
+            "list_price": "$65.00",
+            "brand_code": "BMC",
+            "source_metadata": {
+                "SKU": "N5241X-001",
+                "Product Name": "AURA BATH & SPA MATTE WHITE",
+                "French Description": "AURA BAIN ET SPA MAT BLANC",
+                "Product UPC": "023906998877",
+                "Brand Discount Y/N": "Y",
+                "Brand Discount": "4%"
+            }
+        }
+    ]);
+    let (status, body) = post_json(
+        &edge,
+        "/pos/inventory/import",
+        import_body(rows),
+        Some(&users.manager.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["created"], 1);
+
+    // Counter barcode lookup finds the imported product by Product UPC.
+    let (status, search) = get_json(
+        &edge,
+        "/pos/products/search?barcode=023906998877",
+        &users.cashier.token,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{search}");
+    let items = search.as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["sku"], "N5241X-001");
+    assert_eq!(items[0]["upc"], "023906998877");
+    assert_eq!(items[0]["category"], "AURA INTERIOR");
+    assert_eq!(items[0]["line_code"], "0N524");
+    assert_eq!(items[0]["color_name"], "1X");
+    assert_eq!(items[0]["size_code"], "001");
+    assert_eq!(
+        items[0]["source_metadata"]["French Description"],
+        "AURA BAIN ET SPA MAT BLANC"
+    );
+    let product_id = items[0]["product_id"].as_str().unwrap().to_string();
+
+    // Substring search matches both UPC and lossless French Description metadata.
+    let (status, by_q_fr) = get_json(
+        &edge,
+        "/pos/products/search?q=BAIN%20ET%20SPA",
+        &users.cashier.token,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{by_q_fr}");
+    assert_eq!(by_q_fr.as_array().unwrap().len(), 1);
+    assert_eq!(by_q_fr[0]["sku"], "N5241X-001");
+
+    // Inventory balances include UPC, catalog fields, and source_metadata.
+    let (status, balances) = get_json(
+        &edge,
+        &format!("/inventory/balances?store_id={}", Uuid::from_u128(STORE_ID)),
+        &users.manager.token,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{balances}");
+    let aura = balances
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["sku"] == "N5241X-001")
+        .unwrap();
+    assert_eq!(aura["upc"], "023906998877");
+    assert_eq!(aura["source_metadata"]["Brand Discount"], "4%");
+
+    // ZPL shelf tag encodes the product's UPC instead of falling back to SKU.
+    let (status, tag) = get_json(
+        &edge,
+        &format!("/inventory/shelf-tags?product_id={product_id}"),
+        &users.manager.token,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tag}");
+    assert_eq!(tag["barcode"], "023906998877");
+    assert!(
+        tag["zpl"].as_str().unwrap().contains("023906998877"),
+        "ZPL should encode Product UPC: {}",
+        tag["zpl"]
+    );
 }

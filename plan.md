@@ -503,3 +503,18 @@ only its own section, ticking items as they are verified — not when code merel
   - `Decor.POS-1.2.4-1.x86_64.rpm` (11.9 MB) — Linux RPM package
   - `Decor.POS_1.2.4_amd64.AppImage` (89.4 MB) — Linux AppImage
   - `df-server-v1.2.4-linux-x86_64` (28.4 MB) — Linux server binary
+
+## Post-v1.2.4 UX & Catalog Completeness — ✅ DONE Nov 28, 2026
+### Scope
+- ✅ **Products screen split-pane scrolling fix (`c7b619c`):**
+  - Bound `.screen-split` detail panes to viewport height with independent `.screen-scroll-pane` list scroll and sticky right-hand detail pane (auto-resetting detail scroll on selection change) so Product detail never scrolls off-screen.
+  - GitHub `CI` green on `c7b619c` (run `46163641763`).
+- ✅ **Lossless `.xls`/`.xlsx`/`.csv` product catalog import & Product UPC persistence:**
+  - Migration `0018_product_catalog_fields.sql` (SQLite & PostgreSQL; expected migration list updated in `df-server`): adds `upc`, `category`, `line_code`, `color_name`, `size_code`, and `source_metadata_json` to `products` plus `idx_products_org_upc (org_id, upc)`.
+  - `df-db`: `Product`, `InventoryBalance`, `ImportProductRow`, `insert_product`, and `update_imported_product` (with `COALESCE` so partial re-imports preserve existing catalog/source fields) now persist Product UPC, category, line, color, raw size code, and the full raw spreadsheet row JSON (`source_metadata`). Every imported UPC is also upserted into `product_barcodes` via `upsert_product_barcode`; added `get_product_by_barcode` (`product_barcodes` → `products.upc` → fallback `products.sku`).
+  - `df-edge`: `GET /pos/products/search` resolves `?barcode=` via `get_product_by_barcode`, searches `?q=` across SKU/name/UPC/category/line/color/source metadata, and returns all catalog fields + `source_metadata`; `GET /inventory/shelf-tags` now encodes `product.upc` on ZPL labels (falling back to `sku` when absent).
+  - `apps/pos-desktop`: `productImport.ts` now captures every non-empty raw column keyed by its original header into `source_metadata`, accepts `Product UPC`/`UPC`/`Barcode` aliases, and avoids scientific-notation truncation on 12-digit numeric `.xls` UPCs; `ProductsScreen.tsx` accepts `.xls,.xlsx,.csv`, filters across UPC/catalog/source columns, displays Product UPC in the inventory & preview tables and detail pane, and renders a collapsible **Source spreadsheet fields** table showing every preserved column verbatim.
+### Verification
+- ✅ `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, float-money guard across all 8 financial crates, `apps/pos-desktop` `npm run build` (`474.85 kB` main bundle, lazy `xlsx` chunk `429.52 kB`), and targeted suites (`pci_no_pan_columns` 3/3, `sqlite_product_import` 7/7, `df-edge` `product_import` 5/5, `df-server` unit + `migrate_schema` 5/5) — all clean.
+- 🔄 GitHub `CI` pending push.
+

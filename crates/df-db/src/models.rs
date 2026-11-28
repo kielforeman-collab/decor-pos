@@ -88,6 +88,24 @@ pub struct Product {
     pub eco_fee_category: Option<String>,
     pub tax_class_id: Uuid,
     pub prompt_template_id: Option<Uuid>,
+    /// Product UPC / barcode from the price list (`products.upc`, migration `0018`).
+    #[serde(default)]
+    pub upc: Option<String>,
+    /// Price-list category (e.g. `INTERIOR`, `COLORANT`, migration `0018`).
+    #[serde(default)]
+    pub category: Option<String>,
+    /// Price-list line code (e.g. `00229`, `N547`, migration `0018`).
+    #[serde(default)]
+    pub line_code: Option<String>,
+    /// Price-list color / base label (migration `0018`).
+    #[serde(default)]
+    pub color_name: Option<String>,
+    /// Raw size code from the price list (e.g. `001`, `004`, `1 gal`, migration `0018`).
+    #[serde(default)]
+    pub size_code: Option<String>,
+    /// Lossless JSON map of every source spreadsheet column (`products.source_metadata_json`, migration `0018`).
+    #[serde(default)]
+    pub source_metadata: Option<serde_json::Value>,
     pub is_active: bool,
 }
 

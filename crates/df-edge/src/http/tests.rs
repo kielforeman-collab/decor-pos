@@ -885,6 +885,7 @@ async fn import_gennex_black(edge: &Edge) {
             net_price: "$39.34".to_string(),
             list_price: "$39.64".to_string(),
             brand_code: "BMC".to_string(),
+            source_metadata: None,
         }],
     )
     .await

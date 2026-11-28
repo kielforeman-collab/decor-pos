@@ -95,8 +95,8 @@ pub struct ShelfTagResponse {
     pub sku: String,
     pub name: String,
     pub price: Money,
-    /// The barcode encoded on the tag. No barcode repo is wired yet,
-    /// so this is the SKU (Code 128 encodes it verbatim).
+    /// The barcode encoded on the tag: the product's UPC when
+    /// present, falling back to its SKU (Code 128 encodes it verbatim).
     pub barcode: String,
     pub zpl: String,
 }
@@ -227,16 +227,24 @@ impl Edge {
 
     /// Printable ZPL shelf tag for one product, via the real
     /// `df-hw` label template (price = list price, store currency).
+    /// Encodes `product.upc` when present, falling back to `sku`.
     pub async fn shelf_tag(&self, product_id: Uuid) -> Result<ShelfTagResponse, EdgeError> {
         let product = df_db::get_product(self.pool(), product_id).await?;
         let price = Money::new(product.list_price, self.config().currency);
-        let zpl = df_hw::shelf_label_zpl(&product.sku, &product.name, price, &product.sku);
+        let barcode = product
+            .upc
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| product.sku.clone());
+        let zpl = df_hw::shelf_label_zpl(&product.sku, &product.name, price, &barcode);
         Ok(ShelfTagResponse {
             product_id,
-            sku: product.sku.clone(),
+            sku: product.sku,
             name: product.name,
             price,
-            barcode: product.sku,
+            barcode,
             zpl,
         })
     }

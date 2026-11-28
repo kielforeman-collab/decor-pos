@@ -28,7 +28,14 @@ pub struct ProductSearchResult {
     pub standard_cost: Decimal,
     pub msrp: Option<Decimal>,
     pub map: Option<Decimal>,
+    pub manufacturer_code: Option<String>,
     pub container_volume_ml: Option<i32>,
+    pub upc: Option<String>,
+    pub category: Option<String>,
+    pub line_code: Option<String>,
+    pub color_name: Option<String>,
+    pub size_code: Option<String>,
+    pub source_metadata: Option<serde_json::Value>,
     pub on_hand: Decimal,
 }
 
@@ -59,11 +66,21 @@ fn contains_needle(haystack: &str, needle: &str) -> bool {
     haystack.to_lowercase().contains(needle)
 }
 
+fn metadata_contains(meta: &serde_json::Value, needle: &str) -> bool {
+    match meta {
+        serde_json::Value::String(s) => contains_needle(s, needle),
+        serde_json::Value::Object(map) => map.values().any(|v| metadata_contains(v, needle)),
+        serde_json::Value::Array(arr) => arr.iter().any(|v| metadata_contains(v, needle)),
+        _ => false,
+    }
+}
+
 impl Edge {
     /// Search products for the counter: exact `sku`, exact
-    /// `barcode` (a barcode is a SKU — `Product` has no separate
-    /// barcode field), or a case-insensitive substring over
-    /// sku/name for `q`. At most `limit` rows (default 50, hard
+    /// `barcode` (matches `product_barcodes`, `products.upc`, or
+    /// falls back to `products.sku`), or a case-insensitive
+    /// substring over sku/name/upc/category/line/color/source
+    /// metadata for `q`. At most `limit` rows (default 50, hard
     /// cap 50), ordered by SKU. `on_hand` comes from the inventory
     /// balances at this store.
     pub async fn search_products(
@@ -78,7 +95,7 @@ impl Edge {
             vec![df_db::get_product_by_sku(self.pool(), self.config().org_id, sku.trim()).await?]
         } else if let Some(barcode) = barcode.filter(|s| !s.trim().is_empty()) {
             vec![
-                df_db::get_product_by_sku(self.pool(), self.config().org_id, barcode.trim())
+                df_db::get_product_by_barcode(self.pool(), self.config().org_id, barcode.trim())
                     .await?,
             ]
         } else {
@@ -88,7 +105,23 @@ impl Edge {
                     let needle = q.trim().to_lowercase();
                     all.into_iter()
                         .filter(|p| {
-                            contains_needle(&p.sku, &needle) || contains_needle(&p.name, &needle)
+                            contains_needle(&p.sku, &needle)
+                                || contains_needle(&p.name, &needle)
+                                || p.upc
+                                    .as_deref()
+                                    .is_some_and(|v| contains_needle(v, &needle))
+                                || p.category
+                                    .as_deref()
+                                    .is_some_and(|v| contains_needle(v, &needle))
+                                || p.line_code
+                                    .as_deref()
+                                    .is_some_and(|v| contains_needle(v, &needle))
+                                || p.color_name
+                                    .as_deref()
+                                    .is_some_and(|v| contains_needle(v, &needle))
+                                || p.source_metadata
+                                    .as_ref()
+                                    .is_some_and(|m| metadata_contains(m, &needle))
                         })
                         .collect()
                 }
@@ -115,7 +148,14 @@ impl Edge {
                 standard_cost: p.standard_cost,
                 msrp: p.msrp,
                 map: p.map,
+                manufacturer_code: p.manufacturer_code,
                 container_volume_ml: p.container_volume_ml,
+                upc: p.upc,
+                category: p.category,
+                line_code: p.line_code,
+                color_name: p.color_name,
+                size_code: p.size_code,
+                source_metadata: p.source_metadata,
             })
             .collect())
     }

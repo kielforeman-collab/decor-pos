@@ -33,7 +33,9 @@ export interface ImportPreview {
   error: string | null
 }
 
-const EMPTY_ROW: Omit<ProductImportRow, 'row'> = {
+type MappedImportField = keyof Omit<ProductImportRow, 'row' | 'source_metadata'>
+
+const EMPTY_ROW: Omit<ProductImportRow, 'row' | 'source_metadata'> = {
   sku: '',
   name: '',
   category: '',
@@ -49,7 +51,7 @@ const EMPTY_ROW: Omit<ProductImportRow, 'row'> = {
 }
 
 /** Header names we map, normalized (trim + lowercase) → field. */
-const HEADER_MAP: Record<string, keyof Omit<ProductImportRow, 'row'>> = {
+const HEADER_MAP: Record<string, MappedImportField> = {
   sku: 'sku',
   'product name': 'name',
   category: 'category',
@@ -57,6 +59,8 @@ const HEADER_MAP: Record<string, keyof Omit<ProductImportRow, 'row'>> = {
   color: 'color',
   size: 'size',
   'product upc': 'upc',
+  upc: 'upc',
+  barcode: 'upc',
   msrp: 'msrp',
   map: 'map',
   'net price': 'net_price',
@@ -96,15 +100,35 @@ export function validatePreviewRow(data: ProductImportRow): string | null {
   return null
 }
 
+const SCIENTIFIC_RE = /^[+-]?\d+(?:\.\d+)?[eE][+-]?\d+$/
+
+/**
+ * Convert one spreadsheet cell to trimmed text. Prefers the formatted
+ * string (keeps leading zeros on text/custom-formatted UPCs and `$`
+ * price labels), but falls back to the exact integer string when Excel
+ * General format rendered a long integer (like a 12-digit UPC) in
+ * scientific notation (`1.23457E+11`).
+ */
+function cellText(formatted: unknown, raw: unknown): string {
+  const text = String(formatted ?? '').trim()
+  if (typeof raw === 'number' && Number.isSafeInteger(raw) && SCIENTIFIC_RE.test(text)) {
+    return String(raw)
+  }
+  return text
+}
+
 function sheetToRows(
   XLSX: typeof import('xlsx'),
   sheet: WorkSheet,
 ): ProductImportRow[] {
   const grid = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', raw: false })
+  const rawGrid = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', raw: true })
   if (grid.length === 0) return []
-  const header = (grid[0] as unknown[]).map((cell) => String(cell ?? '').trim().toLowerCase())
-  const colIndex = new Map<keyof Omit<ProductImportRow, 'row'>, number>()
+  const rawHeader = (grid[0] as unknown[]).map((cell) => String(cell ?? '').trim())
+  const header = rawHeader.map((h) => h.toLowerCase())
+  const colIndex = new Map<MappedImportField, number>()
   for (const [name, field] of Object.entries(HEADER_MAP)) {
+    if (colIndex.has(field)) continue
     const idx = header.indexOf(name)
     if (idx >= 0) colIndex.set(field, idx)
   }
@@ -116,21 +140,36 @@ function sheetToRows(
   const rows: ProductImportRow[] = []
   for (let i = 1; i < grid.length; i++) {
     const cells = grid[i] as unknown[]
+    const rawCells = (rawGrid[i] as unknown[] | undefined) ?? []
     const data: ProductImportRow = { row: i + 1, ...EMPTY_ROW }
     for (const [field, idx] of colIndex) {
-      data[field] = String(cells[idx] ?? '').trim()
+      data[field] = cellText(cells[idx], rawCells[idx])
+    }
+    // Preserve every non-empty column from the source spreadsheet row
+    // keyed by its original header name so no vendor data is ever lost.
+    const meta: Record<string, string> = {}
+    for (let c = 0; c < rawHeader.length; c++) {
+      const colName = rawHeader[c]
+      if (!colName) continue
+      const val = cellText(cells[c], rawCells[c])
+      if (val !== '') {
+        meta[colName] = val
+      }
+    }
+    if (Object.keys(meta).length > 0) {
+      data.source_metadata = meta
     }
     // Skip fully blank lines (trailing empty rows in the sheet).
-    const { row: _rowNo, ...fields } = data
-    if (Object.values(fields).every((v) => v === '')) continue
+    const { row: _rowNo, source_metadata: _meta, ...fields } = data
+    if (Object.values(fields).every((v) => v === '') && Object.keys(meta).length === 0) continue
     rows.push(data)
   }
   return rows
 }
 
 /**
- * Read a .xlsx or .csv file picked in the browser and return the
- * preview rows with per-row problems. Reads the sheet named
+ * Read a .xls, .xlsx, or .csv file picked in the browser and return
+ * the preview rows with per-row problems. Reads the sheet named
  * "EXCEL" when present, else the first sheet.
  */
 export async function parseImportFile(file: File): Promise<ImportPreview> {

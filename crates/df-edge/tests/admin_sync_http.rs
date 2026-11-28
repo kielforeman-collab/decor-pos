@@ -176,6 +176,12 @@ async fn admin_store_settings_updates_jurisdiction_and_drives_live_tax_pricing()
             eco_fee_category: None,
             tax_class_id: Uuid::now_v7(),
             prompt_template_id: None,
+            upc: None,
+            category: None,
+            line_code: None,
+            color_name: None,
+            size_code: None,
+            source_metadata: None,
             is_active: true,
         },
     )

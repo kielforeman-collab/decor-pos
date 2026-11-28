@@ -42,7 +42,14 @@ interface DetailProduct {
   standard_cost: string
   msrp: string | null
   map: string | null
+  manufacturer_code: string | null
   container_volume_ml: number | null
+  upc: string | null
+  category: string | null
+  line_code: string | null
+  color_name: string | null
+  size_code: string | null
+  source_metadata: Record<string, string> | null
   on_hand: string | null
 }
 
@@ -56,7 +63,14 @@ function detailFromBalance(b: InventoryBalance): DetailProduct {
     standard_cost: b.standard_cost,
     msrp: b.msrp,
     map: b.map,
-    container_volume_ml: null,
+    manufacturer_code: b.manufacturer_code,
+    container_volume_ml: b.container_volume_ml,
+    upc: b.upc,
+    category: b.category,
+    line_code: b.line_code,
+    color_name: b.color_name,
+    size_code: b.size_code,
+    source_metadata: b.source_metadata,
     on_hand: b.on_hand,
   }
 }
@@ -71,9 +85,21 @@ function detailFromSearch(p: ProductSearchResult): DetailProduct {
     standard_cost: p.standard_cost,
     msrp: p.msrp,
     map: p.map,
+    manufacturer_code: p.manufacturer_code,
     container_volume_ml: p.container_volume_ml,
+    upc: p.upc,
+    category: p.category,
+    line_code: p.line_code,
+    color_name: p.color_name,
+    size_code: p.size_code,
+    source_metadata: p.source_metadata,
     on_hand: p.on_hand,
   }
+}
+
+function metadataEntries(meta: Record<string, string> | null): [string, string][] {
+  if (!meta) return []
+  return Object.entries(meta).filter(([, v]) => typeof v === 'string' && v.trim() !== '')
 }
 
 export default function ProductsScreen({
@@ -122,6 +148,11 @@ export default function ProductsScreen({
       setBalances(b)
       setLevels(l)
       setPoints(p)
+      setSelected((prev) => {
+        if (!prev) return prev
+        const fresh = b.find((x) => x.product_id === prev.product_id)
+        return fresh ? detailFromBalance(fresh) : prev
+      })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -168,7 +199,7 @@ export default function ProductsScreen({
 
   function selectBalance(b: InventoryBalance) {
     setSelected(detailFromBalance(b))
-    // Enrich with the container size, which balances don't carry.
+    // Refresh from search endpoint in case stock/metadata changed since load.
     searchProducts({ sku: b.sku, limit: 1 })
       .then((found) => {
         if (found.length > 0) setSelected((prev) => (prev && prev.product_id === b.product_id ? detailFromSearch(found[0]) : prev))
@@ -233,15 +264,25 @@ export default function ProductsScreen({
 
   if (!storeId) return <section className="screen"><p className="screen-empty">Loading store…</p></section>
 
-  const filtered = q.trim()
+  const needle = q.trim().toLowerCase()
+  const filtered = needle
     ? balances.filter(
         (b) =>
-          b.sku.toLowerCase().includes(q.trim().toLowerCase()) ||
-          b.name.toLowerCase().includes(q.trim().toLowerCase()),
+          b.sku.toLowerCase().includes(needle) ||
+          b.name.toLowerCase().includes(needle) ||
+          (b.upc && b.upc.toLowerCase().includes(needle)) ||
+          (b.category && b.category.toLowerCase().includes(needle)) ||
+          (b.line_code && b.line_code.toLowerCase().includes(needle)) ||
+          (b.color_name && b.color_name.toLowerCase().includes(needle)) ||
+          (b.source_metadata &&
+            Object.values(b.source_metadata).some(
+              (v) => typeof v === 'string' && v.toLowerCase().includes(needle),
+            )),
       )
     : balances
   const readyRows = importPreview ? importPreview.rows.filter((r) => !r.problem) : []
   const skippedRows = importPreview ? importPreview.rows.filter((r) => r.problem) : []
+  const sourceFields = selected ? metadataEntries(selected.source_metadata) : []
 
   return (
     <section className="screen" aria-label="Products">
@@ -275,7 +316,7 @@ export default function ProductsScreen({
             <input
               ref={importInputRef}
               type="file"
-              accept=".xlsx,.csv"
+              accept=".xls,.xlsx,.csv"
               style={{ display: 'none' }}
               onChange={(e) => {
                 const f = e.target.files?.[0]
@@ -309,7 +350,7 @@ export default function ProductsScreen({
             type="search"
             className="screen-input"
             value={q}
-            placeholder="SKU or product name…"
+            placeholder="SKU, UPC, name, category, line, or color…"
             aria-label="Search products"
             onChange={(e) => setQ(e.target.value)}
           />
@@ -326,6 +367,7 @@ export default function ProductsScreen({
             <thead>
               <tr>
                 <th>SKU</th>
+                <th>UPC</th>
                 <th>Product</th>
                 <th className="num">List price</th>
               </tr>
@@ -334,6 +376,7 @@ export default function ProductsScreen({
               {results.map((r) => (
                 <tr key={r.product_id} onClick={() => setSelected(detailFromSearch(r))} className={selected?.product_id === r.product_id ? 'selected' : ''}>
                   <td className="mono">{r.sku}</td>
+                  <td className="mono">{r.upc ?? '—'}</td>
                   <td>{r.name}</td>
                   <td className="num">{fmtMoney(cad(r.list_price))}</td>
                 </tr>
@@ -347,9 +390,10 @@ export default function ProductsScreen({
         <div className="screen-panel">
           <h3>Import products — {importFileName}</h3>
           <p className="screen-note">
-            Reads a Benjamin Moore price list (.xlsx or .csv) in the browser — the file itself is never
-            uploaded. Products match by SKU: new SKUs are created, existing SKUs get new prices. Category,
-            UPC, MSRP and MAP are not stored (no columns for them).
+            Reads a vendor price list (.xls, .xlsx, or .csv) in the browser — the file itself is never
+            uploaded. Products match by SKU: new SKUs are created, existing SKUs are updated. Product UPC
+            (also indexed for barcode scans &amp; shelf tags), Category, Line, Color, Size, MSRP, MAP,
+            Brand Code, and every additional source spreadsheet column are preserved.
           </p>
           {importPreview?.error && <p className="screen-empty">{importPreview.error}</p>}
           {importPreview && !importPreview.error && (
@@ -362,6 +406,7 @@ export default function ProductsScreen({
                   <thead>
                     <tr>
                       <th>SKU</th>
+                      <th>UPC</th>
                       <th>Product</th>
                       <th className="num">List price</th>
                       <th className="num">Net price</th>
@@ -371,6 +416,7 @@ export default function ProductsScreen({
                     {readyRows.slice(0, 5).map((r) => (
                       <tr key={r.data.row}>
                         <td className="mono">{r.data.sku}</td>
+                        <td className="mono">{r.data.upc || '—'}</td>
                         <td>{r.data.name}</td>
                         <td className="num">{r.data.list_price}</td>
                         <td className="num">{r.data.net_price}</td>
@@ -442,6 +488,7 @@ export default function ProductsScreen({
                 <thead>
                   <tr>
                     <th>SKU</th>
+                    <th>UPC</th>
                     <th>Product</th>
                     <th className="num">On hand</th>
                     <th className="num">List</th>
@@ -455,6 +502,7 @@ export default function ProductsScreen({
                       onClick={() => selectBalance(b)}
                     >
                       <td className="mono">{b.sku}</td>
+                      <td className="mono">{b.upc ?? '—'}</td>
                       <td>{b.name}</td>
                       <td className="num">{fmtQty(b.on_hand)}</td>
                       <td className="num">{fmtMoney(cad(b.list_price))}</td>
@@ -474,14 +522,53 @@ export default function ProductsScreen({
             <>
               <dl className="screen-facts">
                 <div><dt>SKU</dt><dd className="mono">{selected.sku}</dd></div>
+                <div><dt>Product UPC</dt><dd className="mono">{selected.upc ?? '—'}</dd></div>
                 <div><dt>Product</dt><dd>{selected.name}</dd></div>
+                <div><dt>Brand</dt><dd>{selected.manufacturer_code ?? '—'}</dd></div>
+                <div><dt>Category</dt><dd>{selected.category ?? '—'}</dd></div>
+                <div><dt>Line</dt><dd>{selected.line_code ?? '—'}</dd></div>
+                <div><dt>Color</dt><dd>{selected.color_name ?? '—'}</dd></div>
+                <div>
+                  <dt>Size</dt>
+                  <dd>
+                    {[
+                      sizeLabelForVolume(selected.container_volume_ml, selected.base_uom),
+                      selected.size_code ? `code ${selected.size_code}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ') || '—'}
+                  </dd>
+                </div>
                 <div><dt>List price</dt><dd>{fmtMoney(cad(selected.list_price))}</dd></div>
                 <div><dt>Standard cost (NET)</dt><dd>{fmtMoney(cad(selected.standard_cost))}</dd></div>
                 <div><dt>MSRP</dt><dd>{selected.msrp ? fmtMoney(cad(selected.msrp)) : '—'}</dd></div>
                 <div><dt>MAP</dt><dd>{selected.map ? fmtMoney(cad(selected.map)) : '—'}</dd></div>
-                <div><dt>Container size</dt><dd>{sizeLabelForVolume(selected.container_volume_ml, selected.base_uom) ?? '—'}</dd></div>
                 <div><dt>On hand</dt><dd>{selected.on_hand != null ? fmtQty(selected.on_hand) : '—'}</dd></div>
               </dl>
+
+              {sourceFields.length > 0 && (
+                <details className="screen-sub">
+                  <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+                    Source spreadsheet fields ({sourceFields.length})
+                  </summary>
+                  <table className="screen-table" style={{ marginTop: '0.5rem' }}>
+                    <thead>
+                      <tr>
+                        <th>Column</th>
+                        <th>Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sourceFields.map(([col, val]) => (
+                        <tr key={col}>
+                          <td>{col}</td>
+                          <td className="mono">{val}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </details>
+              )}
 
               <h4>Price levels</h4>
               {levels.length === 0 ? (

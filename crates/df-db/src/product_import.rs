@@ -24,9 +24,11 @@
 //! | NET Price        | `standard_cost` (and `avg_cost` on create)|
 //! | Brand Code       | `manufacturer_code`                        |
 //! | MSRP / MAP       | `msrp` / `map` (migration `0014_counter_ui`) |
-//! | Size             | `container_volume_ml` (see [`container_volume_ml_for_size`]) |
-//! | Line `00229` / `COLORANT` category | also a `colorants` row (`Gennex`) |
-//! | Category / Line / Color / Product UPC / French Description / Brand Discount… | **not stored** — `products` has no columns for them (see [`ImportProductRow`]) |
+//! | Size             | `container_volume_ml` + raw `size_code` (migration `0018`) |
+//! | Product UPC      | `upc` + `product_barcodes` row (migration `0018`) |
+//! | Category / Line / Color | `category` / `line_code` / `color_name` (migration `0018`) |
+//! | Line `00229`     | also a `colorants` row (`Gennex`)          |
+//! | All raw spreadsheet columns (French Description, Brand Discount, Attention flags, vendor extras) | `source_metadata_json` lossless JSON object (migration `0018`) |
 //!
 //! Defaults for the columns the file cannot supply follow the
 //! existing seed pattern (`Edge::seed_product`): `product_type`
@@ -47,13 +49,15 @@ use crate::error::DbError;
 use crate::models::Product;
 use crate::repos::{
     ImportedProductUpdate, get_product_by_sku, insert_product, update_imported_product,
+    upsert_product_barcode,
 };
 
 /// One parsed spreadsheet row, as posted by the back office. Every
 /// field is a string (prices arrive like `"$39.34"`); `row` is the
 /// 1-based spreadsheet row number (header is row 1) so failures point
-/// at the exact line in the file. Fields the `products` table has no
-/// column for are accepted and ignored — see the module docs.
+/// at the exact line in the file. `source_metadata` holds the full
+/// lossless JSON object of every non-empty column from the source
+/// `.xls`/`.xlsx`/`.csv` row keyed by its original column header.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportProductRow {
     pub row: usize,
@@ -81,6 +85,9 @@ pub struct ImportProductRow {
     pub list_price: String,
     #[serde(default)]
     pub brand_code: String,
+    /// Lossless map of every raw spreadsheet column (`{ header: value }`).
+    #[serde(default)]
+    pub source_metadata: Option<serde_json::Value>,
 }
 
 /// A row that passed validation, with prices parsed to [`Decimal`].
@@ -98,10 +105,12 @@ pub struct ValidatedImportRow {
     /// [`container_volume_ml_for_size`]); `None` when the size is
     /// unknown / not a volume (kits, eaches, packaging).
     pub container_volume_ml: Option<i32>,
+    pub upc: String,
     pub line: String,
     pub category: String,
     pub color: String,
     pub size: String,
+    pub source_metadata: Option<serde_json::Value>,
 }
 
 /// One row that could not be imported.
@@ -147,8 +156,9 @@ pub fn parse_money(value: &str, what: &str) -> Result<Option<Decimal>, String> {
 /// Validate one posted row. SKU and name are required; List Price
 /// and NET Price are required and must parse as decimals >= 0.
 /// MSRP / MAP are optional (the real price list leaves MSRP blank
-/// on most rows) but must parse when present — and are now stored
-/// (migration `0014_counter_ui`), not just validated.
+/// on most rows) but must parse when present — and are stored
+/// alongside Product UPC, category, line, color, size, and lossless
+/// `source_metadata`.
 pub fn validate_import_row(row: &ImportProductRow) -> Result<ValidatedImportRow, String> {
     let sku = row.sku.trim().to_string();
     if sku.is_empty() {
@@ -164,6 +174,12 @@ pub fn validate_import_row(row: &ImportProductRow) -> Result<ValidatedImportRow,
         .ok_or_else(|| format!("{sku}: NET Price is missing"))?;
     let msrp = parse_money(&row.msrp, "msrp")?;
     let map = parse_money(&row.map, "map")?;
+    let source_metadata = match &row.source_metadata {
+        Some(serde_json::Value::Object(map)) if !map.is_empty() => {
+            Some(serde_json::Value::Object(map.clone()))
+        }
+        _ => None,
+    };
     Ok(ValidatedImportRow {
         row: row.row,
         sku,
@@ -174,10 +190,12 @@ pub fn validate_import_row(row: &ImportProductRow) -> Result<ValidatedImportRow,
         msrp,
         map,
         container_volume_ml: container_volume_ml_for_size(&row.size),
+        upc: row.upc.trim().to_string(),
         line: row.line.trim().to_string(),
         category: row.category.trim().to_string(),
         color: row.color.trim().to_string(),
         size: row.size.trim().to_string(),
+        source_metadata,
     })
 }
 
@@ -303,35 +321,47 @@ pub async fn import_products(
         }
         seen.insert(validated.sku.clone(), validated.row);
 
+        fn non_empty(s: &str) -> Option<&str> {
+            if s.is_empty() { None } else { Some(s) }
+        }
+        fn non_empty_owned(s: &str) -> Option<String> {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
+        }
+
         // A colorant row is only catalogued when its product row
         // imported: a failed product row catalogues nothing.
-        let mut product_ok = false;
+        let mut imported_product: Option<(Uuid, String)> = None;
         match get_product_by_sku(pool, org_id, &validated.sku).await {
-            Ok(_) => {
-                let manufacturer_code = if validated.brand_code.is_empty() {
-                    None
-                } else {
-                    Some(validated.brand_code.clone())
-                };
+            Ok(existing) => {
                 match update_imported_product(
                     pool,
                     ImportedProductUpdate {
                         org_id,
                         sku: &validated.sku,
                         name: &validated.name,
-                        manufacturer_code: manufacturer_code.as_deref(),
+                        manufacturer_code: non_empty(&validated.brand_code),
                         list_price: validated.list_price,
                         standard_cost: validated.net_price,
                         msrp: validated.msrp,
                         map: validated.map,
                         container_volume_ml: validated.container_volume_ml,
+                        upc: non_empty(&validated.upc),
+                        category: non_empty(&validated.category),
+                        line_code: non_empty(&validated.line),
+                        color_name: non_empty(&validated.color),
+                        size_code: non_empty(&validated.size),
+                        source_metadata: validated.source_metadata.as_ref(),
                     },
                 )
                 .await
                 {
                     Ok(()) => {
                         updated += 1;
-                        product_ok = true;
+                        imported_product = Some((existing.id, existing.base_uom));
                     }
                     Err(e) => failures.push(fail(format!("database error: {e}"))),
                 }
@@ -343,11 +373,7 @@ pub async fn import_products(
                     id: Uuid::now_v7(),
                     org_id,
                     sku: validated.sku.clone(),
-                    manufacturer_code: if validated.brand_code.is_empty() {
-                        None
-                    } else {
-                        Some(validated.brand_code.clone())
-                    },
+                    manufacturer_code: non_empty_owned(&validated.brand_code),
                     name: validated.name.clone(),
                     department_id: Uuid::now_v7(),
                     class_id: None,
@@ -367,12 +393,20 @@ pub async fn import_products(
                     eco_fee_category: None,
                     tax_class_id: Uuid::now_v7(),
                     prompt_template_id: None,
+                    upc: non_empty_owned(&validated.upc),
+                    category: non_empty_owned(&validated.category),
+                    line_code: non_empty_owned(&validated.line),
+                    color_name: non_empty_owned(&validated.color),
+                    size_code: non_empty_owned(&validated.size),
+                    source_metadata: validated.source_metadata.clone(),
                     is_active: true,
                 };
+                let pid = product.id;
+                let uom = product.base_uom.clone();
                 match insert_product(pool, &product).await {
                     Ok(()) => {
                         created += 1;
-                        product_ok = true;
+                        imported_product = Some((pid, uom));
                     }
                     Err(e) => failures.push(fail(format!("database error: {e}"))),
                 }
@@ -380,10 +414,18 @@ pub async fn import_products(
             Err(e) => failures.push(fail(format!("database error: {e}"))),
         }
 
-        // Gennex colorant rows double as colorant catalog rows.
-        // Best-effort: a colorant problem is not a product problem.
-        if product_ok && is_colorant_row(&validated.line, &validated.category) {
-            let _ = upsert_gennex_colorant(pool, org_id, &validated).await;
+        if let Some((product_id, base_uom)) = imported_product {
+            // Register Product UPC in `product_barcodes` so counter barcode
+            // scans resolve directly to this product. Best-effort so a
+            // duplicate UPC across two SKUs never fails the product row.
+            if !validated.upc.is_empty() {
+                let _ = upsert_product_barcode(pool, org_id, product_id, &validated.upc, &base_uom)
+                    .await;
+            }
+            // Gennex colorant rows double as colorant catalog rows.
+            if is_colorant_row(&validated.line, &validated.category) {
+                let _ = upsert_gennex_colorant(pool, org_id, &validated).await;
+            }
         }
     }
 
@@ -466,6 +508,7 @@ mod tests {
             net_price: net.to_string(),
             list_price: list.to_string(),
             brand_code: String::new(),
+            source_metadata: None,
         }
     }
 

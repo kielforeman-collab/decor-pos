@@ -54,6 +54,7 @@ fn row(sheet_row: usize, sku: &str, name: &str, net: &str, list: &str) -> Import
         net_price: net.to_string(),
         list_price: list.to_string(),
         brand_code: "BMC".to_string(),
+        source_metadata: None,
     }
 }
 
@@ -250,6 +251,7 @@ fn gennex_row(
         net_price: net.to_string(),
         list_price: list.to_string(),
         brand_code: "BMC".to_string(),
+        source_metadata: None,
     }
 }
 
@@ -349,6 +351,7 @@ async fn import_gennex_rows_store_msrp_map_volume_and_colorant() {
         net_price: "$39.34".to_string(),
         list_price: "$39.64".to_string(),
         brand_code: "BMC".to_string(),
+        source_metadata: None,
     };
     let result = import_products(&pool, org_id, Some(store_id), &[other])
         .await
@@ -385,4 +388,128 @@ fn size_codes_map_to_container_volumes() {
     assert_eq!(container_fl_oz_for_size("005"), Some(dec("640")));
     assert_eq!(container_fl_oz_for_size("006"), Some(dec("8")));
     assert_eq!(container_fl_oz_for_size("014"), None);
+}
+
+#[tokio::test]
+async fn import_preserves_upc_catalog_fields_and_full_source_metadata() {
+    let pool = test_pool().await;
+    let org_id = test_org(&pool).await;
+    let store_id = test_store(&pool, org_id).await;
+
+    let mut full_row = row(
+        2,
+        "F40301-001",
+        "REGAL SELECT HB SG-WHITE",
+        "$57.74",
+        "$58.18",
+    );
+    full_row.source_metadata = Some(serde_json::json!({
+        "SKU": "F40301-001",
+        "Product Name": "REGAL SELECT HB SG-WHITE",
+        "French Description": "REGAL SELECT INT SEMI-LUSTRE BLANC",
+        "Category": "REGAL SELECT INTERIOR",
+        "French Category Name": "REGAL SELECT INTERIEUR",
+        "Line": "0F403",
+        "Color": "01",
+        "Size": "001",
+        "Product UPC": "023906119027",
+        "Brand Discount Y/N": "Y",
+        "Brand Discount": "5%",
+        "Attention: Net Price Change": "YES",
+        "Attention: New Catalog SKU": "NO"
+    }));
+
+    let res = import_products(&pool, org_id, Some(store_id), &[full_row])
+        .await
+        .unwrap();
+    assert_eq!(res.created, 1);
+    assert_eq!(res.failed, 0);
+
+    let product = get_product_by_sku(&pool, org_id, "F40301-001")
+        .await
+        .unwrap();
+    assert_eq!(product.upc.as_deref(), Some("023906119027"));
+    assert_eq!(product.category.as_deref(), Some("REGAL SELECT INTERIOR"));
+    assert_eq!(product.line_code.as_deref(), Some("0F403"));
+    assert_eq!(product.color_name.as_deref(), Some("01"));
+    assert_eq!(product.size_code.as_deref(), Some("001"));
+    assert_eq!(
+        product
+            .source_metadata
+            .as_ref()
+            .and_then(|m| m.get("French Description"))
+            .and_then(|v| v.as_str()),
+        Some("REGAL SELECT INT SEMI-LUSTRE BLANC")
+    );
+    assert_eq!(
+        product
+            .source_metadata
+            .as_ref()
+            .and_then(|m| m.get("Brand Discount"))
+            .and_then(|v| v.as_str()),
+        Some("5%")
+    );
+
+    // Barcode lookup resolves by Product UPC (via product_barcodes / products.upc)
+    // and falls back to SKU.
+    let by_upc = df_db::get_product_by_barcode(&pool, org_id, "023906119027")
+        .await
+        .unwrap();
+    assert_eq!(by_upc.id, product.id);
+    let by_sku = df_db::get_product_by_barcode(&pool, org_id, "F40301-001")
+        .await
+        .unwrap();
+    assert_eq!(by_sku.id, product.id);
+
+    // Inventory balances surface UPC, catalog fields, and source_metadata.
+    let balances = df_db::inventory_balances(&pool, org_id, store_id)
+        .await
+        .unwrap();
+    assert_eq!(balances.len(), 1);
+    assert_eq!(balances[0].upc.as_deref(), Some("023906119027"));
+    assert_eq!(
+        balances[0].category.as_deref(),
+        Some("REGAL SELECT INTERIOR")
+    );
+    assert_eq!(balances[0].line_code.as_deref(), Some("0F403"));
+    assert_eq!(balances[0].color_name.as_deref(), Some("01"));
+    assert_eq!(balances[0].size_code.as_deref(), Some("001"));
+    assert_eq!(balances[0].container_volume_ml, Some(3785));
+    assert_eq!(
+        balances[0]
+            .source_metadata
+            .as_ref()
+            .and_then(|m| m.get("French Category Name"))
+            .and_then(|v| v.as_str()),
+        Some("REGAL SELECT INTERIEUR")
+    );
+
+    // Partial re-import without UPC/metadata keeps existing values via COALESCE.
+    let partial_reimport = ImportProductRow {
+        row: 2,
+        sku: "F40301-001".to_string(),
+        name: "REGAL SELECT HB SG-WHITE".to_string(),
+        category: String::new(),
+        line: String::new(),
+        color: String::new(),
+        size: String::new(),
+        upc: String::new(),
+        msrp: String::new(),
+        map: String::new(),
+        net_price: "$59.00".to_string(),
+        list_price: "$60.00".to_string(),
+        brand_code: "BMC".to_string(),
+        source_metadata: None,
+    };
+    let res2 = import_products(&pool, org_id, Some(store_id), &[partial_reimport])
+        .await
+        .unwrap();
+    assert_eq!(res2.updated, 1);
+    let after = get_product_by_sku(&pool, org_id, "F40301-001")
+        .await
+        .unwrap();
+    assert_eq!(after.list_price, dec("60.00"));
+    assert_eq!(after.upc.as_deref(), Some("023906119027"));
+    assert_eq!(after.category.as_deref(), Some("REGAL SELECT INTERIOR"));
+    assert!(after.source_metadata.is_some());
 }

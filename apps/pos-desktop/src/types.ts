@@ -229,7 +229,14 @@ export interface ProductSearchResult {
   standard_cost: string // decimal string
   msrp: string | null
   map: string | null
+  manufacturer_code: string | null
   container_volume_ml: number | null
+  upc: string | null
+  category: string | null
+  line_code: string | null
+  color_name: string | null
+  size_code: string | null
+  source_metadata: Record<string, string> | null
   on_hand: string | null
 }
 
@@ -531,8 +538,10 @@ export function cmpDecimal(a: string, b: string): number {
 }
 
 // --- Product import (ported from web-backoffice types.ts) -----------------
-// One parsed row of a Benjamin Moore price list. Category, UPC, MSRP
-// and MAP are not stored (no columns for them on the edge).
+// One parsed row of a vendor price list (.xls / .xlsx / .csv). All
+// core fields (including Product UPC, Category, Line, Color, Size,
+// MSRP, MAP) and every raw spreadsheet column (`source_metadata`)
+// are preserved on import.
 export interface ProductImportRow {
   row: number
   sku: string
@@ -547,6 +556,8 @@ export interface ProductImportRow {
   net_price: string
   list_price: string
   brand_code: string
+  /** Lossless map of every non-empty column from the source sheet. */
+  source_metadata?: Record<string, string>
 }
 
 export interface ProductImportFailure {

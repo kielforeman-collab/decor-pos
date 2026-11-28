@@ -388,6 +388,12 @@ async fn import_product_row(
         eco_fee_category: None,
         tax_class_id: uuid_from_seed("tax-class:default"),
         prompt_template_id: None,
+        upc: None,
+        category: None,
+        line_code: None,
+        color_name: None,
+        size_code: None,
+        source_metadata: None,
         is_active: true,
     };
     df_db::insert_product(pool, &product)

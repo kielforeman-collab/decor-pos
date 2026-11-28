@@ -601,6 +601,14 @@ export interface InventoryBalance {
   standard_cost: string
   msrp: string | null
   map: string | null
+  manufacturer_code: string | null
+  container_volume_ml: number | null
+  upc: string | null
+  category: string | null
+  line_code: string | null
+  color_name: string | null
+  size_code: string | null
+  source_metadata: Record<string, string> | null
   on_hand: string
   committed: string
   on_order: string

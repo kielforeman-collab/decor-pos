@@ -155,6 +155,16 @@ fn json_col(row: &AnyRow, name: &str) -> Result<serde_json::Value, DbError> {
         .map_err(|e| DbError::InvalidData(format!("column {name} is not JSON: {e}")))
 }
 
+fn opt_json_col(row: &AnyRow, name: &str) -> Result<Option<serde_json::Value>, DbError> {
+    match opt_text_col(row, name)? {
+        None => Ok(None),
+        Some(text) if text.trim().is_empty() => Ok(None),
+        Some(text) => serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|e| DbError::InvalidData(format!("column {name} is not JSON: {e}"))),
+    }
+}
+
 fn org_from_row(row: &AnyRow) -> Result<Organization, DbError> {
     Ok(Organization {
         id: uuid_col(row, "id")?,
@@ -223,6 +233,12 @@ fn product_from_row(row: &AnyRow) -> Result<Product, DbError> {
         eco_fee_category: opt_text_col(row, "eco_fee_category")?,
         tax_class_id: uuid_col(row, "tax_class_id")?,
         prompt_template_id: opt_uuid_col(row, "prompt_template_id")?,
+        upc: opt_text_col(row, "upc")?,
+        category: opt_text_col(row, "category")?,
+        line_code: opt_text_col(row, "line_code")?,
+        color_name: opt_text_col(row, "color_name")?,
+        size_code: opt_text_col(row, "size_code")?,
+        source_metadata: opt_json_col(row, "source_metadata_json")?,
         is_active: bool_col(row, "is_active")?,
     })
 }
@@ -460,8 +476,14 @@ pub async fn get_user_by_email(pool: &AnyPool, email: &str) -> Result<UserRow, D
 // --- products -------------------------------------------------------------
 
 pub async fn insert_product(pool: &AnyPool, product: &Product) -> Result<(), DbError> {
+    let source_metadata_json = product
+        .source_metadata
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|e| DbError::InvalidData(format!("source_metadata_json: {e}")))?;
     sqlx::query(
-        "INSERT INTO products (id, org_id, sku, manufacturer_code, name, department_id, class_id, product_line_id, primary_vendor_id, product_type, base_uom, list_price, standard_cost, avg_cost, msrp, map, min_margin_pct, sheen, paint_base_code, container_volume_ml, eco_fee_category, tax_class_id, prompt_template_id, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)",
+        "INSERT INTO products (id, org_id, sku, manufacturer_code, name, department_id, class_id, product_line_id, primary_vendor_id, product_type, base_uom, list_price, standard_cost, avg_cost, msrp, map, min_margin_pct, sheen, paint_base_code, container_volume_ml, eco_fee_category, tax_class_id, prompt_template_id, upc, category, line_code, color_name, size_code, source_metadata_json, is_active) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)",
     )
     .bind(uuid_str(product.id))
     .bind(uuid_str(product.org_id))
@@ -486,6 +508,12 @@ pub async fn insert_product(pool: &AnyPool, product: &Product) -> Result<(), DbE
     .bind(&product.eco_fee_category)
     .bind(uuid_str(product.tax_class_id))
     .bind(opt_uuid_str(product.prompt_template_id))
+    .bind(&product.upc)
+    .bind(&product.category)
+    .bind(&product.line_code)
+    .bind(&product.color_name)
+    .bind(&product.size_code)
+    .bind(source_metadata_json)
     .bind(product.is_active)
     .execute(pool)
     .await?;
@@ -505,21 +533,31 @@ pub struct ImportedProductUpdate<'a> {
     pub msrp: Option<Decimal>,
     pub map: Option<Decimal>,
     pub container_volume_ml: Option<i32>,
+    pub upc: Option<&'a str>,
+    pub category: Option<&'a str>,
+    pub line_code: Option<&'a str>,
+    pub color_name: Option<&'a str>,
+    pub size_code: Option<&'a str>,
+    pub source_metadata: Option<&'a serde_json::Value>,
 }
 
 /// Update the import-controlled fields of an existing product:
-/// name, manufacturer code, prices, MSRP / MAP and container
-/// volume. Department, tax class, product type and UOM are left as
-/// they were — a re-import reprices, it does not reclassify. A
-/// `None` MSRP / MAP / volume leaves the stored value untouched
-/// (the file may leave MSRP blank on most rows); pass `Some` to
-/// overwrite it.
+/// name, manufacturer code, prices, MSRP / MAP, container volume,
+/// UPC, category, line, color, size code, and full source spreadsheet
+/// metadata. Department, tax class, product type and UOM are left as
+/// they were — a re-import reprices and enriches metadata without
+/// reclassifying. `None` optional fields leave stored values untouched.
 pub async fn update_imported_product(
     pool: &AnyPool,
     update: ImportedProductUpdate<'_>,
 ) -> Result<(), DbError> {
+    let source_metadata_json = update
+        .source_metadata
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|e| DbError::InvalidData(format!("source_metadata_json: {e}")))?;
     sqlx::query(
-        "UPDATE products SET name = $1, manufacturer_code = $2, list_price = $3, standard_cost = $4, avg_cost = $5, msrp = COALESCE($6, msrp), map = COALESCE($7, map), container_volume_ml = COALESCE($8, container_volume_ml) WHERE org_id = $9 AND sku = $10",
+        "UPDATE products SET name = $1, manufacturer_code = $2, list_price = $3, standard_cost = $4, avg_cost = $5, msrp = COALESCE($6, msrp), map = COALESCE($7, map), container_volume_ml = COALESCE($8, container_volume_ml), upc = COALESCE($9, upc), category = COALESCE($10, category), line_code = COALESCE($11, line_code), color_name = COALESCE($12, color_name), size_code = COALESCE($13, size_code), source_metadata_json = COALESCE($14, source_metadata_json) WHERE org_id = $15 AND sku = $16",
     )
     .bind(update.name)
     .bind(update.manufacturer_code)
@@ -529,11 +567,76 @@ pub async fn update_imported_product(
     .bind(opt_dec_str(update.msrp))
     .bind(opt_dec_str(update.map))
     .bind(update.container_volume_ml)
+    .bind(update.upc)
+    .bind(update.category)
+    .bind(update.line_code)
+    .bind(update.color_name)
+    .bind(update.size_code)
+    .bind(source_metadata_json)
     .bind(uuid_str(update.org_id))
     .bind(update.sku)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Register or update a barcode (e.g. Product UPC) in `product_barcodes`
+/// for `product_id`. Idempotent on `(org_id, barcode)`.
+pub async fn upsert_product_barcode(
+    pool: &AnyPool,
+    org_id: Uuid,
+    product_id: Uuid,
+    barcode: &str,
+    uom_code: &str,
+) -> Result<(), DbError> {
+    let barcode = barcode.trim();
+    if barcode.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO product_barcodes (barcode, org_id, product_id, uom_code, qty_multiplier) \
+         VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (org_id, barcode) DO UPDATE SET product_id = excluded.product_id, uom_code = excluded.uom_code",
+    )
+    .bind(barcode)
+    .bind(uuid_str(org_id))
+    .bind(uuid_str(product_id))
+    .bind(uom_code)
+    .bind("1")
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Resolve a scanned barcode to a product: checks `product_barcodes`
+/// first, then `products.upc`, then falls back to exact `products.sku`.
+pub async fn get_product_by_barcode(
+    pool: &AnyPool,
+    org_id: Uuid,
+    barcode: &str,
+) -> Result<Product, DbError> {
+    let barcode = barcode.trim();
+    if let Some(row) = sqlx::query(
+        "SELECT p.* FROM products p \
+         INNER JOIN product_barcodes b ON b.product_id = p.id \
+         WHERE b.org_id = $1 AND b.barcode = $2 LIMIT 1",
+    )
+    .bind(uuid_str(org_id))
+    .bind(barcode)
+    .fetch_optional(pool)
+    .await?
+    {
+        return product_from_row(&row);
+    }
+    if let Some(row) = sqlx::query("SELECT * FROM products WHERE org_id = $1 AND upc = $2 LIMIT 1")
+        .bind(uuid_str(org_id))
+        .bind(barcode)
+        .fetch_optional(pool)
+        .await?
+    {
+        return product_from_row(&row);
+    }
+    get_product_by_sku(pool, org_id, barcode).await
 }
 
 pub async fn get_product_by_sku(

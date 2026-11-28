@@ -1747,6 +1747,7 @@ mod tests {
                     net_price: "50.00".to_string(),
                     list_price: "100.00".to_string(),
                     brand_code: "BM".to_string(),
+                    source_metadata: None,
                 }],
             )
             .await
