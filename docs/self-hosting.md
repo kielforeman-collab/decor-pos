@@ -171,7 +171,7 @@ export DF_USERS_PASSWORD='correct horse battery staple'
 # 3. Start HQ. --db wins over DATABASE_URL when both are set.
 ./target/release/df-server hq --db "$DATABASE_URL" \
   --org-id <uuid> --listen 127.0.0.1:3000
-curl -s http://127.0.0.1:3000/health   # {"status":"ok","version":"1.2.2"}
+curl -s http://127.0.0.1:3000/health   # {"status":"ok","version":"1.2.3"}
 ```
 
 `df-server hq` logs the redacted database URL, how many migrations
@@ -250,7 +250,7 @@ What was actually run in the v1.0 VM, and what was not:
   changes. Covered by `crates/df-server/tests/migrate_schema.rs`
   (also covers the `DATABASE_URL` fallback).
 - ✅ `df-server hq` verified against SQLite: starts, migrates,
-  answers `/health` with `{"status":"ok","version":"1.2.2"}`,
+  answers `/health` with `{"status":"ok","version":"1.2.3"}`,
   returns 401 on an admin route without a token (the Phase 7 gate
   is live on HQ), and 200 with a real admin session
   (`POST /api/v1/auth/login` → `Bearer dfp_...`). Covered by
@@ -259,7 +259,7 @@ What was actually run in the v1.0 VM, and what was not:
   see "Local PostgreSQL (dev)" below): `df-server migrate schema`
   applies 12 migrations `[1,2,3,4,5,6,7,9,10,11,12,13]` (0008 does
   not exist), second run `already_up_to_date`; `df-server hq`
-  answers `/health` 200 `{"status":"ok","version":"1.2.2"}` and
+  answers `/health` 200 `{"status":"ok","version":"1.2.3"}` and
   401s protected routes without a token; edge (SQLite) cash sale
   2 gal (grand 173.2088) + charge sale 1 gal (grand 86.6044) pushed
   via HTTP ingest `POST /api/v1/sync/ingest` (`applied=5

@@ -67,7 +67,7 @@ fn hq_mode_starts_migrates_and_gates_admin_routes() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let health = health.expect("hq did not answer /health in 15s");
-    assert!(health.contains(r#""version":"1.2.2""#), "{health}");
+    assert!(health.contains(r#""version":"1.2.3""#), "{health}");
     // Admin routes are gated: no token is a 401, not a 503 (the
     // pool is configured) and not a 200 (the gate is live).
     let balances = get(port, "/api/v1/inventory/balances").expect("hq answers");
