@@ -414,5 +414,8 @@ only its own section, ticking items as they are verified — not when code merel
   - 4 MiB request body limit (`DefaultBodyLimit`, configurable via `DF_MAX_BODY_BYTES`) and defensive response headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` on `/auth/*`).
 - ✅ Updated `docs/security-review-v1.0.md` (F8 & F10 marked FIXED; F9 reverse-proxy TLS/mTLS guidance), `docs/auth.md`, and `docs/self-hosting.md`.
 ### Verification
-- 🔄 Local fmt, clippy (`-D warnings`), float-money guard, PCI migration scan, unit/integration tests, and GitHub CI verification in progress.
+- ✅ `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, float-money guard across all 8 financial crates, and `pci_no_pan_columns` (including migration `0016`) — all clean.
+- ✅ GitHub `CI` green on `f2ed8cc` (run `46151548739`, `check` in **2m14s**: **481/481** workspace nextest tests passed, 0 failed, 0 skipped + doc tests + Typst + all 4 frontend builds).
+### GitHub
+- ✅ Pushed to `main`: `f2ed8cc` (`feat(security,sync): close F8/F10 with dead-letter queue, store service tokens, CORS & auth rate limiting`).
 
