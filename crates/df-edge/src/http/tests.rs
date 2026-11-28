@@ -95,7 +95,7 @@ async fn health_and_price_preview_over_http() {
     let (status, body) = get_json(router.clone(), "/health", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "ok");
-    assert_eq!(body["version"], "1.2.4");
+    assert_eq!(body["version"], "1.2.5");
 
     let (status, body) = post_json(
         router,
