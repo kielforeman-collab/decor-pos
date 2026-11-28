@@ -103,7 +103,7 @@ jobs:
 
   build-linux:
     if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux'
-    runs-on: groundbox-4vcpu
+    runs-on: groundbox-8vcpu
     steps:
       - uses: actions/checkout@v5
 
@@ -157,7 +157,7 @@ jobs:
   publish:
     needs: [build-windows, build-linux]
     if: startsWith(github.ref, 'refs/tags/')
-    runs-on: groundbox-4vcpu
+    runs-on: groundbox-8vcpu
     steps:
       - uses: actions/download-artifact@v7
         with:
