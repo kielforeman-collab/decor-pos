@@ -11,8 +11,8 @@ use std::str::FromStr;
 
 use chrono::Utc;
 use df_db::models::{
-    ArLedgerEntry, Colorant, ColorantLevelRow, Customer, InventoryLedgerEntry, Organization,
-    Product, Store, Transaction,
+    ArLedgerEntry, Colorant, Customer, InventoryLedgerEntry, Organization, Product, Store,
+    Transaction,
 };
 use df_db::{Dialect, connect, migrate};
 use rust_decimal::Decimal;
@@ -268,7 +268,7 @@ async fn pg_repos_round_trip() {
         dec("216.1088")
     );
 
-    // Tint / colorant: level upsert + read.
+    // Tint / colorant catalog insert + read.
     let colorant_id = Uuid::now_v7();
     df_db::insert_colorant(
         &pool,
@@ -284,23 +284,9 @@ async fn pg_repos_round_trip() {
     )
     .await
     .unwrap();
-    df_db::upsert_colorant_level(
-        &pool,
-        &ColorantLevelRow {
-            colorant_id,
-            store_id,
-            on_hand_fl_oz: dec("12.5000"),
-            low_threshold_fl_oz: dec("2.0000"),
-            updated_at: now,
-        },
-    )
-    .await
-    .unwrap();
-    let level = df_db::get_colorant_level(&pool, colorant_id, store_id)
-        .await
-        .unwrap()
-        .expect("level just upserted");
-    assert_eq!(level.on_hand_fl_oz, dec("12.5000"));
+    let back = df_db::get_colorant(&pool, colorant_id).await.unwrap();
+    assert_eq!(back.code, "Y3");
+    assert_eq!(back.cost_per_fl_oz, dec("0.4200"));
 
     // Auth: create a user, log in with the password, validate the
     // session token — the full Phase 7 session path on PG.

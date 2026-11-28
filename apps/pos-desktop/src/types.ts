@@ -370,10 +370,11 @@ export interface TintColorEntry {
 
 export interface TintColorantEntry {
   colorant_id?: string
+  system_name?: string
   code: string
   name: string
-  on_hand_fl_oz?: string | number | null
-  is_low?: boolean
+  cost_per_fl_oz?: string
+  shots_per_fl_oz?: number
 }
 
 export interface TintFormulaEntry {

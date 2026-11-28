@@ -21,10 +21,6 @@
 //!
 //! ## Plugin interfaces (spec §6.2)
 //!
-//! * [`HttpTinterPlugin`] — the `TinterPlugin` interface
-//!   (`list_dispensers`, `send_formula`, dispense result) over HTTP.
-//!   See `tinter` for the exact JSON mapping and the note on wiring
-//!   it to the `df-tinter` trait later.
 //! * [`EdiVendorPlugin`] / [`HttpEdiVendorPlugin`] — the
 //!   `EdiVendorPlugin` interface (`send_po`, `poll_acknowledgments`,
 //!   `poll_asns`, `poll_invoices`, `fetch_price_catalog`,
@@ -59,13 +55,9 @@ pub mod error;
 pub mod host;
 pub mod http_client;
 pub mod manifest;
-pub mod tinter;
 
 pub use edi::{EdiVendorPlugin, HttpEdiVendorPlugin, RebateClaim, RebateClaimAck};
 pub use error::{PluginError, Result, grpc_not_supported, wasm_not_supported};
 pub use host::{DEFAULT_HEALTH_TIMEOUT, PluginHost};
 pub use http_client::{HttpResponse, http_get, http_post_json};
 pub use manifest::{PluginManifest, Transport};
-pub use tinter::{
-    ColorantShot, DispenseRequest, DispenseResult, Dispenser, HttpTinterPlugin, JobAck,
-};

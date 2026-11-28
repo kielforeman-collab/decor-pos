@@ -127,6 +127,37 @@ async fn seeded_state() -> (ApiState, SeededUsers) {
     )
     .await
     .unwrap();
+    df_db::insert_product(
+        &pool,
+        &df_db::models::Product {
+            id: Uuid::from_u128(0x3000),
+            org_id,
+            sku: "BM-REGAL-1G".to_string(),
+            manufacturer_code: Some("BM".to_string()),
+            name: "Regal Select Interior Gallon".to_string(),
+            department_id: Uuid::now_v7(),
+            class_id: None,
+            product_line_id: None,
+            primary_vendor_id: None,
+            product_type: "paint_base".to_string(),
+            base_uom: "gal".to_string(),
+            list_price: dec("60"),
+            standard_cost: dec("30"),
+            avg_cost: dec("30"),
+            min_margin_pct: None,
+            sheen: Some("Eggshell".to_string()),
+            paint_base_code: Some("1X".to_string()),
+            container_volume_ml: Some(3785),
+            eco_fee_category: None,
+            tax_class_id: Uuid::now_v7(),
+            prompt_template_id: None,
+            is_active: true,
+            map: None,
+            msrp: None,
+        },
+    )
+    .await
+    .unwrap();
     let users = seed_test_users(&pool, org_id).await;
     (
         ApiState {
@@ -170,21 +201,37 @@ async fn hq_unauthenticated_is_401_health_and_openapi_public() {
 }
 
 #[tokio::test]
-async fn hq_cashier_forbidden_manager_allowed_on_colorant_levels() {
+async fn hq_cashier_forbidden_manager_allowed_on_formula_create() {
     let (state, users) = seeded_state().await;
+    let org_id = state.org_id.unwrap();
     let store_id = state.store_id.unwrap();
     let router = create_router(state);
     let body = serde_json::json!({
-        "colorant_id": Uuid::from_u128(Y3_ID).to_string(),
-        "store_id": store_id.to_string(),
-        "on_hand_fl_oz": "10",
-        "low_threshold_fl_oz": "2",
+        "id": Uuid::now_v7(),
+        "org_id": org_id,
+        "store_id": store_id,
+        "customer_id": null,
+        "job_id": null,
+        "color_id": null,
+        "color_code_snapshot": "OC-17",
+        "color_name_snapshot": "White Dove",
+        "base_product_id": Uuid::from_u128(0x3000),
+        "container_volume_ml": 3785,
+        "sheen": "Eggshell",
+        "room_or_usage": null,
+        "is_custom_match": false,
+        "colorants_json": [{"code": "Y3", "oz": 0, "shots": 12}],
+        "total_tint_cost": "0.1050",
+        "tint_surcharge": "0",
+        "dispenser_name": null,
+        "external_formula_ref": null,
+        "dispensed_at": Utc::now().to_rfc3339(),
     });
-    // Setting a colorant level needs InventoryAdjust: the cashier
-    // gets 403, the manager succeeds.
+    // Creating an HQ formula needs InventoryAdjust: the cashier gets
+    // 403, the manager succeeds with 201.
     let (status, _) = post_json(
         router.clone(),
-        "/api/v1/tinting/colorants/levels",
+        "/api/v1/tinting/formulas",
         body.clone(),
         Some(&users.cashier.token),
     )
@@ -192,13 +239,13 @@ async fn hq_cashier_forbidden_manager_allowed_on_colorant_levels() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, body) = post_json(
         router.clone(),
-        "/api/v1/tinting/colorants/levels",
+        "/api/v1/tinting/formulas",
         body,
         Some(&users.manager.token),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["on_hand_fl_oz"], "10");
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["color_code_snapshot"], "OC-17");
 }
 
 #[tokio::test]

@@ -284,10 +284,10 @@ customers' AR summaries through the unscoped staff AR routes).
 | `GET /health` | public | Liveness only |
 | `POST /pos/auth/login`, `/counter-switch`, `/portal-login`, `/override-verify` | public | How a session is obtained |
 | `POST /pos/auth/logout` | any live session | Revokes the caller's session |
-| `POST /pos/carts/price-preview`, `/pos/transactions`, `/pos/transactions/{id}/return`, `/pos/holds*`, `/pos/quotes`, `/pos/layaways`, `/pos/sync/*`, `/pos/tinting/dispense`, `GET /pos/tinting/formulas`, `GET /pos/tinting/colors`, `POST /bopis/orders/{id}/complete-pickup` | `PosCheckout` | Checkout surface; BOPIS pickup completion needs staff auth even though order placement is public |
+| `POST /pos/carts/price-preview`, `/pos/transactions`, `/pos/transactions/{id}/return`, `/pos/holds*`, `/pos/quotes`, `/pos/layaways`, `/pos/sync/*`, `GET/POST /pos/tinting/formulas`, `GET /pos/tinting/colors`, `POST /bopis/orders/{id}/complete-pickup` | `PosCheckout` | Checkout surface; BOPIS pickup completion needs staff auth even though order placement is public |
 | `POST /pos/tills/open`, `/pos/tills/{id}/close` | `PosTillManage` | |
 | `POST /pos/transactions/{id}/void` | `PosVoid` | Manager/Admin only |
-| `GET /pos/tinting/colorants` | `PosCheckout` **or** `InventoryView` | |
+| `GET /pos/tinting/colorants` | `PosCheckout` **or** `InventoryView` | Org colorant catalog (formula tracking) |
 | `GET /pos/reports/daily-usage`, `/pos/reports/low-stock`, `/bi/kpi`, `/bi/dashboard`, `/bi/eco`, `/bi/inquiry`, `/bi/email-outbox` | `ReportView` | |
 | `POST /pos/reports/low-stock/thresholds`, `/pricing/rules` (GET+POST) | `PricingManage` | |
 | `POST /pos/inventory/import` | `PricingManage` | GUI product import (Manager/Admin only — Warehouse holds `InventoryAdjust` but not this); rows are parsed in the browser, posted as JSON, upserted by SKU |
@@ -314,8 +314,8 @@ customers' AR summaries through the unscoped staff AR routes).
 | `POST /api/v1/auth/login`, `/counter-switch`, `/passkey/verify`, `GET /api/v1/auth/oidc/callback`, `POST /api/v1/auth/override-verify` | public | Passkey/OIDC are 501 stubs |
 | `POST /api/v1/auth/logout` | any live session | |
 | `GET /api/v1/colors/search`, `/api/v1/tinting/formulas`, `/api/v1/tinting/colorants`, `/api/v1/inventory/balances`, `/api/v1/deliveries/dispatch` | `InventoryView` | |
-| `POST /api/v1/tinting/formulas`, `/api/v1/tinting/colorants/levels` | `InventoryAdjust` | |
-| `GET /api/v1/reports/daily-usage`, `/low-stock`, `/shortage-alerts`, `/api/v1/edi/documents` | `ReportView` | |
+| `POST /api/v1/tinting/formulas` | `InventoryAdjust` | |
+| `GET /api/v1/reports/daily-usage`, `/low-stock`, `/api/v1/edi/documents` | `ReportView` | |
 | `GET /api/v1/ar/customers/{id}/summary`, `/api/v1/ar/aging` | `ArView` | |
 | `GET /api/v1/crm/activities`, `/api/v1/crm/appointments` | `CustomerManage` | HQ CRM is read-only; writes go through the edge |
 | `POST /api/v1/sync/ingest` | `SyncIngest` | Edge→HQ sync ingest (Phase 8, v1.2). See the decision note below. |

@@ -2,7 +2,7 @@ use super::*;
 use axum::body::Body;
 use axum::http::Request;
 use chrono::Utc;
-use df_db::models::{ColorCatalogEntry, Colorant, ColorantLevelRow, Organization, Store};
+use df_db::models::{ColorCatalogEntry, Colorant, Organization, Store};
 use rust_decimal::Decimal;
 use std::str::FromStr;
 use tower::ServiceExt;
@@ -106,18 +106,6 @@ async fn seeded_state() -> (ApiState, df_auth_http::test_support::SeededUsers) {
             name: "Yellow Oxide".to_string(),
             cost_per_fl_oz: dec("0.4200"),
             shots_per_fl_oz: 48,
-        },
-    )
-    .await
-    .unwrap();
-    df_db::upsert_colorant_level(
-        &pool,
-        &ColorantLevelRow {
-            colorant_id: y3,
-            store_id,
-            on_hand_fl_oz: dec("1"),
-            low_threshold_fl_oz: dec("2"),
-            updated_at: Utc::now(),
         },
     )
     .await
@@ -472,21 +460,37 @@ async fn hq_unauthenticated_is_401() {
 }
 
 #[tokio::test]
-async fn hq_cashier_cannot_set_colorant_level_but_manager_can() {
+async fn hq_cashier_cannot_create_formula_but_manager_can() {
     let (state, users) = seeded_state().await;
+    let org_id = state.org_id.unwrap();
     let store_id = state.store_id.unwrap();
     let router = create_router(state);
     let body = serde_json::json!({
-        "colorant_id": Uuid::from_u128(0x5001).to_string(),
+        "id": Uuid::now_v7().to_string(),
+        "org_id": org_id.to_string(),
         "store_id": store_id.to_string(),
-        "on_hand_fl_oz": "10",
-        "low_threshold_fl_oz": "2",
+        "customer_id": null,
+        "job_id": null,
+        "color_id": null,
+        "color_code_snapshot": "OC-17",
+        "color_name_snapshot": "White Dove",
+        "base_product_id": Uuid::from_u128(0x3000).to_string(),
+        "container_volume_ml": 3785,
+        "sheen": "Eggshell",
+        "room_or_usage": null,
+        "is_custom_match": false,
+        "colorants_json": [{"code": "Y3", "oz": 0, "shots": 14}],
+        "total_tint_cost": "0.1225",
+        "tint_surcharge": "0.0000",
+        "dispenser_name": null,
+        "external_formula_ref": null,
+        "dispensed_at": Utc::now().to_rfc3339(),
     });
-    // Setting a colorant level needs InventoryAdjust: the
-    // cashier gets 403, the manager succeeds.
+    // Creating a formula needs InventoryAdjust: the cashier gets
+    // 403, the manager succeeds with 201.
     let (status, _) = post_json(
         router.clone(),
-        "/api/v1/tinting/colorants/levels",
+        "/api/v1/tinting/formulas",
         body.clone(),
         Some(&users.cashier.token),
     )
@@ -494,13 +498,13 @@ async fn hq_cashier_cannot_set_colorant_level_but_manager_can() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, body) = post_json(
         router.clone(),
-        "/api/v1/tinting/colorants/levels",
+        "/api/v1/tinting/formulas",
         body,
         Some(&users.manager.token),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["on_hand_fl_oz"], "10");
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["color_code_snapshot"], "OC-17");
 }
 
 #[tokio::test]
@@ -508,7 +512,7 @@ async fn admin_endpoints_503_without_a_database() {
     let router = create_router(ApiState::default());
     let (status, body) = get_json(
         router,
-        "/api/v1/reports/shortage-alerts?store_id=00000000-0000-7000-8000-000000000001",
+        "/api/v1/reports/daily-usage?store_id=00000000-0000-7000-8000-000000000001",
         None,
     )
     .await;
@@ -559,7 +563,7 @@ async fn tinting_admin_round_trip() {
             "colorants_json": [{"code": "Y3", "oz": 0, "shots": 14}],
             "total_tint_cost": "0.1225",
             "tint_surcharge": "0.0000",
-            "dispenser_name": "virtual-simulator",
+            "dispenser_name": null,
             "external_formula_ref": null,
             "dispensed_at": Utc::now().to_rfc3339(),
         }),
@@ -585,44 +589,13 @@ async fn tinting_admin_round_trip() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body.as_array().unwrap().len(), 1);
 
-    // Colorant levels: Y3 is low (1 on hand, threshold 2).
-    let (status, body) = get_json(
-        router.clone(),
-        &format!("/api/v1/tinting/colorants?store_id={store_id}"),
-        admin,
-    )
-    .await;
+    // Colorant catalog lists Y3 for the org.
+    let (status, body) = get_json(router.clone(), "/api/v1/tinting/colorants", admin).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["levels"].as_array().unwrap().len(), 1);
-    assert_eq!(body["levels"][0]["code"], "Y3");
-    assert_eq!(body["levels"][0]["is_low"], true);
-    assert_eq!(body["alerts"].as_array().unwrap().len(), 1);
+    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body[0]["code"], "Y3");
 
-    // Raise the level above threshold; the alert clears.
-    let (status, body) = post_json(
-        router.clone(),
-        "/api/v1/tinting/colorants/levels",
-        serde_json::json!({
-            "colorant_id": Uuid::from_u128(0x5001).to_string(),
-            "store_id": store_id.to_string(),
-            "on_hand_fl_oz": "10",
-            "low_threshold_fl_oz": "2",
-        }),
-        admin,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["on_hand_fl_oz"], "10");
-    let (status, body) = get_json(
-        router.clone(),
-        &format!("/api/v1/reports/shortage-alerts?store_id={store_id}"),
-        admin,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(body["alerts"].as_array().unwrap().is_empty());
-
-    // Reports work (empty day, no tints yet).
+    // Reports reflect the formula recorded today and empty low-stock products.
     let (status, body) = get_json(
         router.clone(),
         &format!("/api/v1/reports/daily-usage?store_id={store_id}"),
@@ -630,7 +603,7 @@ async fn tinting_admin_round_trip() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["tints_dispensed"], 0);
+    assert_eq!(body["formulas_recorded"], 1);
     let (status, body) = get_json(
         router.clone(),
         &format!("/api/v1/reports/low-stock?store_id={store_id}"),
@@ -638,7 +611,7 @@ async fn tinting_admin_round_trip() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(body["colorants"].as_array().unwrap().is_empty());
+    assert!(body["products"].as_array().unwrap().is_empty());
 }
 
 fn sync_sale_delta_batch(store_id: Uuid, customer_id: Uuid, tx_id: Uuid) -> df_sync::DeltaBatch {

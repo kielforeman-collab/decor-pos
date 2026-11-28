@@ -635,14 +635,12 @@ export async function listTintColors(query = '', manufacturer = ''): Promise<Tin
 export async function listTintColorants(): Promise<TintColorantEntry[]> {
   if (isTauri) {
     try {
-      const res = await invoke<{ levels: TintColorantEntry[] }>('list_tint_colorants')
-      return res.levels ?? []
+      return (await invoke<TintColorantEntry[]>('list_tint_colorants')) ?? []
     } catch {
       return []
     }
   }
-  const res = await httpGetOptional<{ levels: TintColorantEntry[] }>('/pos/tinting/colorants')
-  return res?.levels ?? []
+  return (await httpGetOptional<TintColorantEntry[]>('/pos/tinting/colorants')) ?? []
 }
 
 export async function listTintFormulas(opts: {

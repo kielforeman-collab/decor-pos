@@ -287,7 +287,6 @@ export interface LowStockReport {
   date: string
   store_id: string
   low_products?: unknown[]
-  low_colorants?: unknown[]
   [key: string]: unknown
 }
 

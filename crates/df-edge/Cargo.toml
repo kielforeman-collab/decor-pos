@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Local store daemon for decor-pos: offline checkout, tills, sync outbox, local HTTP/WS API, virtual tinter + tint reports (Phase 2, v0.3)"
+description = "Local store daemon for decor-pos: offline checkout, tills, sync outbox, local HTTP/WS API, formula tracking + reports"
 
 [dependencies]
 axum = { workspace = true }
@@ -24,7 +24,6 @@ df-portal = { workspace = true }
 df-reports = { workspace = true }
 df-scheduling = { workspace = true }
 df-sync = { workspace = true }
-df-tinter = { workspace = true }
 futures-util = "0.3"
 rust_decimal = { workspace = true }
 serde = { workspace = true }
@@ -40,7 +39,6 @@ df-auth-http = { workspace = true }
 df-db = { workspace = true }
 df-domain = { workspace = true }
 df-sync = { workspace = true }
-df-tinter = { workspace = true }
 rust_decimal = { workspace = true }
 serde_json = { workspace = true }
 tokio-tungstenite = "0.29"

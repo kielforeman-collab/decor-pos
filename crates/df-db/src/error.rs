@@ -1,6 +1,5 @@
 //! Database errors.
 
-use rust_decimal::Decimal;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -14,15 +13,6 @@ pub enum DbError {
     InvalidData(String),
     #[error("row not found: {0}")]
     NotFound(String),
-    #[error(
-        "insufficient colorant {colorant_id} at store {store_id}: need {needed} fl oz, have {on_hand} fl oz"
-    )]
-    InsufficientColorant {
-        colorant_id: Uuid,
-        store_id: Uuid,
-        needed: Decimal,
-        on_hand: Decimal,
-    },
     /// A delivery close-out was attempted without a complete POD.
     /// Nothing was posted: the delivery keeps its status and no
     /// close-out event exists. `missing` names the absent parts

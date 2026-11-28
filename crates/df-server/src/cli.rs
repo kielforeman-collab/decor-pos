@@ -104,7 +104,7 @@ pub(crate) enum Command {
         /// UUID of the store to report on.
         #[arg(long)]
         store_id: Uuid,
-        /// Report kind: `daily-usage`, `low-stock`, `shortage`,
+        /// Report kind: `daily-usage`, `low-stock`,
         /// `kpi` (single-day KPI dashboard for `--date`) or `eco`
         /// (eco-fee remittance for the month to `--date`).
         #[arg(long)]
@@ -195,9 +195,9 @@ pub(crate) enum JobsCommand {
     /// Run the Phase 2 daily jobs, the Phase 3 monthly jobs and the
     /// Phase 6 scheduled-report-email job once, right now, and print
     /// the recorded runs as JSON. `--job` runs one job
-    /// (`daily-usage`, `low-stock`, `shortage-alerts`,
-    /// `monthly-statements`, `finance-charges`,
-    /// `scheduled-report-email`); without it all run.
+    /// (`daily-usage`, `low-stock`, `monthly-statements`,
+    /// `finance-charges`, `scheduled-report-email`,
+    /// `labor-forecast-refresh`); without it all run.
     /// Exits 1 if any run failed.
     Run {
         /// sqlx database URL, e.g. `sqlite:edge.db` or a

@@ -1103,7 +1103,6 @@ dependencies = [
  "df-reports",
  "df-scheduling",
  "df-sync",
- "df-tinter",
  "futures-util",
  "rust_decimal",
  "serde",
@@ -1203,7 +1202,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "toml 0.8.2",
- "uuid",
 ]
 
 [[package]]
@@ -1285,19 +1283,6 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.21",
  "tokio",
- "uuid",
-]
-
-[[package]]
-name = "df-tinter"
-version = "1.2.2"
-dependencies = [
- "chrono",
- "df-domain",
- "df-hw",
- "rust_decimal",
- "serde",
- "thiserror 2.0.21",
  "uuid",
 ]
 

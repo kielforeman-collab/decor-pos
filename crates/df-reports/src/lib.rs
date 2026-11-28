@@ -1,13 +1,12 @@
 //! `df-reports` — reports computed from `df-db` data (Phase 2, v0.3; spec §7).
 //!
-//! * [`daily_usage_report`] — one store, one date: tints dispensed
-//!   (count + per-color breakdown), colorant consumed (per colorant,
-//!   fl oz + cost via `df-domain` tint math) and sales totals from
-//!   the completed transactions that day.
+//! * [`daily_usage_report`] — one store, one date: tracked formulas
+//!   recorded (count + per-color breakdown), colorant usage (per
+//!   colorant, fl oz + cost via `df-domain` tint math) and sales
+//!   totals from the completed transactions that day.
 //! * [`low_stock_report`] — products below their minimum level (from
-//!   the append-only inventory ledger) and colorants at/below
-//!   threshold, with purchase-order suggestions from
-//!   [`df_edi::generate_purchase_orders`].
+//!   the append-only inventory ledger), with purchase-order
+//!   suggestions from [`df_edi::generate_purchase_orders`].
 //! * [`kpi_dashboard`] — Phase 6: one store's KPI dashboard
 //!   (sales, margin, inventory turns, AR aging, formula usage
 //!   tracked only) plus [`run_inquiry`] ad-hoc inquiries.
@@ -24,7 +23,7 @@
 //!   as a real Typst PDF (same binary resolution as statements).
 //!
 //! Every report has a structured type (JSON-serializable) and a
-//! plain-text rendering (`render_text` / `render_shortage_alerts_text`).
+//! plain-text rendering (`render_text`).
 //! All money and volumes are `rust_decimal::Decimal` — never floats.
 //!
 //! No Excel output: that is Phase 6 (spec §7) — and Phase 6 has
@@ -47,7 +46,6 @@ pub mod error;
 pub mod kpi;
 pub mod low_stock;
 pub mod outbox;
-pub mod shortage;
 pub mod statement;
 
 pub use daily::{ColorUsage, ColorantUsage, DailyUsageReport, SalesTotals, daily_usage_report};
@@ -64,7 +62,6 @@ pub use kpi::{
 };
 pub use low_stock::{LowStockProduct, LowStockReport, ProductThreshold, low_stock_report};
 pub use outbox::{EmailDelivery, deliver_to_outbox, file_sha256, read_outbox_manifest};
-pub use shortage::{ColorantShortageAlert, colorant_shortage_alerts, render_shortage_alerts_text};
 pub use statement::{
     StatementHeader, build_statements, format_money, header_for, period_label, persist_statement,
     render_statement_pdf, render_statement_typst, resolve_typst_binary, statement_pdf_sha256,

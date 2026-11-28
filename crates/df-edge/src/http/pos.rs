@@ -22,9 +22,7 @@ use super::{ErrorResponse, HandlerResult, err_response};
 use crate::counter::{ProductSearchResult, TransactionView};
 use crate::edge::Edge;
 use crate::invoice::InvoiceView;
-use crate::tinting::{
-    ColorantsResponse, CreateTintFormulaRequest, DispenseTintRequest, DispenseTintResponse,
-};
+use crate::tinting::{ColorantView, CreateTintFormulaRequest};
 use crate::types::{CompletedSale, PricePreview, ReturnLineInput, SaleInput, TenderInput, ZReport};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,16 +226,6 @@ fn report_date(query: &ReportQuery) -> Result<NaiveDate, (StatusCode, Json<Error
     }
 }
 
-pub(super) async fn dispense_tint(
-    State(edge): State<Arc<Edge>>,
-    Json(body): Json<DispenseTintRequest>,
-) -> HandlerResult<DispenseTintResponse> {
-    edge.dispense_tint(body)
-        .await
-        .map(Json)
-        .map_err(err_response)
-}
-
 pub(super) async fn list_formulas(
     State(edge): State<Arc<Edge>>,
     Query(query): Query<FormulaQuery>,
@@ -380,8 +368,8 @@ pub(super) async fn list_colors(
 
 pub(super) async fn list_colorants(
     State(edge): State<Arc<Edge>>,
-) -> HandlerResult<ColorantsResponse> {
-    edge.colorant_levels().await.map(Json).map_err(err_response)
+) -> HandlerResult<Vec<ColorantView>> {
+    edge.list_colorants().await.map(Json).map_err(err_response)
 }
 
 pub(super) async fn daily_usage(

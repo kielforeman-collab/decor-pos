@@ -67,7 +67,7 @@ only its own section, ticking items as they are verified — not when code merel
 ### GitHub
 - ✅ Pushed via connector in ONE commit `817d89f` (148 files, 37 new)
 ### Note
-- The machine-tinting code (`df-tinter` dispense, `df-plugin-sdk/src/tinter.rs`, edge dispense endpoints) is still in the repo on `main` — it was built and pushed in Phase 2 before the rescope. Removing it from the codebase is a separate step, not done yet.
+- ✅ Machine-tinting code (`df-tinter`, `df-plugin-sdk/src/tinter.rs`, canister `colorant_levels`/`tint_jobs` repos, `shortage-alerts`, `/pos/tinting/dispense`) removed Nov 28, 2026 (see bottom section). Legacy `0003_phase2` SQL migrations stay untouched for existing DB checksums.
 - The `HttpTinterPlugin ↔ TinterPlugin unification` open item is closed by this rescope (moot — the whole machine interface is dropped).
 ### Known limits
 - PG round-trip still untested; no product min-level table (low-stock product thresholds caller-supplied); job history in-memory only; decorating verticals (flooring/window/wallpaper/sample loans) deliberately left out — flags only.
@@ -368,6 +368,27 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ Float-money grep across all 8 financial crates — clean.
 ### GitHub
 - ✅ Pushed to `main`: `099e1d9` (CI run `46119908512` passed).
+
+## Machine-tinting cleanup & release speedup — ✅ DONE Nov 28, 2026
+### Scope
+- ✅ Removed dropped machine-tinting code (formula tracking only per Nov 26 rescope):
+  - Deleted entire `crates/df-tinter/` crate (`VirtualTinter`, `TinterPlugin`, `TintJob`) and removed it from workspace `Cargo.toml`.
+  - Removed `crates/df-plugin-sdk/src/tinter.rs` (`HttpTinterPlugin`) and replaced `examples/fake_tinter_plugin.rs` with generic `examples/fake_http_plugin.rs` for `PluginHost` integration tests (also eliminates the parallel port-race flake in `host_integration.rs`).
+  - Removed `ColorantLevelRow`, `TintJobRow`, `DbError::InsufficientColorant`, and all canister-level / tint-job repo methods from `crates/df-db` (legacy `0003_phase2` SQL migrations preserved untouched for existing DB checksums); simplified `product_import.rs` to upsert catalog `colorants` only.
+  - Deleted `crates/df-reports/src/shortage.rs`, removed colorant-shortage alerts from `low_stock_report`, and updated `daily_usage_report` to compute daily formula usage directly from tracked `tint_formulas`.
+  - Removed `SHORTAGE_ALERTS_JOB` from `crates/df-jobs`, `POST /pos/tinting/dispense` and `Edge::tinter` from `crates/df-edge`, `POST /api/v1/tinting/colorants/levels` and `GET /api/v1/reports/shortage-alerts` from `crates/df-api`, and `--kind shortage` from `crates/df-server`.
+  - Updated `GET /pos/tinting/colorants`, `GET /api/v1/tinting/colorants`, and `apps/pos-desktop` (`src-tauri` + `src/api.ts` + `src/types.ts`) to serve the org's `colorants` catalog directly (`Vec<ColorantView>`) for the formula builder without canister levels; replaced `tint_dispense_end_to_end.rs` with `tint_formula_end_to_end.rs`.
+  - Updated `docs/auth.md` and `README.md`.
+- ✅ Release workflow speedup (`.github/workflows/release.yml`):
+  - Replaced `cargo install tauri-cli --version "^2" --locked` (compiling from source) with prebuilt `npm install -g @tauri-apps/cli@2` + `tauri icon` / `tauri build` on both Windows and Linux.
+  - Upgraded `actions/upload-artifact@v4` → `@v6` and `actions/download-artifact@v4` → `@v7` (native Node 24 runtime, clearing Node 20 deprecation warnings).
+### Verification
+- ✅ `cargo fmt --all -- --check` — clean.
+- ✅ `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- ✅ `apps/pos-desktop` `npm run build` — clean (`445.36 kB` main bundle).
+- ✅ Rust tests on all touched crates passed (`df-api` 11+3, `df-plugin-sdk` 6+3, `pos-desktop` 4, `df-reports` daily/low_stock 4, `df-jobs` phase2, `df-db` 3+6, `df-edge` `tint_formula_end_to_end` 1).
+- 🔄 GitHub CI + `release.yml` `workflow_dispatch` timing verification queued after push.
+
 
 
 

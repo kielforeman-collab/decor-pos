@@ -10,7 +10,6 @@ members = [
     "crates/df-sync",
     "crates/df-edge",
     "crates/df-hw",
-    "crates/df-tinter",
     "crates/df-payments",
     "crates/df-portal",
     "crates/df-edi",
@@ -62,7 +61,6 @@ df-migrator = { path = "crates/df-migrator" }
 df-plugin-sdk = { path = "crates/df-plugin-sdk" }
 df-reports = { path = "crates/df-reports" }
 df-sync = { path = "crates/df-sync" }
-df-tinter = { path = "crates/df-tinter" }
 proptest = "1"
 rand = "0.9"
 rust_decimal = { version = "1", features = ["serde"] }

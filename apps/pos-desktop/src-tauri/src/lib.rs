@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 
 use df_domain::Money;
 use df_edge::{
-    AgingView, ArCustomerSummary, CollectionsView, ColorantsResponse, CompletedSale,
+    AgingView, ArCustomerSummary, CollectionsView, ColorantView, CompletedSale,
     CreatePoLineRequest, CreatePurchaseOrderRequest, CreateTintFormulaRequest,
     CreateTransferRequest, CreateVendorRequest, DashboardAggregate, Edge, EdgeConfig,
     ImportProductsRequest, InvoiceMatchReport, InvoiceView, KpiDashboard, PoAcknowledgmentRow,
@@ -280,9 +280,9 @@ impl PosApp {
         Ok(self.edge.search_colors(manufacturer, query).await?)
     }
 
-    /// Colorant levels for this store, with shortage alerts.
-    pub async fn tint_colorants(&self) -> Result<ColorantsResponse, PosError> {
-        Ok(self.edge.colorant_levels().await?)
+    /// Org colorant catalog for the formula builder (formula tracking only).
+    pub async fn tint_colorants(&self) -> Result<Vec<ColorantView>, PosError> {
+        Ok(self.edge.list_colorants().await?)
     }
 
     /// Stored tint formulas: by customer colour history
@@ -931,7 +931,7 @@ mod commands {
     }
 
     #[tauri::command]
-    pub async fn list_tint_colorants(app: State<'_, PosApp>) -> Result<ColorantsResponse, String> {
+    pub async fn list_tint_colorants(app: State<'_, PosApp>) -> Result<Vec<ColorantView>, String> {
         app.tint_colorants().await.map_err(cmd_err)
     }
 
@@ -1752,7 +1752,7 @@ mod tests {
                 .is_empty()
         );
         assert!(app.search_tint_colors("", "").await.unwrap().is_empty());
-        assert!(app.tint_colorants().await.unwrap().levels.is_empty());
+        assert!(app.tint_colorants().await.unwrap().is_empty());
         assert!(
             app.search_tint_formulas(Some("oc-1".to_string()), None, None)
                 .await

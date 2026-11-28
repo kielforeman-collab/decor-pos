@@ -1,12 +1,12 @@
 //! Integration tests for the plugin host: spawn/health/call/stop
-//! against the real fake-plugin process, the `HttpTinterPlugin`
-//! adapter, and `NotSupported` for gRPC/WASM.
+//! against a real fake HTTP plugin child process, and `NotSupported`
+//! for gRPC/WASM.
 //!
 //! The fake plugin is spawned with `cargo run --example
-//! fake_tinter_plugin` (offline), so these tests take a few seconds
-//! on a cold cache while the example builds.
+//! fake_http_plugin` (offline), so this test takes a few seconds on
+//! a cold cache while the example builds.
 
-use df_plugin_sdk::{DispenseRequest, HttpTinterPlugin, PluginError, PluginHost, PluginManifest};
+use df_plugin_sdk::{PluginError, PluginHost, PluginManifest};
 use std::time::Duration;
 
 /// A free loopback port, allocated by binding `:0` and releasing it.
@@ -18,25 +18,22 @@ fn free_port() -> u16 {
         .port()
 }
 
-fn tinter_manifest(port: u16) -> PluginManifest {
+fn http_plugin_manifest(port: u16) -> PluginManifest {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     PluginManifest {
-        name: "tinter-virtual".to_string(),
+        name: "echo-test-plugin".to_string(),
         version: "0.1.0".to_string(),
         protocol_version: "1".to_string(),
         transport: df_plugin_sdk::Transport::Http,
         endpoint: format!("http://127.0.0.1:{port}"),
-        capabilities: vec![
-            "tinter.dispense".to_string(),
-            "tinter.list_dispensers".to_string(),
-        ],
+        capabilities: vec!["edi.send_po".to_string()],
         command: Some(cargo),
         args: vec![
             "run".to_string(),
             "--quiet".to_string(),
             "--offline".to_string(),
             "--example".to_string(),
-            "fake_tinter_plugin".to_string(),
+            "fake_http_plugin".to_string(),
             "--".to_string(),
             "--port".to_string(),
             port.to_string(),
@@ -48,7 +45,7 @@ fn tinter_manifest(port: u16) -> PluginManifest {
 #[tokio::test]
 async fn host_spawns_fake_plugin_and_calls_it_then_stops() {
     let port = free_port();
-    let manifest = tinter_manifest(port);
+    let manifest = http_plugin_manifest(port);
     let host = PluginHost::spawn(manifest, Duration::from_secs(120))
         .await
         .expect("spawn fake plugin");
@@ -60,50 +57,6 @@ async fn host_spawns_fake_plugin_and_calls_it_then_stops() {
         .expect("echo call");
     assert_eq!(echoed["ping"], "pong");
     host.stop().await.expect("stop");
-}
-
-#[tokio::test]
-async fn http_tinter_plugin_lists_dispensers_and_dispenses() {
-    let port = free_port();
-    let manifest = tinter_manifest(port);
-    let plugin = HttpTinterPlugin::spawn(manifest, Duration::from_secs(120))
-        .await
-        .expect("spawn fake tinter plugin");
-    let dispensers = plugin.list_dispensers().await.expect("list dispensers");
-    assert_eq!(dispensers.len(), 2);
-    assert_eq!(dispensers[0].id, "sim-1");
-    assert_eq!(dispensers[0].status, "ready");
-
-    let ack = plugin
-        .send_formula(&DispenseRequest {
-            formula_id: None,
-            color_code: "OC-17".to_string(),
-            color_name: "White Dove".to_string(),
-            base_sku: "PPG-1001".to_string(),
-            base_product_id: None,
-            container_volume_ml: 3785,
-            sheen: Some("Eggshell".to_string()),
-            colorants: vec![df_plugin_sdk::ColorantShot {
-                code: "Y3".to_string(),
-                shots: 14,
-                sub_shots: 2,
-            }],
-        })
-        .await
-        .expect("send formula");
-    assert_eq!(ack.status, "accepted");
-    assert_eq!(ack.dispenser_id.as_deref(), Some("sim-1"));
-    assert!(ack.job_id.contains("OC-17"));
-
-    let result = plugin
-        .get_dispense_result(&ack.job_id)
-        .await
-        .expect("dispense result");
-    assert_eq!(result.status, "completed");
-    assert_eq!(result.job_id, ack.job_id);
-    assert!(result.external_ref.is_some());
-
-    plugin.stop().await.expect("stop");
 }
 
 #[tokio::test]

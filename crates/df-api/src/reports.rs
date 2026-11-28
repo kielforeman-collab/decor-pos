@@ -1,4 +1,4 @@
-//! HQ report handlers (Phase 2): daily usage, low stock, shortage alerts.
+//! HQ report handlers (Phase 2): daily usage and low stock.
 
 use std::str::FromStr;
 
@@ -7,7 +7,7 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use df_domain::Currency;
 
-use crate::schemas::{ReportQuery, StoreQuery};
+use crate::schemas::ReportQuery;
 use crate::{ApiResult, ApiState, db_err, err, org_id, pool, report_date, store_id};
 
 // --- Phase 2 reports (spec §6.1) ---------------------------------------------
@@ -42,7 +42,7 @@ pub async fn daily_usage(
     get,
     path = "/api/v1/reports/low-stock",
     responses(
-        (status = 200, description = "Low-stock report (colorants; products need thresholds — see docs)"),
+        (status = 200, description = "Low-stock report (products need thresholds — see docs)"),
         (status = 400, description = "store_id is required or date is malformed"),
         (status = 503, description = "No database configured")
     )
@@ -54,33 +54,8 @@ pub async fn low_stock(
     let pool = pool(&state)?;
     let store = store_id(query.store_id, &state)?;
     let date = report_date(query.date)?;
-    // No product thresholds are supplied here: there is no
-    // min-level table yet (see `df-reports` docs), so this endpoint
-    // reports colorants and leaves `products` empty. The edge
-    // low-stock endpoint takes operator-configured thresholds.
     df_reports::low_stock_report(&pool, store, date, &[])
         .await
         .map(|report| Json(serde_json::to_value(report).expect("report serialises")))
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/v1/reports/shortage-alerts",
-    responses(
-        (status = 200, description = "Colorant shortage alerts"),
-        (status = 400, description = "store_id is required"),
-        (status = 503, description = "No database configured")
-    )
-)]
-pub async fn shortage_alerts(
-    State(state): State<ApiState>,
-    Query(query): Query<StoreQuery>,
-) -> ApiResult<serde_json::Value> {
-    let pool = pool(&state)?;
-    let store = store_id(query.store_id, &state)?;
-    df_reports::colorant_shortage_alerts(&pool, store)
-        .await
-        .map(|alerts| Json(serde_json::json!({ "alerts": alerts })))
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }

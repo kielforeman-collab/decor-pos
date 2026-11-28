@@ -9,8 +9,7 @@ use chrono::Utc;
 use df_db::models::{Organization, Store};
 use df_db::{
     Dialect, ImportProductRow, connect, container_fl_oz_for_size, container_volume_ml_for_size,
-    get_colorant_level, get_product_by_sku, import_products, list_colorants_for_org,
-    list_products_for_org, migrate,
+    get_product_by_sku, import_products, list_colorants_for_org, list_products_for_org, migrate,
 };
 use rust_decimal::Decimal;
 use std::str::FromStr;
@@ -309,12 +308,6 @@ async fn import_gennex_rows_store_msrp_map_volume_and_colorant() {
     assert_eq!(colorants[0].name, "GENNEX WB CLRNT -BLACK");
     assert_eq!(colorants[0].cost_per_fl_oz, dec("1.229375"));
     assert_eq!(colorants[0].shots_per_fl_oz, 48);
-    // A zero level row is created at the importing store.
-    let level = get_colorant_level(&pool, colorants[0].id, store_id)
-        .await
-        .unwrap();
-    assert!(level.is_some());
-    assert_eq!(level.unwrap().on_hand_fl_oz, Decimal::ZERO);
 
     // Re-importing the gallon of the same colorant updates the one
     // colorant row (cost per fl oz from the gallon: $157.41 / 128)

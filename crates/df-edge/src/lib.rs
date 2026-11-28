@@ -106,10 +106,7 @@ pub use portal::{BopisOrderResponse, BopisOrderView, PortalCustomerView, PortalR
 pub use scheduling::{
     ClockRequest, CreateShiftTemplateRequest, CreateStaffShiftRequest, SetShiftStatusRequest,
 };
-pub use tinting::{
-    ColorantLevelView, ColorantsResponse, CreateFormulaColorant, CreateTintFormulaRequest,
-    DispenseTintRequest, DispenseTintResponse, tint_job_to_row, virtual_tinter_from_levels,
-};
+pub use tinting::{ColorantView, CreateFormulaColorant, CreateTintFormulaRequest};
 pub use types::{
     CompletedSale, EdgeConfig, PricePreview, PricePreviewLine, ReturnLineInput, SaleInput,
     SaleLineInput, TenderInput, ZReport,

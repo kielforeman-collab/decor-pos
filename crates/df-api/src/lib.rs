@@ -50,16 +50,14 @@ pub use reads::{
     ar_aging, ar_customer_summary, crm_activities, crm_appointments, delivery_dispatch,
     edi_documents, inventory_balances,
 };
-pub use reports::{daily_usage, low_stock, shortage_alerts};
+pub use reports::{daily_usage, low_stock};
 pub use schemas::{
     AgingCustomerResponse, AgingResponse, AppointmentListQuery, ArAgingQuery,
-    ArCustomerSummaryResponse, ColorSearchQuery, ColorantLevelResponse, CounterSwitchRequest,
-    DispatchQuery, EdiDocumentsQuery, ErrorResponse, FormulaQuery, HealthResponse, LoginRequest,
-    OverrideVerifyRequest, PasskeyVerifyRequest, ReportQuery, SetColorantLevelRequest, StoreQuery,
+    ArCustomerSummaryResponse, ColorSearchQuery, CounterSwitchRequest, DispatchQuery,
+    EdiDocumentsQuery, ErrorResponse, FormulaQuery, HealthResponse, LoginRequest,
+    OverrideVerifyRequest, PasskeyVerifyRequest, ReportQuery, StoreQuery,
 };
-pub use tinting::{
-    create_formula, list_colorants, list_formulas, search_colors, set_colorant_level,
-};
+pub use tinting::{create_formula, list_colorants, list_formulas, search_colors};
 
 use std::str::FromStr;
 
@@ -219,10 +217,8 @@ pub async fn health() -> Json<HealthResponse> {
         tinting::search_colors,
         tinting::list_formulas,
         tinting::list_colorants,
-        tinting::set_colorant_level,
         reports::daily_usage,
-        reports::low_stock,
-        reports::shortage_alerts
+        reports::low_stock
     ),
     components(schemas(
         HealthResponse,
@@ -236,14 +232,12 @@ pub async fn health() -> Json<HealthResponse> {
         CounterSwitchRequest,
         PasskeyVerifyRequest,
         OverrideVerifyRequest,
-        OverrideVerifyResponse,
-        ColorantLevelResponse,
-        SetColorantLevelRequest
+        OverrideVerifyResponse
     )),
     tags(
         (name = "auth", description = "Authentication & counter switching"),
-        (name = "tinting", description = "Paint & tinting admin (Phase 2)"),
-        (name = "reports", description = "Daily usage, low-stock and shortage reports (Phase 2)")
+        (name = "tinting", description = "Paint & tinting formula tracking (Phase 2)"),
+        (name = "reports", description = "Daily usage and low-stock reports (Phase 2)")
     )
 )]
 pub struct ApiDoc;
@@ -311,13 +305,11 @@ pub fn create_router(state: ApiState) -> Router {
 
     let inventory_adjust_routes = Router::new()
         .route("/api/v1/tinting/formulas", post(create_formula))
-        .route("/api/v1/tinting/colorants/levels", post(set_colorant_level))
         .route_layer(inventory_adjust_gate);
 
     let report_routes = Router::new()
         .route("/api/v1/reports/daily-usage", get(daily_usage))
         .route("/api/v1/reports/low-stock", get(low_stock))
-        .route("/api/v1/reports/shortage-alerts", get(shortage_alerts))
         .route("/api/v1/edi/documents", get(edi_documents))
         .route_layer(reports_gate);
 

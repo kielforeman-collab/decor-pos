@@ -268,18 +268,13 @@ pub fn gennex_colorant_code(sku: &str, color: &str) -> Option<String> {
 /// Gennex colorants (Line `00229` — see [`is_colorant_row`] for
 /// why the `COLORANT` category is not a fallback) are also
 /// upserted into `colorants` (`system_name "Gennex"`, code from the
-/// SKU, `cost_per_fl_oz = NET / container fl oz`, 48 shots/fl oz)
-/// — and, when `store_id` is given, a zero `colorant_levels` row is
-/// created for a newly-seen colorant so the counter's colorant
-/// list shows it (an existing level is never reset: on-hand stock
-/// is real data, not import data). A colorant failure never fails
-/// its product row; the product import is authoritative.
-/// `store_id` is `None` in the `df-db` unit tests, which assert on
-/// the `colorants` table only.
+/// SKU, `cost_per_fl_oz = NET / container fl oz`, 48 shots/fl oz).
+/// A colorant failure never fails its product row; the product
+/// import is authoritative.
 pub async fn import_products(
     pool: &AnyPool,
     org_id: Uuid,
-    store_id: Option<Uuid>,
+    _store_id: Option<Uuid>,
     rows: &[ImportProductRow],
 ) -> Result<ProductImportResult, DbError> {
     let mut created = 0usize;
@@ -388,7 +383,7 @@ pub async fn import_products(
         // Gennex colorant rows double as colorant catalog rows.
         // Best-effort: a colorant problem is not a product problem.
         if product_ok && is_colorant_row(&validated.line, &validated.category) {
-            let _ = upsert_gennex_colorant(pool, org_id, store_id, &validated).await;
+            let _ = upsert_gennex_colorant(pool, org_id, &validated).await;
         }
     }
 
@@ -406,20 +401,14 @@ pub async fn import_products(
 /// — see [`container_fl_oz_for_size`]), 48 shots per fl oz. A code
 /// sold in both sizes (e.g. S1 as `0229S1-001` and `0229S1-004`)
 /// keeps one colorant row: the gallon and quart book prices derive
-/// ~$1.23/fl oz each, and the last row in file order wins. When
-/// `store_id` is given, a zero level row is created for a
-/// newly-seen colorant only.
+/// ~$1.23/fl oz each, and the last row in file order wins.
 async fn upsert_gennex_colorant(
     pool: &AnyPool,
     org_id: Uuid,
-    store_id: Option<Uuid>,
     validated: &ValidatedImportRow,
 ) -> Result<(), DbError> {
-    use crate::models::{Colorant, ColorantLevelRow};
-    use crate::{
-        get_colorant_by_code, get_colorant_level, insert_colorant, update_colorant,
-        upsert_colorant_level,
-    };
+    use crate::models::Colorant;
+    use crate::{get_colorant_by_code, insert_colorant, update_colorant};
     let Some(code) = gennex_colorant_code(&validated.sku, &validated.color) else {
         return Ok(());
     };
@@ -430,21 +419,19 @@ async fn upsert_gennex_colorant(
         return Ok(());
     }
     let cost_per_fl_oz = validated.net_price / fl_oz;
-    let (id, is_new) = match get_colorant_by_code(pool, org_id, "Gennex", &code).await {
+    match get_colorant_by_code(pool, org_id, "Gennex", &code).await {
         Ok(existing) => {
             let mut updated = existing.clone();
             updated.name = validated.name.clone();
             updated.cost_per_fl_oz = cost_per_fl_oz;
             updated.shots_per_fl_oz = 48;
             update_colorant(pool, &updated).await?;
-            (existing.id, false)
         }
         Err(DbError::NotFound(_)) => {
-            let id = Uuid::now_v7();
             insert_colorant(
                 pool,
                 &Colorant {
-                    id,
+                    id: Uuid::now_v7(),
                     org_id,
                     system_name: "Gennex".to_string(),
                     code,
@@ -454,26 +441,8 @@ async fn upsert_gennex_colorant(
                 },
             )
             .await?;
-            (id, true)
         }
         Err(e) => return Err(e),
-    };
-    if is_new {
-        if let Some(store_id) = store_id {
-            if get_colorant_level(pool, id, store_id).await?.is_none() {
-                upsert_colorant_level(
-                    pool,
-                    &ColorantLevelRow {
-                        colorant_id: id,
-                        store_id,
-                        on_hand_fl_oz: Decimal::ZERO,
-                        low_threshold_fl_oz: Decimal::ZERO,
-                        updated_at: chrono::Utc::now(),
-                    },
-                )
-                .await?;
-            }
-        }
     }
     Ok(())
 }

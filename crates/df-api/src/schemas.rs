@@ -52,29 +52,6 @@ pub struct OverrideVerifyRequest {
     pub reason_code: String,
 }
 
-/// One colorant level with its catalog identity (admin list view).
-/// UUIDs and decimals are strings here, matching their JSON form —
-/// `Uuid` / `Decimal` do not implement utoipa's `ToSchema`.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct ColorantLevelResponse {
-    pub colorant_id: String,
-    pub code: String,
-    pub name: String,
-    pub on_hand_fl_oz: String,
-    pub low_threshold_fl_oz: String,
-    pub is_low: bool,
-}
-
-/// Body for `POST /api/v1/tinting/colorants/levels`. UUIDs and
-/// decimals are strings, matching their JSON form.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct SetColorantLevelRequest {
-    pub colorant_id: String,
-    pub store_id: String,
-    pub on_hand_fl_oz: String,
-    pub low_threshold_fl_oz: String,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct ColorSearchQuery {
     pub manufacturer: Option<String>,

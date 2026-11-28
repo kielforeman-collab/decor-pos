@@ -42,11 +42,10 @@
 //! run them inside one transaction (`&mut *tx`) or standalone
 //! (`&pool`).
 //!
-//! Phase 2 adds the spec §5.3/§7 tint tables (`tint_jobs`,
-//! `colorant_levels` in migration `0003_phase2`) and the repositories
-//! in [`tint`]: color search, colorant CRUD, formula lookup by id /
-//! color / customer history, tint-job persistence, and the atomic
-//! colorant-level decrement a dispense runs.
+//! Phase 2 adds the repositories in [`tint`]: color search, colorant
+//! catalog CRUD, and formula lookup by id / color / customer history
+//! (formula tracking only — machine tinting was dropped Nov 26, 2026;
+//! legacy `0003_phase2` migration stays intact for existing schemas).
 //!
 //! Phase 3 adds the contractor AR repositories in [`ar`]:
 //! charge-account credit fields, customer jobs, AR allocations,

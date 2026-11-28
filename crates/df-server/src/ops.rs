@@ -41,13 +41,8 @@ pub(crate) async fn run_reports(
             }
         }
         "low-stock" => {
-            // No product thresholds on the CLI path: there is no
-            // min-level table yet (see `df-reports` docs), so the
-            // product half is empty and the colorant half carries
-            // the report. Use the edge HTTP endpoint with
-            // operator-configured thresholds for products.
             eprintln!(
-                "df-server reports: low-stock without product thresholds — products will be empty (no min-level table yet); colorants are reported"
+                "df-server reports: low-stock without product thresholds — products will be empty (no min-level table yet)"
             );
             match df_reports::low_stock_report(&pool, store_id, date, &[]).await {
                 Ok(report) => serde_json::to_value(report).expect("report serialises"),
@@ -57,13 +52,6 @@ pub(crate) async fn run_reports(
                 }
             }
         }
-        "shortage" => match df_reports::colorant_shortage_alerts(&pool, store_id).await {
-            Ok(alerts) => serde_json::json!({ "alerts": alerts }),
-            Err(err) => {
-                eprintln!("df-server reports: {err}");
-                std::process::exit(1);
-            }
-        },
         "kpi" => {
             let currency = store_currency(&pool, store_id, currency_flag).await;
             match df_reports::kpi_dashboard(&pool, org_id, store_id, date, date, date, currency)
@@ -92,7 +80,7 @@ pub(crate) async fn run_reports(
         }
         other => {
             eprintln!(
-                "df-server reports: unknown --kind {other:?} (daily-usage | low-stock | shortage | kpi | eco)"
+                "df-server reports: unknown --kind {other:?} (daily-usage | low-stock | kpi | eco)"
             );
             std::process::exit(2);
         }

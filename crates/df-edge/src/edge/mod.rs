@@ -40,7 +40,6 @@ use df_db::{AnyPool, DbError};
 use df_domain::{Currency, Money};
 use df_reports::ProductThreshold;
 use df_sync::{MemoryHq, RemoteHq};
-use df_tinter::VirtualTinter;
 use rust_decimal::Decimal;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -94,10 +93,6 @@ pub struct Edge {
     remote_hq: Arc<RwLock<Option<RemoteHq>>>,
     holds: Arc<Mutex<HashMap<Uuid, SaleInput>>>,
     events: broadcast::Sender<String>,
-    /// The hosted in-process virtual tinter (Phase 2). Its levels
-    /// are re-synced from the database on every dispense; the
-    /// database is the source of truth.
-    tinter: Arc<Mutex<VirtualTinter>>,
     /// Operator-configured product min levels for the low-stock
     /// report (no min-level table exists yet — see `df-reports`).
     product_thresholds: Arc<RwLock<Vec<ProductThreshold>>>,
@@ -161,7 +156,6 @@ impl Edge {
             remote_hq: Arc::new(RwLock::new(remote_hq)),
             holds: Arc::new(Mutex::new(HashMap::new())),
             events,
-            tinter: Arc::new(Mutex::new(VirtualTinter::new("virtual-simulator"))),
             product_thresholds: Arc::new(RwLock::new(Vec::new())),
             email_outbox_dir: Arc::new(RwLock::new(None)),
         })
@@ -257,11 +251,6 @@ impl Edge {
 
     pub fn pool(&self) -> &AnyPool {
         &self.pool
-    }
-
-    /// The hosted virtual tinter (shared, behind a lock).
-    pub(crate) fn tinter(&self) -> &Arc<Mutex<VirtualTinter>> {
-        &self.tinter
     }
 
     /// The operator-configured product thresholds for the low-stock

@@ -1,18 +1,9 @@
 //! Low-stock report (Phase 2, v0.3; spec §7).
 //!
-//! Two halves:
-//!
-//! * **Products** — on-hand balances derived by summing the
-//!   append-only inventory ledger per product (never a stored
-//!   mutable balance), compared against caller-supplied minimum
-//!   levels. The schema has no min-level table (see the crate docs),
-//!   so thresholds arrive as [`ProductThreshold`] values — the edge
-//!   daemon holds operator-configured ones; a back-office min/max
-//!   table is a Phase 3 item.
-//! * **Colorants** — the shortage alerts from
-//!   [`crate::shortage::colorant_shortage_alerts`].
-//!
-//! Products below minimum also feed PO suggestions via
+//! Derives on-hand product balances by summing the append-only
+//! inventory ledger per product (never a stored mutable balance),
+//! compares them against caller-supplied minimum levels
+//! ([`ProductThreshold`]), and feeds low products into
 //! [`df_edi::generate_purchase_orders`] (one draft PO per vendor,
 //! `max(reorder_qty, shortfall)` per line). The suggestions are
 //! drafts only — nothing is ordered, sent, or persisted here.
@@ -26,12 +17,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::ReportError;
-use crate::shortage::{ColorantShortageAlert, colorant_shortage_alerts};
 
 /// A caller-supplied minimum level for one product, plus the
-/// replenishment facts a PO suggestion needs. Until a min/max table
-/// exists (Phase 3), the operator supplies these — e.g. the edge
-/// daemon's configured thresholds.
+/// replenishment facts a PO suggestion needs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProductThreshold {
     pub product_id: Uuid,
@@ -64,9 +52,6 @@ pub struct LowStockReport {
     pub date: NaiveDate,
     /// Products below minimum, sorted by product id.
     pub products: Vec<LowStockProduct>,
-    /// Colorants at/below threshold (same list as the standalone
-    /// shortage alerts).
-    pub colorants: Vec<ColorantShortageAlert>,
     /// Draft POs suggested for the low products, one per vendor.
     /// Empty when nothing is low.
     pub suggested_purchase_orders: Vec<PurchaseOrder>,
@@ -94,9 +79,6 @@ impl LowStockReport {
                 product.suggested_order_qty
             ));
         }
-        out.push_str(&crate::shortage::render_shortage_alerts_text(
-            &self.colorants,
-        ));
         out.push_str("Suggested purchase orders (drafts — nothing ordered):\n");
         if self.suggested_purchase_orders.is_empty() {
             out.push_str("  (none)\n");
@@ -163,12 +145,10 @@ pub async fn low_stock_report(
         });
     }
     let suggested_purchase_orders = generate_purchase_orders(&low_items, store_id, date);
-    let colorants = colorant_shortage_alerts(pool, store_id).await?;
     Ok(LowStockReport {
         store_id,
         date,
         products,
-        colorants,
         suggested_purchase_orders,
     })
 }
@@ -178,7 +158,7 @@ mod tests {
     use super::*;
     use crate::test_support::test_pool;
     use chrono::Utc;
-    use df_db::models::{Colorant, ColorantLevelRow, InventoryLedgerEntry, Organization, Store};
+    use df_db::models::{InventoryLedgerEntry, Organization, Store};
     use std::str::FromStr;
 
     fn dec(s: &str) -> Decimal {
@@ -249,35 +229,6 @@ mod tests {
             .await
             .unwrap();
         }
-        // One low colorant (BK at threshold) so the colorant half is
-        // exercised too.
-        let bk = Uuid::from_u128(0x5003);
-        df_db::insert_colorant(
-            &pool,
-            &Colorant {
-                id: bk,
-                org_id,
-                system_name: "Gennex".to_string(),
-                code: "BK".to_string(),
-                name: "Black".to_string(),
-                cost_per_fl_oz: dec("0.3800"),
-                shots_per_fl_oz: 48,
-            },
-        )
-        .await
-        .unwrap();
-        df_db::upsert_colorant_level(
-            &pool,
-            &ColorantLevelRow {
-                colorant_id: bk,
-                store_id,
-                on_hand_fl_oz: dec("1"),
-                low_threshold_fl_oz: dec("1"),
-                updated_at: Utc::now(),
-            },
-        )
-        .await
-        .unwrap();
 
         let thresholds = vec![
             ProductThreshold {
@@ -334,8 +285,6 @@ mod tests {
         assert_eq!(c.shortfall, dec("4"));
         // reorder 2 < shortfall 4 -> order the shortfall.
         assert_eq!(c.suggested_order_qty, dec("4"));
-        assert_eq!(report.colorants.len(), 1);
-        assert_eq!(report.colorants[0].code, "BK");
         // One draft PO per vendor.
         assert_eq!(report.suggested_purchase_orders.len(), 2);
         assert_eq!(report.suggested_purchase_orders[0].vendor_id, "VENDOR-A");
@@ -344,7 +293,6 @@ mod tests {
         assert_eq!(report.suggested_purchase_orders[1].vendor_id, "VENDOR-B");
         let text = report.render_text();
         assert!(text.contains("Regal Select Interior Gallon"));
-        assert!(text.contains("BK (Black)"));
         assert!(text.contains("Suggested purchase orders"));
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["products"].as_array().unwrap().len(), 2);
@@ -357,7 +305,6 @@ mod tests {
         let date = Utc::now().date_naive();
         let report = low_stock_report(&pool, store_id, date, &[]).await.unwrap();
         assert!(report.products.is_empty());
-        assert!(report.colorants.is_empty());
         assert!(report.suggested_purchase_orders.is_empty());
     }
 }

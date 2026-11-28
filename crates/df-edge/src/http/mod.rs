@@ -36,8 +36,7 @@
 //!   colour history (newest first; `job_id` scopes to one job)
 //! * `POST /pos/tinting/formulas` — create a formula (formula
 //!   tracking only; colorant codes must exist, else 400)
-//! * `POST /pos/tinting/dispense` — [`DispenseTintRequest`](crate::tinting::DispenseTintRequest)
-//! * `GET /pos/tinting/colorants` — levels + shortage alerts
+//! * `GET /pos/tinting/colorants` — org colorant catalog (formula tracking)
 //! * `GET /pos/tinting/colors?manufacturer=&query=` — color search
 //! * `GET /pos/reports/daily-usage?date=YYYY-MM-DD` — daily usage
 //!   report (defaults to today, UTC)
@@ -215,7 +214,6 @@ use axum::{Json, Router};
 use chrono::NaiveDate;
 use df_auth::Permission;
 use df_auth_http::{AuthRule, Gate};
-use df_tinter::TinterError;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -258,9 +256,9 @@ use portal::{
     portal_reorder, portal_statements,
 };
 use pos::{
-    checkout, close_till, create_tint_formula, customer_transactions, daily_usage, dispense_tint,
-    get_customer, get_invoice, get_transaction, list_colorants, list_colors, list_formulas,
-    list_holds, list_price_levels, low_stock, open_till, park_hold, price_preview, record_layaway,
+    checkout, close_till, create_tint_formula, customer_transactions, daily_usage, get_customer,
+    get_invoice, get_transaction, list_colorants, list_colors, list_formulas, list_holds,
+    list_price_levels, low_stock, open_till, park_hold, price_preview, record_layaway,
     record_quote, resume_hold, return_transaction, search_customers, search_products,
     set_customer_price_level, set_thresholds, sync_run, sync_state, void_transaction,
 };
@@ -315,8 +313,6 @@ fn err_response(err: EdgeError) -> (StatusCode, Json<ErrorResponse>) {
         EdgeError::Till(_) | EdgeError::CreditBlocked(_) => StatusCode::CONFLICT,
         EdgeError::NoPaymentProvider(_) | EdgeError::NoHq(_) => StatusCode::SERVICE_UNAVAILABLE,
         EdgeError::Sync(_) | EdgeError::Payment(_) => StatusCode::BAD_GATEWAY,
-        EdgeError::Tinter(TinterError::InsufficientColorant { .. }) => StatusCode::CONFLICT,
-        EdgeError::Tinter(_) => StatusCode::BAD_REQUEST,
         EdgeError::Edi(
             df_edi::EdiError::Sqlx(_) | df_edi::EdiError::Db(_) | df_edi::EdiError::Io(_),
         ) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -488,7 +484,6 @@ pub fn router(edge: Edge) -> Router {
         .route("/pos/layaways", post(record_layaway))
         .route("/pos/sync/state", get(sync_state))
         .route("/pos/sync/run", post(sync_run))
-        .route("/pos/tinting/dispense", post(dispense_tint))
         .route(
             "/pos/tinting/formulas",
             get(list_formulas).post(create_tint_formula),
