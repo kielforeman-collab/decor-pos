@@ -3,11 +3,12 @@ name: Release
 # Builds installer downloads on every version tag (v*):
 #  - Windows: Decor POS desktop installer (.msi + NSIS .exe) + df-server binary
 #  - Linux:   Decor POS desktop installer (.deb + .AppImage) + df-server binary
-# Both jobs run on Groundbox runners (cheaper/faster than GitHub-hosted;
-# the Groundbox GitHub App must be installed for this repo or jobs queue
-# forever — see app.groundbox.dev). Each build job uploads its files as a
-# run artifact; the publish job (tag runs only) attaches them to the
-# GitHub release for the tag, so two jobs never race creating the release.
+# Linux + publish run on Groundbox runners; Windows runs on GitHub-hosted
+# windows-latest (free for public repos, with full VS 2022 MSVC, Windows SDK,
+# NSIS, WiX, and Git Bash — Groundbox Windows defaulted rustup to -gnu without
+# dlltool.exe in run 46111316618). Each build job uploads its files as a run
+# artifact; the publish job (tag runs only) attaches them to the GitHub
+# release for the tag, so two jobs never race creating the release.
 # Manual runs (workflow_dispatch) build everything and stop at artifacts —
 # no release is created — which is how the pipeline is tested.
 #
@@ -29,7 +30,7 @@ env:
 
 jobs:
   build-windows:
-    runs-on: groundbox-windows-4vcpu
+    runs-on: windows-latest
     defaults:
       run:
         shell: pwsh
@@ -37,13 +38,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
-        # dtolnay/rust-toolchain is a composite action whose version-parse
-        # step runs bash — the Groundbox Windows image has no bash at all,
-        # so that step fails in 20s with "bash: command not found" (run
-        # 46107924150). setup-rust-toolchain is a pure JS action.
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install Node.js
         uses: actions/setup-node@v5
