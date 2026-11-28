@@ -190,6 +190,58 @@ pub(super) async fn sync_run(State(edge): State<Arc<Edge>>) -> HandlerResult<App
         .map_err(err_response)
 }
 
+#[derive(Debug, Deserialize)]
+pub struct DismissDeadLetterRequest {
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeadLetterActionResponse {
+    pub id: Uuid,
+    pub updated: bool,
+}
+
+pub(super) async fn list_sync_dead_letters(
+    State(edge): State<Arc<Edge>>,
+    Query(query): Query<LimitQuery>,
+) -> HandlerResult<Vec<df_sync::OutboxEntry>> {
+    let limit = i64::try_from(query.limit.unwrap_or(100)).unwrap_or(500);
+    edge.list_dead_letters(limit)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+pub(super) async fn requeue_sync_dead_letter(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+) -> HandlerResult<DeadLetterActionResponse> {
+    let updated = edge.requeue_dead_letter(id).await.map_err(err_response)?;
+    if !updated {
+        return Err(err_response(crate::error::EdgeError::NotFound(format!(
+            "dead-letter outbox entry {id} not found"
+        ))));
+    }
+    Ok(Json(DeadLetterActionResponse { id, updated }))
+}
+
+pub(super) async fn dismiss_sync_dead_letter(
+    State(edge): State<Arc<Edge>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<DismissDeadLetterRequest>,
+) -> HandlerResult<DeadLetterActionResponse> {
+    let updated = edge
+        .dismiss_dead_letter(id, &body.reason)
+        .await
+        .map_err(err_response)?;
+    if !updated {
+        return Err(err_response(crate::error::EdgeError::NotFound(format!(
+            "dead-letter outbox entry {id} not found"
+        ))));
+    }
+    Ok(Json(DeadLetterActionResponse { id, updated }))
+}
+
 // --- tinting + reports (Phase 2) ------------------------------------------
 
 #[derive(Debug, Deserialize)]

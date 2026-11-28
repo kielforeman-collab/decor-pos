@@ -96,6 +96,12 @@ data).
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | postgres | `decor` / *(required)* / `decorpos` | The HQ database credentials; `DATABASE_URL` is built from these. |
 | `STRIPE_API_KEY`, `STRIPE_TERMINAL_LOCATION_ID` | edge | *(empty)* | Env-only; empty = mock terminal. Live Stripe Terminal calls are not implemented in v1.0 |
 | `DF_TYPST_BIN` | edge | *(empty)* | Path to a `typst` binary for monthly-statement PDFs. The image does not bundle Typst — mount one or run `statements` on the host |
+| `DF_HQ_URL` / `DF_HQ_TOKEN` | edge | *(empty)* | Remote HQ base URL (e.g. `https://hq.example.com`) and store-scoped `dfs_` service token (minted via `df-server tokens create`). When set, `df-server edge` pushes deltas to HQ instead of in-memory `MemoryHq`. |
+| `DF_SYNC_INTERVAL_SECS` | edge | `30` | Background HQ sync interval in seconds when `DF_HQ_URL` is configured (`0` disables timer). |
+| `DF_CORS_ORIGINS` | edge, hq, api | *(empty — fail closed)* | Comma-separated exact allowed browser origins (e.g. `https://pos.example.com`). Wildcard `*` is rejected. |
+| `DF_AUTH_RATE_LIMIT_MAX` / `DF_AUTH_RATE_LIMIT_WINDOW_SECS` | edge, hq, api | `20` / `60` | Per-client-IP auth endpoint rate limit (`0` disables). Returns `429` + `Retry-After` before Argon2id runs. |
+| `DF_MAX_BODY_BYTES` | edge, hq, api | `4194304` (4 MiB) | Maximum HTTP request body size. |
+| `DF_TRUST_PROXY_HEADERS` | edge, hq, api | `false` | Set `true` only behind a trusted TLS/mTLS reverse proxy that overwrites `X-Forwarded-For`. |
 
 ## Volumes & ports
 

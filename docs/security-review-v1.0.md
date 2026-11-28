@@ -22,15 +22,18 @@ a trusted network until F1–F3 are closed. Two real defects found in
 this pass (credentials in logs; sync marking unapplied entries
 synced) are fixed with tests.
 
-**Phase 7 addendum (2026-11-26):** F1–F4 are now FIXED — the
-`df-auth-http` gate enforces `Bearer dfp_...` sessions with
-per-route RBAC on both surfaces, portal login replaces the
-customer-UUID scope, and the login endpoints are implemented
-(see §2 and `docs/auth.md` §6). Ports 8080/3000 are no longer
-open to any LAN host, but the loopback/trusted-network posture
-still applies as defence in depth: F9 (no TLS/mTLS) and F10 (no
-CORS, no rate limiting — including no login throttling) remain
-OPEN, so do not expose either listener publicly yet.
+**Security & sync hardening addendum (2026-11-28):** F8 and F10 are
+now FIXED. Sync conflicts and max-retried outbox entries (`DEFAULT_MAX_RETRIES = 10`)
+are quarantined into a dead-letter queue on the edge (`GET /pos/sync/dead-letters`,
+`requeue`, `dismiss`), HQ persists & triages `sync_conflicts`
+(`GET /api/v1/sync/conflicts`, `resolve`), unattended edge→HQ sync uses
+revocable, store-bound `dfs_` service tokens (`df-server tokens create|list|revoke`
+and `/api/v1/auth/service-tokens`), and both HTTP surfaces enforce exact-origin
+CORS allowlists (fail-closed by default, `*` rejected), per-IP auth rate
+limiting (`429` + `Retry-After`), 4 MiB body limits, and defensive response
+headers (`nosniff`, `DENY`, `no-referrer`, `no-store` on `/auth/*`). F9
+(TLS/mTLS termination) remains an infrastructure requirement handled by the
+reverse proxy / ingress in front of `df-server hq` and `df-server edge`.
 
 ## Findings
 
@@ -43,9 +46,9 @@ OPEN, so do not expose either listener publicly yet.
 | F5 | Medium | **FIXED** | Database URLs (incl. Postgres password) printed to logs |
 | F6 | Medium | **FIXED** | `sync_now` marked a whole batch synced even if the sink applied only part of it |
 | F7 | Medium | **FIXED** | One conflicting transaction entry blocked a whole store's sync forever |
-| F8 | Low | OPEN | Conflicting sync entries stay pending with no dead-letter/quarantine path |
-| F9 | Low | OPEN | No TLS/mTLS on the edge↔HQ path (spec §2 promises mTLS) |
-| F10 | Low | OPEN | No CORS configuration; no rate limiting on any HTTP API |
+| F8 | Low | **FIXED** (2026-11-28) | Conflicting / max-retried sync entries now quarantine into a dead-letter queue with edge & HQ triage endpoints |
+| F9 | Low | OPEN (proxy/ingress) | Terminate TLS/mTLS at the reverse proxy (Caddy/nginx/Traefik) in front of `df-server hq` / `edge`; app now authenticates edge sync with store-scoped `dfs_` tokens |
+| F10 | Low | **FIXED** (2026-11-28) | Strict exact-origin CORS allowlist, per-IP auth rate limiting (`429`), 4 MiB body cap, security headers, and bounded outbox retries |
 
 ## 1. PCI — no PAN/CVV anywhere (PASS)
 
@@ -286,31 +289,44 @@ stored transaction is never overwritten. Proven by
 `conflicting_edits_from_two_edges_do_not_block_sync` and
 `outbox_conflicting_entry_stays_pending_without_blocking`.
 
-### F8 — OPEN (Low): no dead-letter path for conflicting entries
+### F8 — FIXED (2026-11-28, Low): dead-letter queue and HQ conflict triage
 
-A skipped conflicting entry stays pending in the outbox forever and
-is re-skipped on every sync (proven by the test above). It cannot
-block anything anymore, but it never resolves itself either, and
-`MemoryHq`'s conflict list is in-memory (lost on restart). A real
-HQ sink needs a persisted conflicts table and an operator workflow
-(void + re-issue as a new transaction); that is post-v1.0 work.
+Conflicting transaction entries are now returned in `ApplyReport::conflict_ids`
+by both `MemoryHq` and `DbHq` and automatically quarantined into the edge
+outbox's dead-letter queue (`sync_outbox.quarantined_at` / `quarantine_reason`,
+migration `0016_security_sync_hardening.sql`), so they no longer re-send on
+every drain. Operators can inspect, requeue, or dismiss dead-lettered entries
+at `GET /pos/sync/dead-letters`, `POST /pos/sync/dead-letters/{id}/requeue`,
+and `POST /pos/sync/dead-letters/{id}/dismiss` (`SyncIngest` permission), and
+triage persisted HQ conflicts at `GET /api/v1/sync/conflicts` and
+`POST /api/v1/sync/conflicts/{entry_id}/resolve`. Proven by
+`crates/df-edge/tests/chaos_sync_edge.rs`, `crates/df-edge/tests/security_sync_hardening.rs`,
+and `crates/df-api/tests/security_sync_hardening.rs`.
 
-### F9 — OPEN (Low): no TLS/mTLS on the sync path
+### F9 — OPEN (Low, infrastructure): TLS/mTLS termination at reverse proxy
 
-Spec §2 shows edge↔HQ as "mTLS + Delta Sync". In v1.0 there is no
-network sync transport at all — the only sink is the in-process
-`MemoryHq`. When a real HQ sink lands, it must authenticate batches
-(F1's API has none) and use mTLS; until then the exposure is nil
-because nothing crosses a network.
+The edge↔HQ sync path now authenticates unattended store daemons with
+revocable, store-bound `dfs_` service tokens (`df-server tokens create|list|revoke`,
+`POST /api/v1/auth/service-tokens`, strict `store_id` enforcement). Transport
+TLS / mTLS termination should be enforced by a reverse proxy or Kubernetes
+Ingress (Caddy, nginx, or Traefik) in front of `df-server hq` / `df-server edge`,
+passing `--trust-proxy-headers` (`DF_TRUST_PROXY_HEADERS=true`) only when
+the proxy overwrites `X-Forwarded-For`.
 
-### F10 — OPEN (Low): no CORS, no rate limiting
+### F10 — FIXED (2026-11-28, Low): CORS allowlist, auth rate limiting, body limits, bounded retries
 
-No `CorsLayer` is configured anywhere (browsers calling the edge
-from another origin are blocked by default — safe but incidental),
-and no endpoint has rate limiting or request-size limits. The
-`mark_failed` retry counter is unbounded (a permanently failing entry
-retries forever). Acceptable on a trusted LAN; revisit before any
-public exposure.
+`df-auth-http::hardening` (applied to both `df-edge` and `df-api` routers)
+enforces:
+- **Exact-origin CORS allowlist** (`--cors-origin` / `DF_CORS_ORIGINS`, fail-closed
+  empty default; wildcard `*` rejected at startup).
+- **Per-IP auth rate limiting** (`20` attempts / `60s` default on `/login`,
+  `/portal-login`, `/counter-switch`, `/override-verify`, `/setup`; returns
+  `429 Too Many Requests` + `Retry-After` before Argon2id runs).
+- **4 MiB request body cap** (`DefaultBodyLimit`, configurable via `DF_MAX_BODY_BYTES`).
+- **Defensive headers** (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: no-referrer`, and `Cache-Control: no-store` on `/auth/*`).
+- **Bounded outbox retries** (`Outbox::DEFAULT_MAX_RETRIES = 10` automatically
+  quarantines permanently failing outbox rows into the dead-letter queue).
 
 ## 5. Input handling & money
 

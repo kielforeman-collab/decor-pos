@@ -13,6 +13,7 @@ clap = { workspace = true }
 df-accounting = { workspace = true }
 df-api = { workspace = true }
 df-auth = { workspace = true }
+df-auth-http = { workspace = true }
 df-db = { workspace = true }
 df-domain = { workspace = true }
 df-edge = { workspace = true }

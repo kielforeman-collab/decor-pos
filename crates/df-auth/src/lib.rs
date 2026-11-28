@@ -26,6 +26,7 @@ pub mod oidc;
 pub mod password;
 pub mod pin;
 pub mod rbac;
+pub mod service_token;
 pub mod session;
 pub mod webauthn;
 
@@ -35,6 +36,10 @@ pub use oidc::{OidcConfig, OidcService, UnimplementedOidcService};
 pub use password::{hash_password, verify_password};
 pub use pin::{generate_badge_token, hash_badge_token, hash_pin, verify_badge_token, verify_pin};
 pub use rbac::{Permission, Role, role_from_id, role_id};
+pub use service_token::{
+    SCOPE_SYNC_INGEST, SERVICE_TOKEN_PREFIX, ServiceToken, generate_service_token,
+    new_service_token, validate_service_token_row,
+};
 pub use session::{
     PORTAL_REMEMBER_ME_TTL, PORTAL_SESSION_TTL, STAFF_SESSION_TTL, Session, TOKEN_PREFIX,
     generate_token, hash_token, hashes_equal, new_session, session_ttl, validate_session_token,

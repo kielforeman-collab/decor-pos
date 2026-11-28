@@ -57,6 +57,8 @@ fn inv_entry(id: u128, store: Uuid, product: Uuid, delta: &str) -> OutboxEntry {
         synced_at: None,
         retry_count: 0,
         last_error: None,
+        quarantined_at: None,
+        quarantine_reason: None,
     }
 }
 
@@ -78,6 +80,8 @@ fn ar_entry(id: u128, store: Uuid, customer: Uuid, amount: &str) -> OutboxEntry 
         synced_at: None,
         retry_count: 0,
         last_error: None,
+        quarantined_at: None,
+        quarantine_reason: None,
     }
 }
 
@@ -99,6 +103,8 @@ fn tx_entry(id: u128, store: Uuid, tx_id: Uuid, total: &str) -> OutboxEntry {
         synced_at: None,
         retry_count: 0,
         last_error: None,
+        quarantined_at: None,
+        quarantine_reason: None,
     }
 }
 
@@ -230,6 +236,7 @@ async fn duplicated_delivery_is_a_noop() {
             duplicates: 0,
             conflicts: 0,
             applied_ids: entries.iter().map(|e| e.id).collect(),
+            conflict_ids: Vec::new(),
         }
     );
     let inv_after_first = hq.inventory_on_hand(uuid(PRODUCT));

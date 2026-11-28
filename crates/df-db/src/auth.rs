@@ -783,3 +783,199 @@ pub async fn validate_session_token(pool: &AnyPool, token: &str) -> Result<Sessi
         ..session
     })
 }
+
+// --- service tokens (migration 0016) -------------------------------------
+
+fn service_token_from_row(row: &AnyRow) -> Result<df_auth::ServiceToken, DbError> {
+    let scopes_raw = text_col(row, "scopes")?;
+    let scopes = scopes_raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    Ok(df_auth::ServiceToken {
+        id: uuid_col(row, "id")?,
+        org_id: uuid_col(row, "org_id")?,
+        store_id: uuid_col(row, "store_id")?,
+        label: text_col(row, "label")?,
+        token_hash: text_col(row, "token_hash")?,
+        scopes,
+        created_at: dt_col(row, "created_at")?,
+        expires_at: opt_dt_col(row, "expires_at")?,
+        revoked_at: opt_dt_col(row, "revoked_at")?,
+        last_used_at: opt_dt_col(row, "last_used_at")?,
+    })
+}
+
+/// Issue and persist a long-lived, store-scoped service token (`dfs_...`).
+/// Returns `(raw_token, row)`. The raw token is returned once and never
+/// stored; only its SHA-256 hex digest is persisted in `service_tokens`.
+pub async fn create_service_token(
+    pool: &AnyPool,
+    org_id: Uuid,
+    store_id: Uuid,
+    label: &str,
+    scopes: Vec<String>,
+    ttl: Option<Duration>,
+) -> Result<(String, df_auth::ServiceToken), DbError> {
+    let trimmed = label.trim();
+    if trimmed.is_empty() {
+        return Err(DbError::InvalidData(
+            "service token label must not be blank".to_string(),
+        ));
+    }
+    if scopes.is_empty() {
+        return Err(DbError::InvalidData(
+            "service token requires at least one scope".to_string(),
+        ));
+    }
+    let now = Utc::now();
+    let (raw, token) = df_auth::new_service_token(org_id, store_id, trimmed, scopes, ttl, now);
+    let scopes_text = token.scopes.join(",");
+    sqlx::query(
+        "INSERT INTO service_tokens (id, org_id, store_id, label, token_hash, scopes, created_at, expires_at, revoked_at, last_used_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+    )
+    .bind(uuid_str(token.id))
+    .bind(uuid_str(token.org_id))
+    .bind(uuid_str(token.store_id))
+    .bind(&token.label)
+    .bind(&token.token_hash)
+    .bind(&scopes_text)
+    .bind(dt_str(token.created_at))
+    .bind(token.expires_at.map(dt_str))
+    .bind(token.revoked_at.map(dt_str))
+    .bind(token.last_used_at.map(dt_str))
+    .execute(pool)
+    .await?;
+    Ok((raw, token))
+}
+
+pub async fn get_service_token_by_hash(
+    pool: &AnyPool,
+    token_hash: &str,
+) -> Result<df_auth::ServiceToken, DbError> {
+    let row = sqlx::query("SELECT * FROM service_tokens WHERE token_hash = $1")
+        .bind(token_hash)
+        .fetch_one(pool)
+        .await
+        .map_err(not_found("service token"))?;
+    service_token_from_row(&row)
+}
+
+/// List service tokens for an org (optionally filtered to one store),
+/// newest first. Callers MUST strip `token_hash` before rendering to HTTP/CLI.
+pub async fn list_service_tokens(
+    pool: &AnyPool,
+    org_id: Uuid,
+    store_id: Option<Uuid>,
+) -> Result<Vec<df_auth::ServiceToken>, DbError> {
+    let rows = match store_id {
+        Some(store_id) => {
+            sqlx::query(
+                "SELECT * FROM service_tokens WHERE org_id = $1 AND store_id = $2 ORDER BY created_at DESC",
+            )
+            .bind(uuid_str(org_id))
+            .bind(uuid_str(store_id))
+            .fetch_all(pool)
+            .await?
+        }
+        None => {
+            sqlx::query("SELECT * FROM service_tokens WHERE org_id = $1 ORDER BY created_at DESC")
+                .bind(uuid_str(org_id))
+                .fetch_all(pool)
+                .await?
+        }
+    };
+    rows.iter().map(service_token_from_row).collect()
+}
+
+/// Revoke a service token by id. Returns `true` if a live token was
+/// revoked, `false` if the id does not exist or was already revoked.
+pub async fn revoke_service_token(pool: &AnyPool, id: Uuid) -> Result<bool, DbError> {
+    let result = sqlx::query(
+        "UPDATE service_tokens SET revoked_at = $1 WHERE id = $2 AND revoked_at IS NULL",
+    )
+    .bind(dt_str(Utc::now()))
+    .bind(uuid_str(id))
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Per-request service token validation:
+/// 1. Require `dfs_` prefix + look up by SHA-256 hash (`NotFound` -> `InvalidSession`),
+/// 2. Pure-check hash, expiry, and revocation,
+/// 3. Stamp `last_used_at` and return the validated [`df_auth::ServiceToken`].
+pub async fn validate_service_token(
+    pool: &AnyPool,
+    raw_token: &str,
+) -> Result<df_auth::ServiceToken, AuthError> {
+    if !raw_token.starts_with(df_auth::SERVICE_TOKEN_PREFIX) {
+        return Err(AuthError::InvalidSession);
+    }
+    let token_hash = df_auth::hash_token(raw_token);
+    let stored = match get_service_token_by_hash(pool, &token_hash).await {
+        Ok(token) => token,
+        Err(DbError::NotFound(_)) => return Err(AuthError::InvalidSession),
+        Err(err) => return Err(AuthError::from(err)),
+    };
+    let now = Utc::now();
+    df_auth::validate_service_token_row(raw_token, &stored, now)?;
+    sqlx::query("UPDATE service_tokens SET last_used_at = $1 WHERE id = $2")
+        .bind(dt_str(now))
+        .bind(uuid_str(stored.id))
+        .execute(pool)
+        .await
+        .map_err(DbError::Sqlx)?;
+    Ok(df_auth::ServiceToken {
+        last_used_at: Some(now),
+        ..stored
+    })
+}
+
+#[cfg(test)]
+mod service_token_tests {
+    use super::*;
+    use crate::{Dialect, connect, migrate};
+
+    #[tokio::test]
+    async fn service_token_create_validate_list_revoke_round_trip() {
+        let pool = connect("sqlite::memory:").await.unwrap();
+        migrate(&pool, Dialect::Sqlite).await.unwrap();
+        let org = Uuid::now_v7();
+        let store = Uuid::now_v7();
+
+        let (raw, created) = create_service_token(
+            &pool,
+            org,
+            store,
+            "store-1-sync",
+            vec![df_auth::SCOPE_SYNC_INGEST.to_string()],
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(raw.starts_with("dfs_"));
+        assert!(created.last_used_at.is_none());
+
+        let validated = validate_service_token(&pool, &raw).await.unwrap();
+        assert_eq!(validated.id, created.id);
+        assert_eq!(validated.store_id, store);
+        assert!(validated.has_scope(df_auth::SCOPE_SYNC_INGEST));
+        assert!(validated.last_used_at.is_some());
+
+        let listed = list_service_tokens(&pool, org, Some(store)).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].label, "store-1-sync");
+
+        assert!(revoke_service_token(&pool, created.id).await.unwrap());
+        assert!(!revoke_service_token(&pool, created.id).await.unwrap());
+
+        assert!(matches!(
+            validate_service_token(&pool, &raw).await,
+            Err(AuthError::InvalidSession)
+        ));
+    }
+}

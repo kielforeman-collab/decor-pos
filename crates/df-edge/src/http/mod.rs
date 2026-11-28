@@ -195,9 +195,10 @@ pub use delivery::DispatchQuery;
 pub use edi::{CatalogImportBody, PoQuery, TransportQuery};
 pub use inventory::{ArAgingQuery, ArPaymentRequest, BalancesQuery, ShelfTagQuery};
 pub use pos::{
-    CloseTillRequest, ColorQuery, CustomerSearchQuery, FormulaQuery, HoldResponse, HoldsResponse,
-    LayawayRequest, LimitQuery, OpenTillRequest, ProductSearchQuery, ReportQuery,
-    SetPriceLevelRequest, ThresholdsResponse, TransactionIdResponse, VoidResponse,
+    CloseTillRequest, ColorQuery, CustomerSearchQuery, DeadLetterActionResponse,
+    DismissDeadLetterRequest, FormulaQuery, HoldResponse, HoldsResponse, LayawayRequest,
+    LimitQuery, OpenTillRequest, ProductSearchQuery, ReportQuery, SetPriceLevelRequest,
+    ThresholdsResponse, TransactionIdResponse, VoidResponse,
 };
 pub use scheduling::{ForecastQuery, ShiftDayQuery};
 
@@ -213,7 +214,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::NaiveDate;
 use df_auth::Permission;
-use df_auth_http::{AuthRule, Gate};
+use df_auth_http::{
+    AuthRateLimiter, AuthRule, Gate, HttpHardeningConfig, apply_http_hardening, auth_rate_limit,
+};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -256,11 +259,12 @@ use portal::{
     portal_reorder, portal_statements,
 };
 use pos::{
-    checkout, close_till, create_tint_formula, customer_transactions, daily_usage, get_customer,
-    get_invoice, get_transaction, list_colorants, list_colors, list_formulas, list_holds,
-    list_price_levels, low_stock, open_till, park_hold, price_preview, record_layaway,
-    record_quote, resume_hold, return_transaction, search_customers, search_products,
-    set_customer_price_level, set_thresholds, sync_run, sync_state, void_transaction,
+    checkout, close_till, create_tint_formula, customer_transactions, daily_usage,
+    dismiss_sync_dead_letter, get_customer, get_invoice, get_transaction, list_colorants,
+    list_colors, list_formulas, list_holds, list_price_levels, list_sync_dead_letters, low_stock,
+    open_till, park_hold, price_preview, record_layaway, record_quote, requeue_sync_dead_letter,
+    resume_hold, return_transaction, search_customers, search_products, set_customer_price_level,
+    set_thresholds, sync_run, sync_state, void_transaction,
 };
 use scheduling::{
     clock_in, clock_out, create_shift_template, create_staff_shift, labor_coverage, labor_forecast,
@@ -404,6 +408,10 @@ async fn handle_ws(edge: Arc<Edge>, socket: WebSocket) {
 }
 
 pub fn router(edge: Edge) -> Router {
+    router_with_hardening(edge, HttpHardeningConfig::default())
+}
+
+pub fn router_with_hardening(edge: Edge, hardening: HttpHardeningConfig) -> Router {
     let state = Arc::new(edge);
     let pool = state.pool().clone();
 
@@ -418,6 +426,7 @@ pub fn router(edge: Edge) -> Router {
     let checkout_gate = gate(AuthRule::AnyOf(vec![Permission::PosCheckout]));
     let till_gate = gate(AuthRule::AnyOf(vec![Permission::PosTillManage]));
     let void_gate = gate(AuthRule::AnyOf(vec![Permission::PosVoid]));
+    let sync_admin_gate = gate(AuthRule::AnyOf(vec![Permission::SyncIngest]));
     let reports_gate = gate(AuthRule::AnyOf(vec![Permission::ReportView]));
     let inventory_view_gate = gate(AuthRule::AnyOf(vec![Permission::InventoryView]));
     let inventory_adjust_gate = gate(AuthRule::AnyOf(vec![Permission::InventoryAdjust]));
@@ -449,26 +458,47 @@ pub fn router(edge: Edge) -> Router {
     let scheduling_view_gate = gate(AuthRule::AnyOf(vec![Permission::SchedulingView]));
     let scheduling_manage_gate = gate(AuthRule::AnyOf(vec![Permission::SchedulingManage]));
 
-    // Public by design: health, the login endpoints (how a session
-    // is obtained), the first-run setup endpoints (how the first
-    // admin is created, before any user exists), the public BOPIS
-    // storefront catalog + order placement/status. Everything else
-    // below is gated.
+    let rate_limiter = AuthRateLimiter::new(hardening.auth_rate_limit.clone());
+
+    // Public by design: health, setup-status, and the public BOPIS
+    // storefront catalog + order placement/status.
     let public = Router::new()
         .route("/health", get(health))
-        .route("/pos/auth/login", post(edge_login))
         .route("/pos/auth/setup-status", get(edge_setup_status))
-        .route("/pos/auth/setup", post(edge_setup))
-        .route("/pos/auth/counter-switch", post(edge_counter_switch))
-        .route("/pos/auth/portal-login", post(edge_portal_login))
-        .route("/pos/auth/override-verify", post(edge_override_verify))
         .route("/catalog/products", get(catalog_products))
         .route("/bopis/orders", post(bopis_order_create))
         .route("/bopis/orders/{id}", get(bopis_order_get));
 
+    // Credential-checking endpoints (Argon2id / first-run setup):
+    // rate-limited per client IP (closes F10).
+    let rate_limited_auth = Router::new()
+        .route("/pos/auth/login", post(edge_login))
+        .route("/pos/auth/setup", post(edge_setup))
+        .route("/pos/auth/counter-switch", post(edge_counter_switch))
+        .route("/pos/auth/portal-login", post(edge_portal_login))
+        .route("/pos/auth/override-verify", post(edge_override_verify))
+        .route_layer(middleware::from_fn_with_state(
+            rate_limiter,
+            auth_rate_limit,
+        ));
+
     let logout = Router::new()
         .route("/pos/auth/logout", post(edge_logout))
         .route_layer(authenticated_gate.clone());
+
+    // Dead-letter triage for quarantined sync entries (closes F8):
+    // Manager / Admin only (`SyncIngest`).
+    let sync_dead_letter_routes = Router::new()
+        .route("/pos/sync/dead-letters", get(list_sync_dead_letters))
+        .route(
+            "/pos/sync/dead-letters/{id}/requeue",
+            post(requeue_sync_dead_letter),
+        )
+        .route(
+            "/pos/sync/dead-letters/{id}/dismiss",
+            post(dismiss_sync_dead_letter),
+        )
+        .route_layer(sync_admin_gate);
 
     let checkout_routes = Router::new()
         .route("/pos/carts/price-preview", post(price_preview))
@@ -696,9 +726,11 @@ pub fn router(edge: Edge) -> Router {
         .route("/ws/v1/store/{store_id}", get(ws_handler))
         .route_layer(authenticated_gate);
 
-    Router::new()
+    let router = Router::new()
         .merge(public)
+        .merge(rate_limited_auth)
         .merge(logout)
+        .merge(sync_dead_letter_routes)
         .merge(checkout_routes)
         .merge(till_routes)
         .merge(void_routes)
@@ -721,5 +753,7 @@ pub fn router(edge: Edge) -> Router {
         .merge(scheduling_read_routes)
         .merge(scheduling_manage_routes)
         .merge(ws_routes)
-        .with_state(state)
+        .with_state(state);
+
+    apply_http_hardening(router, &hardening)
 }

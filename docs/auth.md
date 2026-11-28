@@ -318,22 +318,25 @@ customers' AR summaries through the unscoped staff AR routes).
 | `GET /api/v1/reports/daily-usage`, `/low-stock`, `/api/v1/edi/documents` | `ReportView` | |
 | `GET /api/v1/ar/customers/{id}/summary`, `/api/v1/ar/aging` | `ArView` | |
 | `GET /api/v1/crm/activities`, `/api/v1/crm/appointments` | `CustomerManage` | HQ CRM is read-only; writes go through the edge |
-| `POST /api/v1/sync/ingest` | `SyncIngest` | Edge→HQ sync ingest (Phase 8, v1.2). See the decision note below. |
+| `POST /api/v1/sync/ingest` | `SyncIngest` **or** `dfs_` service token (`sync:ingest`) | Edge→HQ sync ingest. Service tokens are strictly bound to their single `store_id` (403 on cross-store batch). |
+| `GET /api/v1/sync/conflicts`, `POST /api/v1/sync/conflicts/{entry_id}/resolve` | `SyncIngest` (staff only) | HQ conflict triage (F8). Service tokens get 403. |
+| `POST/GET /api/v1/auth/service-tokens`, `POST /api/v1/auth/service-tokens/{id}/revoke` | `UserManage` (Admin only) | Issue, list (metadata only — never hashes), and revoke store `dfs_` sync tokens. |
 
-### Sync ingest auth (Phase 8, v1.2)
+### Sync ingest auth (Phase 8 + Security Hardening)
 
-`POST /api/v1/sync/ingest` takes a staff session `Bearer dfp_…`
-token with permission `SyncIngest`, held by Manager and Admin
-only — **not** a separate store service token. Rationale: no new
-credential type, storage, issuance, or rotation to build; sessions
-already exist (Phase 7, SHA-256-hashed, 8h expiry, revocable via
-logout / `revoke-sessions`); the existing gate enforces 401/403;
-blast radius is bounded by the idempotent sink (replayed entry ids
-are a no-op). Cost: the edge needs a Manager/Admin session token
-(8h TTL, re-login on expiry) — there is no long-lived service
-token yet. `PortalContractor` is never accepted on this route.
-The edge reads it from `DF_HQ_TOKEN` (with the HQ base URL from
-`DF_HQ_URL`).
+`POST /api/v1/sync/ingest` accepts either:
+
+- a staff session `Bearer dfp_…` token with permission `SyncIngest` (Manager/Admin), or
+- a long-lived, revocable **store service token** `Bearer dfs_…` carrying scope
+  `sync:ingest` (migration `0016_security_sync_hardening.sql`), minted via
+  `df-server tokens create` or `POST /api/v1/auth/service-tokens`.
+
+Service tokens use the same 256-bit entropy + SHA-256 hash-at-rest discipline as
+`dfp_` sessions (raw secret printed once, never persisted). They are least-privilege:
+`df-auth-http::gate` rejects `dfs_` tokens with **403** on every non-ingest route,
+and `sync_ingest` rejects any batch whose `store_id` does not match the token's bound
+`store_id` with **403**. The edge daemon reads the token from `DF_HQ_TOKEN` (with
+`--hq-url` / `DF_HQ_URL` and `--sync-interval-secs` / `DF_SYNC_INTERVAL_SECS`).
 
 ### Portal scoping (F4, HTTP layer)
 
@@ -511,9 +514,11 @@ CREATE INDEX idx_sessions_user_id ON sessions (user_id, created_at);
   name its user (hashes can't be searched). Needs a non-secret badge
   identifier column if the counter UX wants tap-to-switch without
   selecting a cashier first.
-- **No rate limiting / lockout** on login attempts (F10 family):
-  no throttling exists yet; add it with the HTTP worker's rate
-  limiting, not in this crate.
+- **Auth rate limiting (F10):** implemented in `df-auth-http::hardening`
+  (20 attempts / 60 s per client IP by default across login, counter-switch,
+  override-verify, portal-login, and first-run setup; returns `429` +
+  `Retry-After` before Argon2id runs). Account-level lockout across distributed
+  IPs remains a future enhancement if exposed to the public internet.
 - **No refresh tokens / sliding sessions:** 8 h is hard; a still-
   working cashier logs in again. A refresh flow is a later phase if
   the counter UX asks for it.

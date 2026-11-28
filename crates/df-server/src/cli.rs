@@ -42,6 +42,19 @@ pub(crate) enum Command {
         /// per call).
         #[arg(long)]
         store_id: Option<Uuid>,
+        /// Allowed browser CORS origin (repeatable; overrides `DF_CORS_ORIGINS`).
+        /// Wildcard `*` is rejected.
+        #[arg(long = "cors-origin")]
+        cors_origin: Vec<String>,
+        /// Max auth attempts per client per window (`0` disables; default 20).
+        #[arg(long)]
+        auth_rate_limit_max: Option<u32>,
+        /// Auth rate-limit window duration in seconds (default 60).
+        #[arg(long)]
+        auth_rate_limit_window_secs: Option<u64>,
+        /// Trust `X-Forwarded-For` for rate-limit client IP (use only behind a trusted reverse proxy).
+        #[arg(long)]
+        trust_proxy_headers: bool,
     },
     /// Store edge daemon mode: local SQLite + POS HTTP/WS API.
     Edge {
@@ -83,6 +96,31 @@ pub(crate) enum Command {
         /// `manifest.json`). No SMTP send happens.
         #[arg(long)]
         email_outbox: Option<PathBuf>,
+        /// Remote HQ base URL (overrides `DF_HQ_URL`), e.g. `https://hq.example.com`.
+        /// When set, the edge pushes delta batches to HQ using the token in `--hq-token-env`.
+        #[arg(long)]
+        hq_url: Option<String>,
+        /// Env var holding the HQ sync bearer token (default `DF_HQ_TOKEN`;
+        /// accepts a store-scoped `dfs_` service token or staff `dfp_` session).
+        #[arg(long, default_value = "DF_HQ_TOKEN")]
+        hq_token_env: String,
+        /// Background HQ sync interval in seconds when `--hq-url` / `DF_HQ_URL`
+        /// is set (default `30`, or `DF_SYNC_INTERVAL_SECS`; `0` disables timer).
+        #[arg(long)]
+        sync_interval_secs: Option<u64>,
+        /// Allowed browser CORS origin (repeatable; overrides `DF_CORS_ORIGINS`).
+        /// Wildcard `*` is rejected.
+        #[arg(long = "cors-origin")]
+        cors_origin: Vec<String>,
+        /// Max auth attempts per client per window (`0` disables; default 20).
+        #[arg(long)]
+        auth_rate_limit_max: Option<u32>,
+        /// Auth rate-limit window duration in seconds (default 60).
+        #[arg(long)]
+        auth_rate_limit_window_secs: Option<u64>,
+        /// Trust `X-Forwarded-For` for rate-limit client IP (use only behind a trusted reverse proxy).
+        #[arg(long)]
+        trust_proxy_headers: bool,
     },
     /// Background worker mode.
     Worker,
@@ -146,6 +184,12 @@ pub(crate) enum Command {
     Users {
         #[command(subcommand)]
         command: UsersCommand,
+    },
+    /// Store service token administration (`dfs_` tokens for unattended
+    /// edge -> HQ sync): create, list, revoke.
+    Tokens {
+        #[command(subcommand)]
+        command: TokensCommand,
     },
 }
 
@@ -500,5 +544,49 @@ pub(crate) enum UsersCommand {
         /// Email of the user to log out everywhere.
         #[arg(long)]
         email: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum TokensCommand {
+    /// Issue a store-scoped `dfs_` service token for unattended edge -> HQ
+    /// sync. Prints the raw token ONCE in JSON; only the SHA-256 hash is stored.
+    Create {
+        /// sqlx database URL (HQ Postgres or SQLite).
+        #[arg(long)]
+        db: String,
+        /// Organization UUID.
+        #[arg(long)]
+        org_id: Uuid,
+        /// Store UUID this token is strictly bound to.
+        #[arg(long)]
+        store_id: Uuid,
+        /// Operator label (e.g. `store-1-edge-daemon`).
+        #[arg(long)]
+        label: String,
+        /// Optional lifetime in days (omit for non-expiring until revoked).
+        #[arg(long)]
+        ttl_days: Option<i64>,
+    },
+    /// List store service tokens for an org (metadata only; hashes never printed).
+    List {
+        /// sqlx database URL (HQ Postgres or SQLite).
+        #[arg(long)]
+        db: String,
+        /// Organization UUID.
+        #[arg(long)]
+        org_id: Uuid,
+        /// Optional store UUID filter.
+        #[arg(long)]
+        store_id: Option<Uuid>,
+    },
+    /// Revoke a service token by id.
+    Revoke {
+        /// sqlx database URL (HQ Postgres or SQLite).
+        #[arg(long)]
+        db: String,
+        /// Service token UUID to revoke.
+        #[arg(long)]
+        id: Uuid,
     },
 }

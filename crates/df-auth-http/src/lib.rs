@@ -42,7 +42,29 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+pub mod hardening;
 pub mod test_support;
+
+pub use hardening::{
+    AuthRateLimitConfig, AuthRateLimiter, DEFAULT_AUTH_RATE_LIMIT_MAX,
+    DEFAULT_AUTH_RATE_LIMIT_WINDOW_SECS, DEFAULT_MAX_BODY_BYTES, HttpHardeningConfig,
+    apply_http_hardening, auth_rate_limit,
+};
+
+/// Identity inserted on routes that accept either a staff session or a
+/// scoped store service token (`AuthRule::AnyOfOrServiceScope`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncIdentity {
+    /// Interactive staff session (`dfp_...`) holding the required permission.
+    Staff(AuthSession),
+    /// Unattended store service token (`dfs_...`) bound to a single store.
+    ServiceToken {
+        id: Uuid,
+        org_id: Uuid,
+        store_id: Uuid,
+        label: String,
+    },
+}
 
 /// The authenticated identity a request carries. Built by
 /// [`gate`] from the validated [`Session`] and placed in request
@@ -97,6 +119,15 @@ pub enum AuthRule {
     /// A live session whose role holds at least one of these
     /// permissions (any-of, not all-of).
     AnyOf(Vec<Permission>),
+    /// Either a live staff session holding one of `permissions` OR a
+    /// live store service token (`dfs_...`) holding `scope`. Inserts
+    /// [`SyncIdentity`] into request extensions (plus [`AuthSession`]
+    /// for staff sessions). Service tokens are rejected with 403 on
+    /// every other [`AuthRule`].
+    AnyOfOrServiceScope {
+        permissions: Vec<Permission>,
+        scope: &'static str,
+    },
     /// A live `PortalContractor` session. Handlers additionally
     /// check [`AuthSession::may_access_customer`] against the
     /// requested customer id — the gate alone cannot know which
@@ -179,12 +210,13 @@ fn ws_query_token(req: &Request<Body>) -> Option<String> {
 /// Validate the bearer token and enforce the route group's rule.
 ///
 /// * No pool → 503 (HQ started without `--db`).
-/// * No token, or a token `df_db::validate_session_token`
-///   rejects (unknown / expired / revoked / inactive user) →
-///   **401**. The three token failures are deliberately one
-///   response: callers must not distinguish them.
-/// * Valid token, wrong role → **403**.
-/// * Otherwise the [`AuthSession`] is inserted into request
+/// * No token, or a token `df_db::validate_session_token` /
+///   `df_db::validate_service_token` rejects (unknown / expired /
+///   revoked / inactive user) → **401**. The token failures are
+///   deliberately one response: callers must not distinguish them.
+/// * Valid token, wrong role or unpermitted service-token scope → **403**.
+/// * Otherwise the identity ([`AuthSession`], and [`SyncIdentity`] on
+///   [`AuthRule::AnyOfOrServiceScope`]) is inserted into request
 ///   extensions and the request proceeds.
 pub async fn gate(State(gate): State<Gate>, mut req: Request<Body>, next: Next) -> Response {
     let Some(pool) = &gate.pool else {
@@ -197,6 +229,39 @@ pub async fn gate(State(gate): State<Gate>, mut req: Request<Body>, next: Next) 
     let Some(token) = token else {
         return unauthenticated();
     };
+
+    if token.starts_with(df_auth::SERVICE_TOKEN_PREFIX) {
+        let service_token = match df_db::validate_service_token(pool, &token).await {
+            Ok(t) => t,
+            Err(AuthError::InvalidSession | AuthError::AccountInactive) => {
+                return unauthenticated();
+            }
+            Err(_) => {
+                return error_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "service token validation failed",
+                );
+            }
+        };
+        let allowed = match &gate.rule {
+            AuthRule::AnyOfOrServiceScope { scope, .. } => service_token.has_scope(scope),
+            _ => false,
+        };
+        if !allowed {
+            return error_json(
+                StatusCode::FORBIDDEN,
+                "service token is not permitted on this route",
+            );
+        }
+        req.extensions_mut().insert(SyncIdentity::ServiceToken {
+            id: service_token.id,
+            org_id: service_token.org_id,
+            store_id: service_token.store_id,
+            label: service_token.label,
+        });
+        return next.run(req).await;
+    }
+
     let session = match df_db::validate_session_token(pool, &token).await {
         Ok(session) => session,
         Err(AuthError::InvalidSession | AuthError::AccountInactive) => {
@@ -213,16 +278,21 @@ pub async fn gate(State(gate): State<Gate>, mut req: Request<Body>, next: Next) 
         }
     };
     let auth = AuthSession::from_session(&session);
-    let allowed = match &gate.rule {
-        AuthRule::Authenticated => true,
-        AuthRule::AnyOf(permissions) => auth.allows_any(permissions),
-        AuthRule::Portal => auth.role == Role::PortalContractor,
+    let (allowed, insert_sync_identity) = match &gate.rule {
+        AuthRule::Authenticated => (true, false),
+        AuthRule::AnyOf(permissions) => (auth.allows_any(permissions), false),
+        AuthRule::AnyOfOrServiceScope { permissions, .. } => (auth.allows_any(permissions), true),
+        AuthRule::Portal => (auth.role == Role::PortalContractor, false),
     };
     if !allowed {
         return error_json(
             StatusCode::FORBIDDEN,
             format!("role {:?} may not use this route", auth.role),
         );
+    }
+    if insert_sync_identity {
+        req.extensions_mut()
+            .insert(SyncIdentity::Staff(auth.clone()));
     }
     req.extensions_mut().insert(auth);
     next.run(req).await

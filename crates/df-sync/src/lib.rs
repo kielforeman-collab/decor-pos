@@ -30,8 +30,8 @@ pub mod remote;
 pub mod resolve;
 pub mod sink;
 
-pub use db::DbHq;
+pub use db::{DbHq, SyncConflictRow};
 pub use error::SyncError;
-pub use outbox::{DeltaBatch, Outbox, OutboxEntry, SyncState};
+pub use outbox::{DEFAULT_MAX_RETRIES, DeltaBatch, Outbox, OutboxEntry, SyncState};
 pub use remote::RemoteHq;
 pub use sink::{ApplyReport, HqSink, MemoryHq};

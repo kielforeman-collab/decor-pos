@@ -1020,6 +1020,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tower",
  "utoipa",
  "uuid",
 ]
@@ -1256,6 +1257,7 @@ dependencies = [
  "df-accounting",
  "df-api",
  "df-auth",
+ "df-auth-http",
  "df-db",
  "df-domain",
  "df-edge",

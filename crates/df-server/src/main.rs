@@ -119,19 +119,21 @@ mod edge;
 mod edi;
 mod hq;
 mod ops;
+mod tokens;
 mod users;
 
 use clap::Parser;
 
 use cli::{
     AccountingCommand, Cli, Command, EdiCommand, JobsCommand, MigrateCommand, StatementsCommand,
-    UsersCommand,
+    TokensCommand, UsersCommand,
 };
 use db::{not_implemented, run_migrate_import, run_migrate_schema};
-use edge::run_edge;
+use edge::{EdgeRunArgs, run_edge};
 use edi::{EdiCtx, run_edi_catalog, run_edi_intake, run_edi_match, run_edi_send};
-use hq::run_hq;
+use hq::{HardeningFlags, run_hq};
 use ops::{JobsRunArgs, run_accounting_export, run_jobs, run_reports, run_statements};
+use tokens::{run_tokens_create, run_tokens_list, run_tokens_revoke};
 use users::{
     CreateUserArgs, run_users_create, run_users_create_admin, run_users_list,
     run_users_revoke_sessions,
@@ -147,7 +149,25 @@ async fn main() {
             listen,
             org_id,
             store_id,
-        } => run_hq(db, listen, org_id, store_id).await,
+            cors_origin,
+            auth_rate_limit_max,
+            auth_rate_limit_window_secs,
+            trust_proxy_headers,
+        } => {
+            run_hq(
+                db,
+                listen,
+                org_id,
+                store_id,
+                HardeningFlags {
+                    cors_origins: cors_origin,
+                    auth_rate_limit_max,
+                    auth_rate_limit_window_secs,
+                    trust_proxy_headers,
+                },
+            )
+            .await
+        }
         Command::Edge {
             db,
             store_id,
@@ -158,8 +178,15 @@ async fn main() {
             country,
             region,
             email_outbox,
+            hq_url,
+            hq_token_env,
+            sync_interval_secs,
+            cors_origin,
+            auth_rate_limit_max,
+            auth_rate_limit_window_secs,
+            trust_proxy_headers,
         } => {
-            run_edge(
+            run_edge(EdgeRunArgs {
                 db,
                 store_id,
                 listen,
@@ -169,9 +196,33 @@ async fn main() {
                 country,
                 region,
                 email_outbox,
-            )
+                hq_url,
+                hq_token_env,
+                sync_interval_secs,
+                hardening: HardeningFlags {
+                    cors_origins: cors_origin,
+                    auth_rate_limit_max,
+                    auth_rate_limit_window_secs,
+                    trust_proxy_headers,
+                },
+            })
             .await
         }
+        Command::Tokens { command } => match command {
+            TokensCommand::Create {
+                db,
+                org_id,
+                store_id,
+                label,
+                ttl_days,
+            } => run_tokens_create(db, org_id, store_id, label, ttl_days).await,
+            TokensCommand::List {
+                db,
+                org_id,
+                store_id,
+            } => run_tokens_list(db, org_id, store_id).await,
+            TokensCommand::Revoke { db, id } => run_tokens_revoke(db, id).await,
+        },
         Command::Worker => not_implemented("worker"),
         Command::Migrate { command } => match command {
             MigrateCommand::Schema { db } => run_migrate_schema(db).await,
@@ -435,7 +486,7 @@ mod tests {
         let applied = applied_migration_versions(&pool).await;
         assert_eq!(
             applied,
-            vec![1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16]
         );
         df_db::migrate(&pool, df_db::Dialect::Sqlite).await.unwrap();
         assert_eq!(applied_migration_versions(&pool).await, applied);

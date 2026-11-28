@@ -43,8 +43,11 @@ mod tests;
 pub mod tinting;
 
 pub use auth::{
-    counter_switch, login, logout, oidc_callback, override_verify, passkey_verify, setup,
-    setup_status, sync_ingest,
+    CreateServiceTokenRequest, CreateServiceTokenResponse, ResolveConflictRequest,
+    ResolveConflictResponse, RevokeServiceTokenResponse, ServiceTokenListQuery,
+    ServiceTokenSummary, SyncConflictsQuery, counter_switch, create_service_token,
+    list_service_tokens, login, logout, oidc_callback, override_verify, passkey_verify,
+    resolve_sync_conflict, revoke_service_token, setup, setup_status, sync_conflicts, sync_ingest,
 };
 pub use reads::{
     ar_aging, ar_customer_summary, crm_activities, crm_appointments, delivery_dispatch,
@@ -68,8 +71,9 @@ use axum::{Json, Router};
 use chrono::NaiveDate;
 use df_auth::Permission;
 use df_auth_http::{
-    AuthRule, ErrorBody, Gate, LoginResponse, LogoutResponse, OverrideVerifyResponse, SetupRequest,
-    SetupStatusResponse,
+    AuthRateLimiter, AuthRule, ErrorBody, Gate, HttpHardeningConfig, LoginResponse, LogoutResponse,
+    OverrideVerifyResponse, SetupRequest, SetupStatusResponse, apply_http_hardening,
+    auth_rate_limit,
 };
 use df_db::AnyPool;
 use utoipa::OpenApi;
@@ -263,6 +267,10 @@ pub async fn openapi_json() -> Json<serde_json::Value> {
 /// matrix). The gate answers 401 for a missing / invalid / expired
 /// / revoked token and 403 for a valid token with the wrong role.
 pub fn create_router(state: ApiState) -> Router {
+    create_router_with_hardening(state, HttpHardeningConfig::default())
+}
+
+pub fn create_router_with_hardening(state: ApiState, hardening: HttpHardeningConfig) -> Router {
     let pool = state.pool.clone();
     let gate = |rule: AuthRule| {
         middleware::from_fn_with_state(Gate::new(pool.clone(), rule), df_auth_http::gate)
@@ -273,27 +281,48 @@ pub fn create_router(state: ApiState) -> Router {
     let reports_gate = gate(AuthRule::AnyOf(vec![Permission::ReportView]));
     let ar_view_gate = gate(AuthRule::AnyOf(vec![Permission::ArView]));
     let customer_gate = gate(AuthRule::AnyOf(vec![Permission::CustomerManage]));
-    let sync_ingest_gate = gate(AuthRule::AnyOf(vec![Permission::SyncIngest]));
+    let sync_ingest_gate = gate(AuthRule::AnyOfOrServiceScope {
+        permissions: vec![Permission::SyncIngest],
+        scope: df_auth::SCOPE_SYNC_INGEST,
+    });
+    let sync_conflicts_gate = gate(AuthRule::AnyOf(vec![Permission::SyncIngest]));
+    let user_manage_gate = gate(AuthRule::AnyOf(vec![Permission::UserManage]));
+    let rate_limiter = AuthRateLimiter::new(hardening.auth_rate_limit.clone());
 
-    // Public by design: health, the OpenAPI document (shapes only —
-    // no data rows), and the login endpoints (how a session is
-    // obtained) plus the first-run setup endpoints (how the first
-    // admin is created, before any user exists). Passkey/OIDC stay
-    // 501 stubs.
+    // Public by design: health, OpenAPI shapes, setup-status, and 501 stubs.
     let public = Router::new()
         .route("/health", get(health))
         .route("/api-docs/openapi.json", get(openapi_json))
-        .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/setup-status", get(setup_status))
+        .route("/api/v1/auth/passkey/verify", post(passkey_verify))
+        .route("/api/v1/auth/oidc/callback", get(oidc_callback));
+
+    // Credential-checking endpoints (Argon2id / first-run setup):
+    // rate-limited per client IP (closes F10).
+    let rate_limited_auth = Router::new()
+        .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/setup", post(setup))
         .route("/api/v1/auth/counter-switch", post(counter_switch))
-        .route("/api/v1/auth/passkey/verify", post(passkey_verify))
-        .route("/api/v1/auth/oidc/callback", get(oidc_callback))
-        .route("/api/v1/auth/override-verify", post(override_verify));
+        .route("/api/v1/auth/override-verify", post(override_verify))
+        .route_layer(middleware::from_fn_with_state(
+            rate_limiter,
+            auth_rate_limit,
+        ));
 
     let logout_routes = Router::new()
         .route("/api/v1/auth/logout", post(logout))
         .route_layer(authenticated_gate);
+
+    let service_token_routes = Router::new()
+        .route(
+            "/api/v1/auth/service-tokens",
+            post(create_service_token).get(list_service_tokens),
+        )
+        .route(
+            "/api/v1/auth/service-tokens/{id}/revoke",
+            post(revoke_service_token),
+        )
+        .route_layer(user_manage_gate);
 
     let inventory_view_routes = Router::new()
         .route("/api/v1/colors/search", get(search_colors))
@@ -330,14 +359,27 @@ pub fn create_router(state: ApiState) -> Router {
         .route("/api/v1/sync/ingest", post(sync_ingest))
         .route_layer(sync_ingest_gate);
 
-    Router::new()
+    let sync_conflict_routes = Router::new()
+        .route("/api/v1/sync/conflicts", get(sync_conflicts))
+        .route(
+            "/api/v1/sync/conflicts/{entry_id}/resolve",
+            post(resolve_sync_conflict),
+        )
+        .route_layer(sync_conflicts_gate);
+
+    let router = Router::new()
         .merge(public)
+        .merge(rate_limited_auth)
         .merge(logout_routes)
+        .merge(service_token_routes)
         .merge(inventory_view_routes)
         .merge(inventory_adjust_routes)
         .merge(report_routes)
         .merge(ar_routes)
         .merge(crm_routes)
         .merge(sync_routes)
-        .with_state(state)
+        .merge(sync_conflict_routes)
+        .with_state(state);
+
+    apply_http_hardening(router, &hardening)
 }

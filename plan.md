@@ -391,3 +391,28 @@ only its own section, ticking items as they are verified — not when code merel
   - **`build-windows`** (run `46135296077`, `7229161`): **15m11s** cold cache (down from **22m12s**, saving ~7m on cold builds; `Install Tauri CLI` dropped to **5s**, and `Swatinem/rust-cache@v2` saved the 715 MB compiled dependency cache for even faster warm runs).
 ### GitHub
 - ✅ Pushed to `main`: `cf8e603` (`-3,720` net LOC machine-tinting cleanup + Tauri CLI / Node 24 workflow upgrades) and `7229161` (Windows `pwsh` `--bundles "nsis,msi"` fix + `Swatinem/rust-cache@v2`).
+
+## Security & sync hardening (F8, F10, store service tokens) — ✅ DONE Nov 28, 2026
+### Scope
+- ✅ Migration `0016_security_sync_hardening.sql` (both SQLite & Postgres):
+  - `sync_outbox.quarantined_at` + `quarantine_reason` (+ `idx_outbox_quarantined`) for edge dead-lettering.
+  - `sync_conflicts.resolved_at` + `resolution_note` for HQ conflict triage.
+  - `service_tokens` table (SHA-256 hash only, store-scoped `dfs_` bearer tokens for unattended edge → HQ sync).
+- ✅ **F8 — Sync dead-letter queue & HQ conflict triage:**
+  - `ApplyReport::conflict_ids` populated by `MemoryHq` and `DbHq`; `Edge::sync_now` automatically quarantines rejected conflicts out of `pending()` so poisoned entries stop re-sending forever.
+  - `Outbox::mark_failed` / `mark_failed_with_limit` enforces `DEFAULT_MAX_RETRIES = 10` (closing F10's unbounded retry loop), auto-quarantining entries that exceed the cap.
+  - Edge dead-letter triage endpoints (`SyncIngest` permission): `GET /pos/sync/dead-letters`, `POST /pos/sync/dead-letters/{id}/requeue`, `POST /pos/sync/dead-letters/{id}/dismiss`, plus `SyncState::dead_letter_count`.
+  - HQ conflict triage endpoints (`SyncIngest` staff permission): `GET /api/v1/sync/conflicts` (`?store_id=&include_resolved=`), `POST /api/v1/sync/conflicts/{entry_id}/resolve`.
+- ✅ **Store / Edge Service Tokens (`dfs_...`) + background Edge → HQ sync:**
+  - `df-auth::service_token` + `df-db::auth` (`create_service_token`, `validate_service_token`, `list_service_tokens`, `revoke_service_token`), 256-bit entropy, SHA-256 hex at rest, constant-time compare.
+  - `df-auth-http::gate` adds `AuthRule::AnyOfOrServiceScope` + `SyncIdentity`: `dfs_` tokens are accepted ONLY on `POST /api/v1/sync/ingest` (403 on all other routes) and strictly bound to their single `store_id` (403 on cross-store batch).
+  - Admin HTTP API (`UserManage`): `POST /api/v1/auth/service-tokens`, `GET /api/v1/auth/service-tokens`, `POST /api/v1/auth/service-tokens/{id}/revoke` (never exposes `token_hash`).
+  - CLI (`df-server tokens create|list|revoke`) and live remote HQ wiring in `df-server edge` (`--hq-url` / `DF_HQ_URL`, `--hq-token-env` / `DF_HQ_TOKEN`, `--sync-interval-secs` / `DF_SYNC_INTERVAL_SECS` background sync timer).
+- ✅ **F10 — HTTP hardening (`df-auth-http::hardening` applied to `df-edge`, `df-api`, `df-server hq/edge`):**
+  - Exact-origin CORS allowlist (`--cors-origin` / `DF_CORS_ORIGINS`, fail-closed empty default, wildcard `*` rejected at startup).
+  - Per-IP auth rate limiting (`20` attempts / `60s` default on `/login`, `/portal-login`, `/counter-switch`, `/override-verify`, `/setup`; returns `429` + `Retry-After` before Argon2id runs; `ConnectInfo<SocketAddr>` wired on all HTTP servers + optional `--trust-proxy-headers`).
+  - 4 MiB request body limit (`DefaultBodyLimit`, configurable via `DF_MAX_BODY_BYTES`) and defensive response headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` on `/auth/*`).
+- ✅ Updated `docs/security-review-v1.0.md` (F8 & F10 marked FIXED; F9 reverse-proxy TLS/mTLS guidance), `docs/auth.md`, and `docs/self-hosting.md`.
+### Verification
+- 🔄 Local fmt, clippy (`-D warnings`), float-money guard, PCI migration scan, unit/integration tests, and GitHub CI verification in progress.
+

@@ -60,13 +60,31 @@ use std::str::FromStr;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
-use sqlx::AnyPool;
+use serde::{Deserialize, Serialize};
+use sqlx::{AnyPool, Row};
 use uuid::Uuid;
 
 use crate::error::SyncError;
 use crate::outbox::{DeltaBatch, OutboxEntry};
 use crate::sink::{ApplyReport, HqSink};
 use df_db::models::{ArLedgerEntry, InventoryLedgerEntry, Transaction};
+
+/// One row of HQ `sync_conflicts` (migration `0013` + resolution columns
+/// from migration `0016`). Surfaces skipped transaction conflicts to HQ
+/// operators so they can investigate and mark them resolved after
+/// issuing a compensating transaction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncConflictRow {
+    pub entry_id: Uuid,
+    pub store_id: Uuid,
+    pub aggregate_type: String,
+    pub aggregate_id: Uuid,
+    pub reason: String,
+    pub payload: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub resolution_note: Option<String>,
+}
 
 /// DB-backed [`HqSink`]: applies batches to the HQ pool.
 #[derive(Debug, Clone)]
@@ -81,6 +99,78 @@ impl DbHq {
 
     pub fn pool(&self) -> &AnyPool {
         &self.pool
+    }
+
+    /// List HQ `sync_conflicts` rows (newest first), optionally scoped to
+    /// one store. When `include_resolved` is `false`, returns only open
+    /// unresolved conflicts (`resolved_at IS NULL`).
+    pub async fn list_conflicts(
+        &self,
+        store_id: Option<Uuid>,
+        include_resolved: bool,
+    ) -> Result<Vec<SyncConflictRow>, SyncError> {
+        let rows = match (store_id, include_resolved) {
+            (Some(store_id), true) => {
+                sqlx::query(
+                    "SELECT * FROM sync_conflicts WHERE store_id = $1 ORDER BY created_at DESC",
+                )
+                .bind(store_id.to_string())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(SyncError::Db)?
+            }
+            (Some(store_id), false) => {
+                sqlx::query(
+                    "SELECT * FROM sync_conflicts WHERE store_id = $1 AND resolved_at IS NULL ORDER BY created_at DESC",
+                )
+                .bind(store_id.to_string())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(SyncError::Db)?
+            }
+            (None, true) => {
+                sqlx::query("SELECT * FROM sync_conflicts ORDER BY created_at DESC")
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(SyncError::Db)?
+            }
+            (None, false) => {
+                sqlx::query(
+                    "SELECT * FROM sync_conflicts WHERE resolved_at IS NULL ORDER BY created_at DESC",
+                )
+                .fetch_all(&self.pool)
+                .await
+                .map_err(SyncError::Db)?
+            }
+        };
+        rows.iter().map(conflict_from_row).collect()
+    }
+
+    /// Mark an HQ `sync_conflicts` row resolved with an operator note
+    /// (e.g. referencing the compensating/reversing transaction id).
+    /// Returns `Ok(true)` if an open conflict was resolved, `Ok(false)`
+    /// if not found or already resolved.
+    pub async fn resolve_conflict(
+        &self,
+        entry_id: Uuid,
+        resolution_note: &str,
+    ) -> Result<bool, SyncError> {
+        let note = resolution_note.trim();
+        if note.is_empty() {
+            return Err(SyncError::InvalidPayload(
+                "resolution_note must not be blank".to_string(),
+            ));
+        }
+        let done = sqlx::query(
+            "UPDATE sync_conflicts SET resolved_at = $1, resolution_note = $2 WHERE entry_id = $3 AND resolved_at IS NULL",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(note)
+        .bind(entry_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(SyncError::Db)?;
+        Ok(done.rows_affected() > 0)
     }
 
     async fn apply_batch_inner(&self, batch: &DeltaBatch) -> Result<ApplyReport, SyncError> {
@@ -209,6 +299,7 @@ impl DbHq {
             )
             .await?;
             report.conflicts += 1;
+            report.conflict_ids.push(entry.id);
             return Ok(());
         }
         if self.mark_applied(tx, batch, entry).await? {
@@ -471,5 +562,55 @@ fn ar_from_payload(entry: &OutboxEntry, store: &df_db::models::Store) -> Option<
         due_date: payload_opt_date(payload, "due_date"),
         statement_id: None,
         created_at: payload_opt_dt(payload, "created_at").unwrap_or(entry.created_at),
+    })
+}
+
+fn conflict_from_row(row: &sqlx::any::AnyRow) -> Result<SyncConflictRow, SyncError> {
+    let parse_uuid = |col: &str| -> Result<Uuid, SyncError> {
+        let text: String = row
+            .try_get(col)
+            .map_err(|e| SyncError::InvalidPayload(format!("column {col}: {e}")))?;
+        Uuid::parse_str(&text)
+            .map_err(|e| SyncError::InvalidPayload(format!("column {col} is not a UUID: {e}")))
+    };
+    let parse_dt = |col: &str| -> Result<DateTime<Utc>, SyncError> {
+        let text: String = row
+            .try_get(col)
+            .map_err(|e| SyncError::InvalidPayload(format!("column {col}: {e}")))?;
+        DateTime::parse_from_rfc3339(&text)
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(|e| SyncError::InvalidPayload(format!("column {col}: {e}")))
+    };
+    let parse_opt_dt = |col: &str| -> Result<Option<DateTime<Utc>>, SyncError> {
+        let text: Option<String> = row
+            .try_get(col)
+            .map_err(|e| SyncError::InvalidPayload(format!("column {col}: {e}")))?;
+        match text {
+            None => Ok(None),
+            Some(text) => DateTime::parse_from_rfc3339(&text)
+                .map(|dt| Some(dt.with_timezone(&Utc)))
+                .map_err(|e| SyncError::InvalidPayload(format!("column {col}: {e}"))),
+        }
+    };
+    let payload_text: String = row
+        .try_get("payload_json")
+        .map_err(|e| SyncError::InvalidPayload(format!("column payload_json: {e}")))?;
+    let payload: serde_json::Value = serde_json::from_str(&payload_text)?;
+    Ok(SyncConflictRow {
+        entry_id: parse_uuid("entry_id")?,
+        store_id: parse_uuid("store_id")?,
+        aggregate_type: row
+            .try_get("aggregate_type")
+            .map_err(|e| SyncError::InvalidPayload(format!("column aggregate_type: {e}")))?,
+        aggregate_id: parse_uuid("aggregate_id")?,
+        reason: row
+            .try_get("reason")
+            .map_err(|e| SyncError::InvalidPayload(format!("column reason: {e}")))?,
+        payload,
+        created_at: parse_dt("created_at")?,
+        resolved_at: parse_opt_dt("resolved_at")?,
+        resolution_note: row
+            .try_get("resolution_note")
+            .map_err(|e| SyncError::InvalidPayload(format!("column resolution_note: {e}")))?,
     })
 }

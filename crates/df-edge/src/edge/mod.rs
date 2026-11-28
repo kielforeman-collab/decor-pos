@@ -449,15 +449,43 @@ impl Edge {
 
     // --- serving ------------------------------------------------------------
 
-    /// The local HTTP API the POS talks to (see [`crate::http`]).
+    /// The local HTTP API the POS talks to (see [`crate::http`]), with
+    /// default HTTP hardening (auth rate limiting, body limit, security
+    /// headers, fail-closed CORS).
     pub fn router(&self) -> axum::Router {
         crate::http::router(self.clone())
     }
 
-    /// Serve the router on `addr` until cancelled.
+    /// Build the local HTTP API router with explicit HTTP hardening
+    /// settings (CORS origin allowlist, auth rate-limit window, body cap).
+    pub fn router_with_hardening(
+        &self,
+        hardening: df_auth_http::HttpHardeningConfig,
+    ) -> axum::Router {
+        crate::http::router_with_hardening(self.clone(), hardening)
+    }
+
+    /// Serve the router on `addr` until cancelled, reading hardening
+    /// settings from the environment (`DF_CORS_ORIGINS`, etc.).
     pub async fn serve(&self, addr: std::net::SocketAddr) -> Result<(), EdgeError> {
+        self.serve_with_hardening(addr, df_auth_http::HttpHardeningConfig::from_env())
+            .await
+    }
+
+    /// Serve the router on `addr` with explicit HTTP hardening settings
+    /// and per-connection `ConnectInfo<SocketAddr>` for IP rate limiting.
+    pub async fn serve_with_hardening(
+        &self,
+        addr: std::net::SocketAddr,
+        hardening: df_auth_http::HttpHardeningConfig,
+    ) -> Result<(), EdgeError> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        axum::serve(listener, self.router()).await?;
+        axum::serve(
+            listener,
+            self.router_with_hardening(hardening)
+                .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await?;
         Ok(())
     }
 }

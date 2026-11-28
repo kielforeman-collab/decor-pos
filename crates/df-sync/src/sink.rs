@@ -52,6 +52,12 @@ pub struct ApplyReport {
     pub conflicts: usize,
     /// Entry ids resolved by this call (applied + duplicates).
     pub applied_ids: Vec<Uuid>,
+    /// Entry ids skipped as conflicts (same aggregate id, different
+    /// content). The edge quarantines these ids into its dead-letter
+    /// queue (F8) instead of retrying them forever, while HQ preserves
+    /// the stored row and logs the conflict in `sync_conflicts`.
+    #[serde(default)]
+    pub conflict_ids: Vec<Uuid>,
 }
 
 impl ApplyReport {
@@ -61,6 +67,7 @@ impl ApplyReport {
             duplicates: 0,
             conflicts: 0,
             applied_ids: Vec::new(),
+            conflict_ids: Vec::new(),
         }
     }
 }
@@ -213,6 +220,7 @@ impl MemoryHq {
                     inner.conflicts.push(msg);
                 }
                 report.conflicts += 1;
+                report.conflict_ids.push(entry.id);
                 continue;
             }
             match entry.aggregate_type.as_str() {

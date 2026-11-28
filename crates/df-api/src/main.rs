@@ -18,7 +18,7 @@
 //! endpoints requires a `Bearer dfp_...` session token.
 
 use clap::Parser;
-use df_api::{ApiState, create_router};
+use df_api::ApiState;
 use uuid::Uuid;
 
 #[derive(Debug, Parser)]
@@ -72,7 +72,12 @@ async fn main() {
     } else {
         println!("df-api: no --db given; admin endpoints will return 503");
     }
-    let router = create_router(state);
+    let hardening = df_auth_http::HttpHardeningConfig::from_env();
+    if let Err(err) = hardening.validate() {
+        eprintln!("df-api: invalid HTTP hardening configuration: {err}");
+        std::process::exit(2);
+    }
+    let router = df_api::create_router_with_hardening(state, hardening);
     let listener = tokio::net::TcpListener::bind(cli.listen)
         .await
         .expect("bind listen address");
@@ -82,5 +87,10 @@ async fn main() {
         cli.listen
     );
     println!("OpenAPI: http://{}/api-docs/openapi.json", cli.listen);
-    axum::serve(listener, router).await.expect("serve df-api");
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .expect("serve df-api");
 }

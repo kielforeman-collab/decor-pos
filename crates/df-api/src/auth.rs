@@ -2,70 +2,51 @@
 //! edge sync ingest handlers.
 
 use axum::Json;
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
-use df_auth::OverrideCredential;
+use chrono::Duration;
+use df_auth::{OverrideCredential, SCOPE_SYNC_INGEST, ServiceToken};
 use df_auth_http::{
     AuthSession, ErrorBody, LoginResponse, LogoutResponse, OverrideVerifyResponse, SetupRequest,
-    SetupStatusResponse, login_error, setup_admin_response, setup_status_response,
+    SetupStatusResponse, SyncIdentity, login_error, setup_admin_response, setup_status_response,
 };
 use df_db::AnyPool;
-use df_sync::{ApplyReport, DeltaBatch, HqSink};
+use df_sync::{ApplyReport, DeltaBatch, HqSink, SyncConflictRow};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::schemas::{
     CounterSwitchRequest, ErrorResponse, LoginRequest, OverrideVerifyRequest, PasskeyVerifyRequest,
 };
-use crate::{ApiState, err, not_implemented, pool};
+use crate::{ApiState, err, not_implemented, org_id, pool};
 
-// --- Phase 8 sync ingest (spec §5.5/§7) -----------------------------------
-// `POST /api/v1/sync/ingest`: an edge pushes one `DeltaBatch` of
-// outbox entries; the DB-backed sink (`df_sync::DbHq`) applies them
-// to this HQ pool in one transaction and answers with the same
-// `ApplyReport` the in-process sinks return (applied / duplicates /
-// conflicts / applied_ids), so the edge marks exactly the ids HQ
-// resolved as synced.
+// --- Phase 8 + Security Hardening sync ingest (spec §5.5/§7) ---------------
+// `POST /api/v1/sync/ingest`: accepts EITHER:
+//   * a staff `Bearer dfp_...` session whose role holds `Permission::SyncIngest`
+//     (Manager / Admin), OR
+//   * a revocable store service token `Bearer dfs_...` with scope `sync:ingest`
+//     (migration 0016), strictly bound to its single `store_id` (403 if the
+//     batch names a different store).
 //
-// AUTH DECISION (Phase 8, recorded here — the coordinator carries it
-// into `docs/auth.md` §6): a staff session `Bearer dfp_...` token
-// whose role holds `Permission::SyncIngest` (Manager and Admin
-// only). NOT a separate store service token. Rationale:
-//   * No new credential type, storage, issuance CLI or rotation
-//     story: sessions already exist (Phase 7), are SHA-256-hashed
-//     at rest, expire after 8h, and revoke via logout /
-//     `df-server users revoke-sessions`.
-//   * The existing gate middleware enforces it (`AuthRule::AnyOf`),
-//     answering 401 for a missing/invalid/expired token and 403
-//     for a valid token with the wrong role — no bespoke auth code.
-//   * The blast radius is bounded: only Manager/Admin can push
-//     deltas, and the sink itself is idempotent, so a replayed or
-//     intercepted batch cannot double-post money.
-//   * Operational cost: the edge daemon needs a Manager/Admin
-//     session token (8h TTL — re-login / re-issue on expiry). A
-//     long-lived service token would remove that chore but add a
-//     new secret to manage and rotate; if the edge fleet grows,
-//     revisit with a dedicated service-token table then.
-// A PortalContractor session is never accepted here (portal users
-// hold no staff permissions).
-//
-// IDEMPOTENCY: enforced at the DB layer, not by trusting the
-// caller — `sync_applied_entries.entry_id` is the PRIMARY KEY, so
-// replaying the same entry UUIDs is a no-op (duplicates, nothing
-// re-inserted, no money double-counted); see `df_sync::db::DbHq`.
-// A batch whose store does not exist on HQ fails whole with 400
-// (the store must be seeded on HQ before the first sync); unknown
-// aggregate types are recorded applied and ignored. A conflicting
-// transaction re-send is counted in `conflicts`, recorded in
-// `sync_conflicts`, and NOT in `applied_ids`, so the edge leaves it
-// pending for an operator.
-//
-// Not in the utoipa path list: `DeltaBatch` / `ApplyReport` carry
-// `Uuid` / `DateTime` fields, which do not implement `ToSchema`.
+// `DbHq` applies the batch in one transaction and answers with `ApplyReport`
+// (including `conflict_ids` so the edge quarantines conflicts into its
+// dead-letter queue — closes F8).
 pub async fn sync_ingest(
     State(state): State<ApiState>,
-    Extension(_auth): Extension<AuthSession>,
+    Extension(actor): Extension<SyncIdentity>,
     Json(batch): Json<DeltaBatch>,
 ) -> Result<Json<ApplyReport>, (StatusCode, Json<ErrorResponse>)> {
+    if let SyncIdentity::ServiceToken { store_id, .. } = actor
+        && batch.store_id != store_id
+    {
+        return Err(err(
+            StatusCode::FORBIDDEN,
+            format!(
+                "service token is scoped to store {store_id}, cannot ingest batch for store {}",
+                batch.store_id
+            ),
+        ));
+    }
     let pool = pool(&state)?;
     df_sync::DbHq::new(pool)
         .apply_batch(&batch)
@@ -75,6 +56,197 @@ pub async fn sync_ingest(
             df_sync::SyncError::InvalidPayload(message) => err(StatusCode::BAD_REQUEST, message),
             other => err(StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
         })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SyncConflictsQuery {
+    pub store_id: Option<Uuid>,
+    pub include_resolved: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResolveConflictRequest {
+    pub resolution_note: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResolveConflictResponse {
+    pub entry_id: Uuid,
+    pub resolved: bool,
+}
+
+/// `GET /api/v1/sync/conflicts` — list HQ `sync_conflicts` rows (closes F8).
+/// Manager / Admin staff sessions only.
+pub async fn sync_conflicts(
+    State(state): State<ApiState>,
+    Query(query): Query<SyncConflictsQuery>,
+) -> Result<Json<Vec<SyncConflictRow>>, (StatusCode, Json<ErrorResponse>)> {
+    let pool = pool(&state)?;
+    df_sync::DbHq::new(pool)
+        .list_conflicts(query.store_id, query.include_resolved.unwrap_or(false))
+        .await
+        .map(Json)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// `POST /api/v1/sync/conflicts/{entry_id}/resolve` — mark an HQ conflict
+/// resolved with an operator note (e.g. reversing transaction reference).
+pub async fn resolve_sync_conflict(
+    State(state): State<ApiState>,
+    Path(entry_id): Path<Uuid>,
+    Json(body): Json<ResolveConflictRequest>,
+) -> Result<Json<ResolveConflictResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let pool = pool(&state)?;
+    let resolved = df_sync::DbHq::new(pool)
+        .resolve_conflict(entry_id, &body.resolution_note)
+        .await
+        .map_err(|e| match e {
+            df_sync::SyncError::InvalidPayload(msg) => err(StatusCode::BAD_REQUEST, msg),
+            other => err(StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
+    if !resolved {
+        return Err(err(
+            StatusCode::NOT_FOUND,
+            format!("open sync conflict {entry_id} not found"),
+        ));
+    }
+    Ok(Json(ResolveConflictResponse { entry_id, resolved }))
+}
+
+// --- Service tokens (Admin `UserManage` only) ------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct CreateServiceTokenRequest {
+    pub store_id: Uuid,
+    pub label: String,
+    /// Optional lifetime in days (`None` = non-expiring until revoked).
+    pub ttl_days: Option<i64>,
+}
+
+/// Metadata summary for a service token — NEVER includes `token_hash` or
+/// raw secret material.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ServiceTokenSummary {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub store_id: Uuid,
+    pub label: String,
+    pub scopes: Vec<String>,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    pub revoked_at: Option<String>,
+    pub last_used_at: Option<String>,
+}
+
+impl ServiceTokenSummary {
+    fn from_row(row: ServiceToken) -> Self {
+        Self {
+            id: row.id,
+            org_id: row.org_id,
+            store_id: row.store_id,
+            label: row.label,
+            scopes: row.scopes,
+            created_at: row.created_at.to_rfc3339(),
+            expires_at: row.expires_at.map(|d| d.to_rfc3339()),
+            revoked_at: row.revoked_at.map(|d| d.to_rfc3339()),
+            last_used_at: row.last_used_at.map(|d| d.to_rfc3339()),
+        }
+    }
+}
+
+/// Returned exactly once at service-token creation (`201 Created`).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateServiceTokenResponse {
+    pub token: String,
+    #[serde(flatten)]
+    pub metadata: ServiceTokenSummary,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceTokenListQuery {
+    pub store_id: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RevokeServiceTokenResponse {
+    pub id: Uuid,
+    pub revoked: bool,
+}
+
+/// `POST /api/v1/auth/service-tokens` — issue a store-scoped `dfs_` sync
+/// token (Admin only). The raw token is returned once and never stored.
+pub async fn create_service_token(
+    State(state): State<ApiState>,
+    Json(body): Json<CreateServiceTokenRequest>,
+) -> Result<(StatusCode, Json<CreateServiceTokenResponse>), (StatusCode, Json<ErrorResponse>)> {
+    let pool = pool(&state)?;
+    let org = org_id(&state)?;
+    let ttl = match body.ttl_days {
+        Some(days) if days <= 0 => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "ttl_days must be a positive integer when provided",
+            ));
+        }
+        Some(days) => Some(Duration::days(days)),
+        None => None,
+    };
+    let (raw, row) = df_db::create_service_token(
+        &pool,
+        org,
+        body.store_id,
+        &body.label,
+        vec![SCOPE_SYNC_INGEST.to_string()],
+        ttl,
+    )
+    .await
+    .map_err(|e| match e {
+        df_db::DbError::InvalidData(msg) => err(StatusCode::BAD_REQUEST, msg),
+        other => err(StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+    })?;
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateServiceTokenResponse {
+            token: raw,
+            metadata: ServiceTokenSummary::from_row(row),
+        }),
+    ))
+}
+
+/// `GET /api/v1/auth/service-tokens` — list service tokens for the org
+/// (metadata only; hashes never returned).
+pub async fn list_service_tokens(
+    State(state): State<ApiState>,
+    Query(query): Query<ServiceTokenListQuery>,
+) -> Result<Json<Vec<ServiceTokenSummary>>, (StatusCode, Json<ErrorResponse>)> {
+    let pool = pool(&state)?;
+    let org = org_id(&state)?;
+    let rows = df_db::list_service_tokens(&pool, org, query.store_id)
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(
+        rows.into_iter()
+            .map(ServiceTokenSummary::from_row)
+            .collect(),
+    ))
+}
+
+/// `POST /api/v1/auth/service-tokens/{id}/revoke` — revoke a service token.
+pub async fn revoke_service_token(
+    State(state): State<ApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<RevokeServiceTokenResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let pool = pool(&state)?;
+    let revoked = df_db::revoke_service_token(&pool, id)
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if !revoked {
+        return Err(err(
+            StatusCode::NOT_FOUND,
+            format!("active service token {id} not found"),
+        ));
+    }
+    Ok(Json(RevokeServiceTokenResponse { id, revoked }))
 }
 
 /// The configured pool for an auth handler, or a 503 in the auth

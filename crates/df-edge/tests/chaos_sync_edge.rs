@@ -117,7 +117,7 @@ async fn partial_apply_leaves_unapplied_entries_pending() {
 }
 
 #[tokio::test]
-async fn sync_now_skips_conflict_and_keeps_it_pending() {
+async fn sync_now_quarantines_conflict_into_dead_letter_queue() {
     let edge = open_edge().await;
     let store = Uuid::from_u128(0xA001);
     let hq = Arc::new(MemoryHq::new());
@@ -139,18 +139,15 @@ async fn sync_now_skips_conflict_and_keeps_it_pending() {
 
     // Edge outbox: a conflicting re-send of TX-1 (999.0000) + a good
     // inventory delta. `sync_now` must succeed, apply the good entry,
-    // and leave ONLY the conflicting entry pending.
-    Outbox::enqueue(
-        edge.pool(),
-        &OutboxEntry::new(
-            store,
-            "transaction",
-            tx_id,
-            serde_json::json!({"id": tx_id.to_string(), "grand_total": "999.0000"}),
-        ),
-    )
-    .await
-    .unwrap();
+    // and quarantine ONLY the conflicting entry into the dead-letter
+    // queue (F8) instead of re-sending it forever.
+    let bad = OutboxEntry::new(
+        store,
+        "transaction",
+        tx_id,
+        serde_json::json!({"id": tx_id.to_string(), "grand_total": "999.0000"}),
+    );
+    Outbox::enqueue(edge.pool(), &bad).await.unwrap();
     Outbox::enqueue(edge.pool(), &inv_entry(store, "-5"))
         .await
         .unwrap();
@@ -158,15 +155,44 @@ async fn sync_now_skips_conflict_and_keeps_it_pending() {
     let report = edge.sync_now(hq.as_ref()).await.unwrap();
     assert_eq!(report.applied, 1);
     assert_eq!(report.conflicts, 1);
-    assert_eq!(Outbox::pending_count(edge.pool(), store).await.unwrap(), 1);
+    assert_eq!(report.conflict_ids, vec![bad.id]);
+    assert_eq!(Outbox::pending_count(edge.pool(), store).await.unwrap(), 0);
+    assert_eq!(
+        Outbox::dead_letter_count(edge.pool(), store).await.unwrap(),
+        1
+    );
     assert_eq!(hq.inventory_on_hand(product), dec("-5"));
     assert_eq!(hq.transaction(tx_id).unwrap()["grand_total"], "216.1088");
 
-    // A second sync re-skips the conflict and changes nothing.
+    // A second sync is a clean no-op: the quarantined conflict is NOT
+    // re-sent on every drain.
     let report = edge.sync_now(hq.as_ref()).await.unwrap();
-    assert_eq!(report.applied, 0);
-    assert_eq!(report.conflicts, 1);
-    assert_eq!(Outbox::pending_count(edge.pool(), store).await.unwrap(), 1);
-    assert_eq!(hq.inventory_on_hand(product), dec("-5"));
+    assert_eq!(report, ApplyReport::empty());
     assert_eq!(hq.conflicts().len(), 1);
+
+    // Operator can inspect, requeue, or dismiss the quarantined entry.
+    let dead = edge.list_dead_letters(50).await.unwrap();
+    assert_eq!(dead.len(), 1);
+    assert_eq!(dead[0].id, bad.id);
+    assert!(dead[0].quarantined_at.is_some());
+
+    assert!(edge.requeue_dead_letter(bad.id).await.unwrap());
+    assert_eq!(Outbox::pending_count(edge.pool(), store).await.unwrap(), 1);
+    let report = edge.sync_now(hq.as_ref()).await.unwrap();
+    assert_eq!(report.conflicts, 1);
+    assert_eq!(
+        Outbox::dead_letter_count(edge.pool(), store).await.unwrap(),
+        1
+    );
+
+    assert!(
+        edge.dismiss_dead_letter(bad.id, "issued reversing transaction TX-2")
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        Outbox::dead_letter_count(edge.pool(), store).await.unwrap(),
+        0
+    );
+    assert_eq!(edge.sync_state().await.unwrap().dead_letter_count, 0);
 }

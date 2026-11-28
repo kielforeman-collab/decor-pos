@@ -1,7 +1,7 @@
 //! Outbox drain, remote/in-memory HQ sync, and sync state reporting.
 
 use chrono::Utc;
-use df_sync::{ApplyReport, DeltaBatch, HqSink, Outbox, SyncState};
+use df_sync::{ApplyReport, DeltaBatch, HqSink, Outbox, OutboxEntry, SyncState};
 use uuid::Uuid;
 
 use super::Edge;
@@ -13,10 +13,13 @@ impl Edge {
     /// Drain pending outbox entries in UUIDv7 order as one batch,
     /// apply them to `hq`, and mark them synced on success. Only the
     /// ids the sink reports in `ApplyReport::applied_ids` are marked
-    /// synced: an entry the sink skipped (a conflicting transaction
-    /// re-send) or never saw (a partial apply) stays pending, so it
-    /// is retried — never silently lost. On failure every entry is
-    /// marked failed (retry count bumped) and left pending.
+    /// synced. Entries the sink rejected as conflicts
+    /// (`ApplyReport::conflict_ids`) are quarantined into the
+    /// dead-letter queue (closes F8) so they stop re-sending forever
+    /// while remaining inspectable for operator triage. Unseen entries
+    /// (partial apply) stay pending and retry next drain. On transport
+    /// failure every entry's `retry_count` is bumped (auto-quarantining
+    /// once `DEFAULT_MAX_RETRIES` is reached, closing F10).
     pub async fn sync_now(&self, hq: &dyn HqSink) -> Result<ApplyReport, EdgeError> {
         let entries = Outbox::pending(&self.pool, self.config.store_id, 1000).await?;
         if entries.is_empty() {
@@ -30,6 +33,14 @@ impl Edge {
                 // whole batch would silently drop entries a sink
                 // skipped or never applied.
                 Outbox::mark_synced(&self.pool, &report.applied_ids).await?;
+                for conflict_id in &report.conflict_ids {
+                    Outbox::quarantine(
+                        &self.pool,
+                        *conflict_id,
+                        "sync conflict rejected by HQ; stored transaction kept",
+                    )
+                    .await?;
+                }
                 let pending = Outbox::pending_count(&self.pool, self.config.store_id).await?;
                 df_db::upsert_sync_state(
                     &self.pool,
@@ -79,12 +90,14 @@ impl Edge {
 
     pub async fn sync_state(&self) -> Result<SyncState, EdgeError> {
         let pending_count = Outbox::pending_count(&self.pool, self.config.store_id).await?;
+        let dead_letter_count = Outbox::dead_letter_count(&self.pool, self.config.store_id).await?;
         if let Some(row) = df_db::get_sync_state(&self.pool, self.config.store_id).await? {
             return Ok(SyncState {
                 store_id: self.config.store_id,
                 last_batch_id: row.last_batch_id,
                 last_synced_at: row.last_synced_at,
                 pending_count,
+                dead_letter_count,
             });
         }
         Ok(SyncState {
@@ -94,10 +107,32 @@ impl Edge {
                 .await?
                 .last_synced_at,
             pending_count,
+            dead_letter_count,
         })
     }
 
     pub async fn pending_outbox_count(&self) -> Result<u64, EdgeError> {
         Ok(Outbox::pending_count(&self.pool, self.config.store_id).await?)
+    }
+
+    /// List quarantined (dead-lettered) outbox entries for this store.
+    pub async fn list_dead_letters(&self, limit: i64) -> Result<Vec<OutboxEntry>, EdgeError> {
+        let clamped = limit.clamp(1, 500);
+        Ok(Outbox::dead_letters(&self.pool, self.config.store_id, clamped).await?)
+    }
+
+    /// Move a quarantined outbox entry back to pending (`retry_count = 0`).
+    pub async fn requeue_dead_letter(&self, id: Uuid) -> Result<bool, EdgeError> {
+        Ok(Outbox::requeue_dead_letter(&self.pool, self.config.store_id, id).await?)
+    }
+
+    /// Dismiss a quarantined outbox entry with an operator reason.
+    pub async fn dismiss_dead_letter(&self, id: Uuid, reason: &str) -> Result<bool, EdgeError> {
+        if reason.trim().is_empty() {
+            return Err(EdgeError::InvalidInput(
+                "dismiss reason must not be blank".to_string(),
+            ));
+        }
+        Ok(Outbox::dismiss_dead_letter(&self.pool, self.config.store_id, id, reason).await?)
     }
 }

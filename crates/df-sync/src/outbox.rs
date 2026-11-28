@@ -42,6 +42,12 @@ use uuid::Uuid;
 
 use crate::error::SyncError;
 
+/// Default maximum consecutive failed sync attempts before an outbox
+/// entry is automatically quarantined into the dead-letter queue (closes
+/// F10's unbounded retry loop). Operators can inspect, requeue, or
+/// dismiss quarantined entries once the underlying fault is resolved.
+pub const DEFAULT_MAX_RETRIES: i32 = 10;
+
 /// One row of `sync_outbox`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutboxEntry {
@@ -54,6 +60,14 @@ pub struct OutboxEntry {
     pub synced_at: Option<DateTime<Utc>>,
     pub retry_count: i32,
     pub last_error: Option<String>,
+    /// Set when the entry was moved to the dead-letter queue (either
+    /// because HQ rejected it as a conflict or because it hit the
+    /// retry cap). Quarantined entries are excluded from `pending()`.
+    #[serde(default)]
+    pub quarantined_at: Option<DateTime<Utc>>,
+    /// Human-readable reason the entry was quarantined.
+    #[serde(default)]
+    pub quarantine_reason: Option<String>,
 }
 
 impl OutboxEntry {
@@ -74,6 +88,8 @@ impl OutboxEntry {
             synced_at: None,
             retry_count: 0,
             last_error: None,
+            quarantined_at: None,
+            quarantine_reason: None,
         }
     }
 }
@@ -103,6 +119,8 @@ pub struct SyncState {
     pub last_batch_id: Option<Uuid>,
     pub last_synced_at: Option<DateTime<Utc>>,
     pub pending_count: u64,
+    #[serde(default)]
+    pub dead_letter_count: u64,
 }
 
 fn entry_from_row(row: &AnyRow) -> Result<OutboxEntry, SyncError> {
@@ -151,6 +169,10 @@ fn entry_from_row(row: &AnyRow) -> Result<OutboxEntry, SyncError> {
         last_error: row
             .try_get("last_error")
             .map_err(|e| SyncError::InvalidPayload(format!("column last_error: {e}")))?,
+        quarantined_at: parse_opt_dt("quarantined_at")?,
+        quarantine_reason: row
+            .try_get("quarantine_reason")
+            .map_err(|e| SyncError::InvalidPayload(format!("column quarantine_reason: {e}")))?,
     })
 }
 
@@ -186,7 +208,7 @@ impl Outbox {
         E: Executor<'e, Database = sqlx::Any>,
     {
         sqlx::query(
-            "INSERT INTO sync_outbox (id, store_id, aggregate_type, aggregate_id, payload_json, created_at, synced_at, retry_count, last_error) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            "INSERT INTO sync_outbox (id, store_id, aggregate_type, aggregate_id, payload_json, created_at, synced_at, retry_count, last_error, quarantined_at, quarantine_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(entry.id.to_string())
         .bind(entry.store_id.to_string())
@@ -197,19 +219,22 @@ impl Outbox {
         .bind(entry.synced_at.map(|dt| dt.to_rfc3339()))
         .bind(entry.retry_count)
         .bind(&entry.last_error)
+        .bind(entry.quarantined_at.map(|dt| dt.to_rfc3339()))
+        .bind(&entry.quarantine_reason)
         .execute(executor)
         .await?;
         Ok(())
     }
 
-    /// Unsynced entries for a store, oldest (lowest UUIDv7) first.
+    /// Unsynced, non-quarantined entries for a store, oldest (lowest
+    /// UUIDv7) first.
     pub async fn pending(
         pool: &AnyPool,
         store_id: Uuid,
         limit: i64,
     ) -> Result<Vec<OutboxEntry>, SyncError> {
         let rows = sqlx::query(
-            "SELECT * FROM sync_outbox WHERE store_id = $1 AND synced_at IS NULL ORDER BY id ASC LIMIT $2",
+            "SELECT * FROM sync_outbox WHERE store_id = $1 AND synced_at IS NULL AND quarantined_at IS NULL ORDER BY id ASC LIMIT $2",
         )
         .bind(store_id.to_string())
         .bind(limit)
@@ -218,10 +243,10 @@ impl Outbox {
         rows.iter().map(entry_from_row).collect()
     }
 
-    /// Number of unsynced entries for a store.
+    /// Number of unsynced, non-quarantined entries for a store.
     pub async fn pending_count(pool: &AnyPool, store_id: Uuid) -> Result<u64, SyncError> {
         let row = sqlx::query(
-            "SELECT COUNT(*) AS n FROM sync_outbox WHERE store_id = $1 AND synced_at IS NULL",
+            "SELECT COUNT(*) AS n FROM sync_outbox WHERE store_id = $1 AND synced_at IS NULL AND quarantined_at IS NULL",
         )
         .bind(store_id.to_string())
         .fetch_one(pool)
@@ -230,6 +255,97 @@ impl Outbox {
             .try_get("n")
             .map_err(|e| SyncError::InvalidPayload(format!("column n: {e}")))?;
         Ok(n.max(0) as u64)
+    }
+
+    /// Quarantined (dead-lettered) entries for a store that have not
+    /// been dismissed/synced, newest quarantine first.
+    pub async fn dead_letters(
+        pool: &AnyPool,
+        store_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<OutboxEntry>, SyncError> {
+        let rows = sqlx::query(
+            "SELECT * FROM sync_outbox WHERE store_id = $1 AND synced_at IS NULL AND quarantined_at IS NOT NULL ORDER BY quarantined_at DESC, id DESC LIMIT $2",
+        )
+        .bind(store_id.to_string())
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+        rows.iter().map(entry_from_row).collect()
+    }
+
+    /// Number of active dead-lettered (quarantined, unsynced) entries
+    /// for a store.
+    pub async fn dead_letter_count(pool: &AnyPool, store_id: Uuid) -> Result<u64, SyncError> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS n FROM sync_outbox WHERE store_id = $1 AND synced_at IS NULL AND quarantined_at IS NOT NULL",
+        )
+        .bind(store_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        let n: i64 = row
+            .try_get("n")
+            .map_err(|e| SyncError::InvalidPayload(format!("column n: {e}")))?;
+        Ok(n.max(0) as u64)
+    }
+
+    /// Move an unsynced outbox entry into the dead-letter queue
+    /// (closes F8). Excluded from future `pending()` drains until an
+    /// operator explicitly requeues or dismisses it.
+    pub async fn quarantine(pool: &AnyPool, id: Uuid, reason: &str) -> Result<bool, SyncError> {
+        let now = Utc::now().to_rfc3339();
+        let done = sqlx::query(
+            "UPDATE sync_outbox SET quarantined_at = $1, quarantine_reason = $2, last_error = $3 WHERE id = $4 AND synced_at IS NULL",
+        )
+        .bind(now)
+        .bind(reason)
+        .bind(reason)
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// Move a quarantined dead-letter entry back to the pending queue
+    /// with `retry_count = 0`, so the next sync retries it. Returns
+    /// `true` if a quarantined row matched `(store_id, id)`.
+    pub async fn requeue_dead_letter(
+        pool: &AnyPool,
+        store_id: Uuid,
+        id: Uuid,
+    ) -> Result<bool, SyncError> {
+        let done = sqlx::query(
+            "UPDATE sync_outbox SET quarantined_at = NULL, quarantine_reason = NULL, retry_count = 0, last_error = NULL WHERE id = $1 AND store_id = $2 AND synced_at IS NULL AND quarantined_at IS NOT NULL",
+        )
+        .bind(id.to_string())
+        .bind(store_id.to_string())
+        .execute(pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// Dismiss a quarantined dead-letter entry (e.g. after the
+    /// operator posted a compensating/reversing transaction on HQ).
+    /// Stamps `synced_at` so it leaves the active dead-letter queue
+    /// while preserving `quarantined_at` + the dismissal reason for
+    /// audit.
+    pub async fn dismiss_dead_letter(
+        pool: &AnyPool,
+        store_id: Uuid,
+        id: Uuid,
+        reason: &str,
+    ) -> Result<bool, SyncError> {
+        let note = format!("dismissed: {}", reason.trim());
+        let done = sqlx::query(
+            "UPDATE sync_outbox SET synced_at = $1, quarantine_reason = $2 WHERE id = $3 AND store_id = $4 AND synced_at IS NULL AND quarantined_at IS NOT NULL",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(&note)
+        .bind(id.to_string())
+        .bind(store_id.to_string())
+        .execute(pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
     }
 
     /// Mark entries synced, stamping `synced_at = now`.
@@ -254,16 +370,46 @@ impl Outbox {
     }
 
     /// Record a failed sync attempt: bump `retry_count`, store the
-    /// error, leave the row pending.
+    /// error, and automatically quarantine the row once `retry_count`
+    /// reaches [`DEFAULT_MAX_RETRIES`] (bounded retries — closes F10).
     pub async fn mark_failed(pool: &AnyPool, id: Uuid, error: &str) -> Result<(), SyncError> {
+        let _ = Self::mark_failed_with_limit(pool, id, error, DEFAULT_MAX_RETRIES).await?;
+        Ok(())
+    }
+
+    /// Record a failed sync attempt with an explicit retry cap.
+    /// Returns `Ok(true)` if this failure crossed `max_retries` and
+    /// quarantined the entry into the dead-letter queue.
+    pub async fn mark_failed_with_limit(
+        pool: &AnyPool,
+        id: Uuid,
+        error: &str,
+        max_retries: i32,
+    ) -> Result<bool, SyncError> {
+        let cap = max_retries.max(1);
         sqlx::query(
-            "UPDATE sync_outbox SET retry_count = retry_count + 1, last_error = $1 WHERE id = $2",
+            "UPDATE sync_outbox SET retry_count = retry_count + 1, last_error = $1 WHERE id = $2 AND synced_at IS NULL",
         )
         .bind(error)
         .bind(id.to_string())
         .execute(pool)
         .await?;
-        Ok(())
+        let row = sqlx::query("SELECT retry_count FROM sync_outbox WHERE id = $1")
+            .bind(id.to_string())
+            .fetch_optional(pool)
+            .await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let retries: i32 = row
+            .try_get("retry_count")
+            .map_err(|e| SyncError::InvalidPayload(format!("column retry_count: {e}")))?;
+        if retries >= cap {
+            let reason = format!("max retries ({cap}) exceeded: {error}");
+            Self::quarantine(pool, id, &reason).await?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// Sync progress derived from the outbox alone: `last_batch_id` is
@@ -272,6 +418,7 @@ impl Outbox {
     /// `synced_at` in the outbox.
     pub async fn sync_state(pool: &AnyPool, store_id: Uuid) -> Result<SyncState, SyncError> {
         let pending_count = Self::pending_count(pool, store_id).await?;
+        let dead_letter_count = Self::dead_letter_count(pool, store_id).await?;
         let row = sqlx::query(
             "SELECT MAX(synced_at) AS last_synced FROM sync_outbox WHERE store_id = $1 AND synced_at IS NOT NULL",
         )
@@ -294,6 +441,7 @@ impl Outbox {
             last_batch_id: None,
             last_synced_at,
             pending_count,
+            dead_letter_count,
         })
     }
 
@@ -417,5 +565,93 @@ mod tests {
         Outbox::enqueue_exec(&mut *tx, &e2).await.unwrap();
         tx.rollback().await.unwrap();
         assert_eq!(Outbox::pending_count(&pool, store_id).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn quarantine_requeue_and_dismiss_dead_letters() {
+        let pool = test_pool().await;
+        let store_id = Uuid::now_v7();
+        let e = entry(store_id);
+        Outbox::enqueue(&pool, &e).await.unwrap();
+
+        assert!(
+            Outbox::quarantine(&pool, e.id, "conflict at HQ")
+                .await
+                .unwrap()
+        );
+        assert_eq!(Outbox::pending_count(&pool, store_id).await.unwrap(), 0);
+        assert_eq!(Outbox::dead_letter_count(&pool, store_id).await.unwrap(), 1);
+
+        let dead = Outbox::dead_letters(&pool, store_id, 10).await.unwrap();
+        assert_eq!(dead.len(), 1);
+        assert_eq!(dead[0].id, e.id);
+        assert!(dead[0].quarantined_at.is_some());
+        assert_eq!(dead[0].quarantine_reason.as_deref(), Some("conflict at HQ"));
+
+        // Requeue moves it back to pending with retry_count reset.
+        assert!(
+            Outbox::requeue_dead_letter(&pool, store_id, e.id)
+                .await
+                .unwrap()
+        );
+        assert_eq!(Outbox::pending_count(&pool, store_id).await.unwrap(), 1);
+        assert_eq!(Outbox::dead_letter_count(&pool, store_id).await.unwrap(), 0);
+
+        // Quarantine again, then dismiss leaves both pending and dead-letter queues empty.
+        Outbox::quarantine(&pool, e.id, "conflict again")
+            .await
+            .unwrap();
+        assert!(
+            Outbox::dismiss_dead_letter(&pool, store_id, e.id, "reversed via TX-2")
+                .await
+                .unwrap()
+        );
+        assert_eq!(Outbox::pending_count(&pool, store_id).await.unwrap(), 0);
+        assert_eq!(Outbox::dead_letter_count(&pool, store_id).await.unwrap(), 0);
+        // Second dismiss is a no-op.
+        assert!(
+            !Outbox::dismiss_dead_letter(&pool, store_id, e.id, "again")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_failed_with_limit_quarantines_after_cap() {
+        let pool = test_pool().await;
+        let store_id = Uuid::now_v7();
+        let e = entry(store_id);
+        Outbox::enqueue(&pool, &e).await.unwrap();
+
+        assert!(
+            !Outbox::mark_failed_with_limit(&pool, e.id, "503", 3)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !Outbox::mark_failed_with_limit(&pool, e.id, "503", 3)
+                .await
+                .unwrap()
+        );
+        assert_eq!(Outbox::pending_count(&pool, store_id).await.unwrap(), 1);
+        assert_eq!(Outbox::dead_letter_count(&pool, store_id).await.unwrap(), 0);
+
+        // 3rd failure crosses cap -> quarantined automatically.
+        assert!(
+            Outbox::mark_failed_with_limit(&pool, e.id, "503", 3)
+                .await
+                .unwrap()
+        );
+        assert_eq!(Outbox::pending_count(&pool, store_id).await.unwrap(), 0);
+        assert_eq!(Outbox::dead_letter_count(&pool, store_id).await.unwrap(), 1);
+        let dead = Outbox::dead_letters(&pool, store_id, 10).await.unwrap();
+        assert_eq!(dead[0].retry_count, 3);
+        assert!(
+            dead[0]
+                .quarantine_reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("max retries (3) exceeded")
+        );
     }
 }
