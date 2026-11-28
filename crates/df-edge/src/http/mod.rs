@@ -425,7 +425,15 @@ pub fn router(edge: Edge) -> Router {
 }
 
 pub fn router_with_hardening(edge: Edge, hardening: HttpHardeningConfig) -> Router {
-    let state = Arc::new(edge);
+    router_from_arc(Arc::new(edge), hardening)
+}
+
+/// Build the edge HTTP router around a shared `Arc<Edge>` so a host
+/// process (such as the native Tauri desktop shell) can serve the full
+/// RBAC-gated HTTP API on loopback while still controlling hardware
+/// bridges (payment terminal switch, printer capture) on the same
+/// in-process `Edge`.
+pub fn router_from_arc(state: Arc<Edge>, hardening: HttpHardeningConfig) -> Router {
     let pool = state.pool().clone();
 
     // One gate per rule. `from_fn_with_state` carries the pool +

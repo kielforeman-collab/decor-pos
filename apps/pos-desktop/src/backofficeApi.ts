@@ -2,6 +2,7 @@
 // matrix pricing rules, CRM, deliveries/POD, EDI intake/832, reports/BI,
 // and Scheduling+). Uses the same Bearer session & 401 handling as api.ts.
 
+import { apiUrl } from './apiBase'
 import {
   UnauthorizedError,
   authHeaders,
@@ -47,7 +48,7 @@ import type {
 } from './backofficeTypes'
 
 async function http<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(await apiUrl(path), {
     method: body === undefined ? 'GET' : 'POST',
     headers: { 'content-type': 'application/json', ...authHeaders() },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -346,7 +347,7 @@ export async function getEcoRemittance(start: string, end: string): Promise<EcoR
 
 export async function getEcoRemittanceCsv(start: string, end: string): Promise<string> {
   const q = new URLSearchParams({ start, end, format: 'csv' })
-  const res = await fetch(`/api/bi/eco?${q}`, { headers: { ...authHeaders() } })
+  const res = await fetch(await apiUrl(`/bi/eco?${q}`), { headers: { ...authHeaders() } })
   if (!res.ok) {
     if (res.status === 401) {
       clearSession()

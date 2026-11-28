@@ -143,9 +143,12 @@ impl HttpHardeningConfig {
                         .to_string(),
                 );
             }
-            if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+            if !(trimmed.starts_with("http://")
+                || trimmed.starts_with("https://")
+                || trimmed.starts_with("tauri://"))
+            {
                 return Err(format!(
-                    "invalid CORS origin {origin:?}: must start with http:// or https://"
+                    "invalid CORS origin {origin:?}: must start with http://, https://, or tauri://"
                 ));
             }
             if HeaderValue::from_str(trimmed).is_err() {
@@ -374,6 +377,9 @@ mod tests {
 
         cfg.cors_origins = vec!["*".to_string()];
         assert!(cfg.validate().is_err());
+
+        cfg.cors_origins = vec!["tauri://localhost".to_string()];
+        assert!(cfg.validate().is_ok());
 
         cfg.cors_origins = vec!["ftp://bad.example.com".to_string()];
         assert!(cfg.validate().is_err());

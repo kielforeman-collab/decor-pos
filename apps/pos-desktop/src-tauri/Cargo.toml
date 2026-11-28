@@ -15,9 +15,10 @@ name = "pos-desktop"
 path = "src/main.rs"
 
 [dependencies]
+axum = { workspace = true }
 chrono = { workspace = true }
 df-auth = { workspace = true, optional = true }
-df-auth-http = { workspace = true, optional = true }
+df-auth-http = { workspace = true }
 df-db = { workspace = true }
 df-domain = { workspace = true }
 df-edge = { workspace = true }
@@ -32,6 +33,9 @@ tokio = { workspace = true }
 uuid = { workspace = true }
 tauri = { version = "2", optional = true }
 
+[dev-dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+
 [build-dependencies]
 tauri-build = { version = "2", optional = true }
 
@@ -41,7 +45,4 @@ default = []
 # (webkit2gtk, libsoup, GTK) — see apps/pos-desktop/README.md.
 # Without it the crate still compiles as a plain library + binary
 # (the binary prints the dev-path instructions and exits).
-# The `df-auth` / `df-auth-http` deps are only needed for the
-# `auth_*` Tauri commands (same login/setup surface as the edge
-# HTTP `/pos/auth/*` endpoints, same response shapes).
-tauri-shell = ["dep:tauri", "dep:tauri-build", "dep:df-auth", "dep:df-auth-http"]
+tauri-shell = ["dep:tauri", "dep:tauri-build", "dep:df-auth"]

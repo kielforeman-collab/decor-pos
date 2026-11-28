@@ -13,6 +13,9 @@ async fn main() {
     let app = pos_desktop_lib::PosApp::open(config)
         .await
         .expect("failed to open the POS edge");
+    app.start_loopback_server()
+        .await
+        .expect("failed to start embedded edge HTTP server");
     pos_desktop_lib::run(app);
 }
 

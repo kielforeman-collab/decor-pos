@@ -29,60 +29,11 @@
 // v1.1, but a cookie-based session is the follow-up before this POS is
 // exposed beyond the store network.
 
+import { apiUrl, isTauri } from './apiBase'
+
 export const TOKEN_KEY = 'df-pos-token'
 export const SESSION_KEY = 'df-pos-session'
-
-// --- Tauri backend -----------------------------------------------------------
-// Inside the native desktop app there is no Vite proxy and no HTTP edge
-// to call, so auth goes through Tauri `invoke()` commands instead
-// (`src-tauri/src/lib.rs`, `auth_*`). The `isTauri` test is defined
-// here — not imported from api.ts, which imports this module, so
-// importing back would be a cycle.
-export const isTauri =
-  typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
-
-type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>
-
-let invokeFn: Promise<InvokeFn> | null = null
-
-async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  if (!invokeFn) {
-    invokeFn = import('@tauri-apps/api/core').then((m) => m.invoke as InvokeFn)
-  }
-  return (await invokeFn)(cmd, args)
-}
-
-/**
- * Turn a Tauri command rejection (a plain string) into the Error the
- * HTTP path would have thrown, with the same `status` the HTTP layer
- * returns for it (see `df_auth_http::login_error` / `setup_error`).
- * Call sites key behaviour off `status` (409 → show the login form
- * instead of setup; 401/403 → "not verified" for overrides), so the
- * mapping has to match the HTTP statuses, not just the messages.
- */
-function authInvokeError(message: unknown): ErrorWithStatus {
-  const text = typeof message === 'string' ? message : String(message)
-  const err = new Error(text) as ErrorWithStatus
-  if (text === 'setup already complete — a user already exists') err.status = 409
-  else if (text === 'invalid credentials' || text === 'invalid or expired session')
-    err.status = 401
-  else if (
-    text === 'portal user has no linked customer' ||
-    text === 'manager override requires a Manager or Admin approver' ||
-    text.startsWith('permission denied')
-  )
-    err.status = 403
-  return err
-}
-
-/** `invoke()` with rejections converted via {@link authInvokeError}. */
-async function invokeAuth<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  try {
-    return await invoke<T>(cmd, args)
-  } catch (e) {
-    throw authInvokeError(e)
-  }
-}
+export { isTauri }
 
 export interface SessionUser {
   id: string
@@ -170,7 +121,7 @@ interface ErrorWithStatus extends Error {
 }
 
 async function authPost(path: string, body: unknown): Promise<unknown> {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(await apiUrl(path), {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
@@ -237,25 +188,16 @@ export function normalizeSession(json: unknown): AuthSession {
 }
 
 export async function login(email: string, password: string): Promise<AuthSession> {
-  const session = isTauri
-    ? normalizeSession(await invokeAuth<unknown>('auth_login', { email, password }))
-    : normalizeSession(await authPost('/pos/auth/login', { email, password }))
+  const session = normalizeSession(await authPost('/pos/auth/login', { email, password }))
   saveSession(session)
   return session
 }
 
 // --- first-run setup -------------------------------------------------------
-// Contract (backend worker owns the endpoints; this client is built
-// against the agreed contract):
 //   GET  /pos/auth/setup-status  → { needs_setup: true/false }
-//     (true only when the users table is empty)
 //   POST /pos/auth/setup  { email, display_name, password }
-//     → the same LoginResponse shape as login; the created user is an
-//     Admin. Second call when users exist → 409. Empty
-//     email/password → 400. No role parameter is accepted.
-// Both are reached through the Vite `/api` proxy in a plain
-// browser, or through the `auth_setup*` Tauri commands in the
-// native shell, like the other auth calls above.
+// Both go through `apiUrl()` — Vite `/api` proxy in browser dev mode,
+// or the embedded loopback `df-edge` HTTP server in the native Tauri app.
 
 /**
  * True when this is a fresh install with no users yet. Any failure
@@ -264,16 +206,8 @@ export async function login(email: string, password: string): Promise<AuthSessio
  * check.
  */
 export async function getSetupStatus(): Promise<boolean> {
-  if (isTauri) {
-    try {
-      const json = await invoke<{ needs_setup?: unknown }>('auth_setup_status')
-      return json?.needs_setup === true
-    } catch {
-      return false
-    }
-  }
   try {
-    const res = await fetch('/api/pos/auth/setup-status')
+    const res = await fetch(await apiUrl('/pos/auth/setup-status'))
     if (!res.ok) return false
     const json: unknown = await res.json().catch(() => null)
     return (json as { needs_setup?: unknown } | null)?.needs_setup === true
@@ -292,21 +226,13 @@ export async function setupAdmin(
   displayName: string,
   password: string,
 ): Promise<AuthSession> {
-  const session = isTauri
-    ? normalizeSession(
-        await invokeAuth<unknown>('auth_setup', {
-          email,
-          displayName: displayName,
-          password,
-        }),
-      )
-    : normalizeSession(
-        await authPost('/pos/auth/setup', {
-          email,
-          display_name: displayName,
-          password,
-        }),
-      )
+  const session = normalizeSession(
+    await authPost('/pos/auth/setup', {
+      email,
+      display_name: displayName,
+      password,
+    }),
+  )
   saveSession(session)
   return session
 }
@@ -326,15 +252,7 @@ export async function counterSwitch(opts: {
   const body: Record<string, string> = { email: opts.email }
   if (opts.pin) body.pin = opts.pin
   if (opts.badgeToken) body.badge_token = opts.badgeToken
-  const session = isTauri
-    ? normalizeSession(
-        await invokeAuth<unknown>('auth_counter_switch', {
-          email: opts.email,
-          pin: opts.pin,
-          badgeToken: opts.badgeToken,
-        }),
-      )
-    : normalizeSession(await authPost('/pos/auth/counter-switch', body))
+  const session = normalizeSession(await authPost('/pos/auth/counter-switch', body))
   saveSession(session)
   return session
 }
@@ -342,12 +260,7 @@ export async function counterSwitch(opts: {
 /** Best-effort server logout; the local session is cleared regardless. */
 export async function logout(): Promise<void> {
   try {
-    if (isTauri) {
-      const token = getToken()
-      if (token) await invokeAuth<unknown>('auth_logout', { token })
-    } else {
-      await authPost('/pos/auth/logout', {})
-    }
+    await authPost('/pos/auth/logout', {})
   } catch {
     // A failed logout must not strand the operator on a signed-in UI.
   } finally {
@@ -366,19 +279,11 @@ export async function verifyOverride(
   reasonCode: string,
 ): Promise<boolean> {
   try {
-    const json = (
-      isTauri
-        ? await invokeAuth<unknown>('auth_override_verify', {
-            userId: userId,
-            pin,
-            reasonCode: reasonCode,
-          })
-        : await authPost('/pos/auth/override-verify', {
-            user_id: userId,
-            pin,
-            reason_code: reasonCode,
-          })
-    ) as Record<string, unknown> | null
+    const json = (await authPost('/pos/auth/override-verify', {
+      user_id: userId,
+      pin,
+      reason_code: reasonCode,
+    })) as Record<string, unknown> | null
     if (json && (json.ok === false || json.verified === false || json.approved === false)) {
       return false
     }

@@ -472,3 +472,16 @@ only its own section, ticking items as they are verified — not when code merel
   - `Decor.POS-1.2.3-1.x86_64.rpm` (9.6 MB) — Linux RPM package
   - `Decor.POS_1.2.3_amd64.AppImage` (87.3 MB) — Linux AppImage
   - `df-server-v1.2.3-linux-x86_64` (28.4 MB) — Linux server binary
+
+## Native Desktop App Parity (embedded loopback `df-edge` HTTP server) — ✅ DONE Nov 28, 2026
+### Scope
+- ✅ **Backend (`df-auth-http`, `df-edge`, `apps/pos-desktop/src-tauri`):**
+  - Updated `df_auth_http::HttpHardeningConfig::validate` to accept `tauri://` exact origins (`tauri://localhost` on Linux/macOS WebKit alongside `http://tauri.localhost` / `https://tauri.localhost` on Windows WebView2 and Vite dev origins; wildcards remain rejected).
+  - Added `df_edge::http::router_from_arc(Arc<Edge>, HttpHardeningConfig)` so `PosApp` shares a single `Arc<Edge>` across the embedded HTTP server and native hardware/provider commands (`set_provider`, `last_receipt_text`, `scan_barcode`, `get_status`).
+  - Added `PosApp::start_loopback_server()` (binds strictly `127.0.0.1:0`, never exposed on LAN, wires in-process `MemoryHq` fallback when `DF_HQ_URL` is unset), called on native Tauri startup in `src-tauri/src/main.rs`, and exposed via `#[tauri::command] get_api_base_url`.
+  - Updated `apps/pos-desktop/src-tauri/tauri.conf.json` CSP with `connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:*`.
+- ✅ **Frontend (`apps/pos-desktop/src/`):**
+  - Added `apiBase.ts` (`getApiBase()`, `apiUrl(path)`): targets `/api<path>` in Vite browser mode and caches `invoke('get_api_base_url')` (`http://127.0.0.1:<port>`) in the installed Tauri app.
+  - Unified `api.ts`, `backofficeApi.ts`, and `auth.ts` onto `apiUrl()` so **all 14 desktop sections** (Transactions, Deliveries, Orders, Transfers, Counts, Products, Customers, CRM, Vendors, Scheduling, Dashboards, Reports, Sync, Admin) run identically inside the Windows & Linux installers with full `Bearer dfp_...` RBAC enforcement, real cashier `user_id` attribution, and auth rate limiting (closing the Phase 7 Tauri IPC RBAC gap). Native hardware/provider commands (`getStatus`, `setProvider`, `lastReceiptText`, `scanBarcode`) stay on `invoke()` sharing the same `Arc<Edge>`.
+### Verification
+- 🔄 Local `df-auth-http` + `pos-desktop` (`pos_app_embedded_loopback_http_parity`) tests, fmt, clippy (`-D warnings`), `pos-desktop` `npm run build`, and GitHub CI + Linux/Windows Tauri dry-run build in progress.

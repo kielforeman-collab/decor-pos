@@ -50,23 +50,40 @@ pub enum PosError {
     Hw(#[from] df_hw::HwError),
     #[error("unknown payment provider: {0}")]
     UnknownProvider(String),
+    #[error("embedded loopback HTTP server error: {0}")]
+    Loopback(String),
 }
 
 /// Provider names the counter can switch between.
 pub const PROVIDER_MOCK: &str = "mock";
 pub const PROVIDER_STANDALONE: &str = "standalone";
 
-/// The counter POS application: one edge + printer + providers.
+/// Exact browser origins the Tauri 2 desktop WebView (Linux/macOS
+/// WebKit, Windows WebView2) and Vite dev server use when calling the
+/// embedded loopback `df-edge` HTTP server. Wildcards are never used.
+pub const DESKTOP_LOOPBACK_ORIGINS: &[&str] = &[
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
+];
+
+/// The counter POS application: one edge + printer + providers +
+/// optional embedded loopback HTTP server (serving the full RBAC-gated
+/// `df-edge` API on `127.0.0.1:<ephemeral>` for native Tauri parity).
 pub struct PosApp {
-    edge: Edge,
+    edge: Arc<Edge>,
     printer: Arc<MockPrinter>,
     mock: Arc<MockTerminal>,
     standalone: Arc<StandaloneTerminal>,
     provider_name: Mutex<String>,
-    /// In-process HQ sink for `sync_now` (the same `MemoryHq` the
-    /// Phase 1 exit test syncs against; a PostgreSQL HQ replaces it
-    /// in a later phase).
+    /// In-process HQ sink for `sync_now` (used when `DF_HQ_URL` /
+    /// `DF_HQ_TOKEN` are not configured).
     hq: Arc<df_sync::MemoryHq>,
+    /// Base URL (`http://127.0.0.1:<port>`) once
+    /// [`PosApp::start_loopback_server`] has bound.
+    loopback_url: Mutex<Option<String>>,
 }
 
 /// `?as_of=YYYY-MM-DD`, defaulting to today (UTC). A malformed
@@ -102,14 +119,63 @@ impl PosApp {
         let mock = Arc::new(MockTerminal::new());
         let standalone = Arc::new(StandaloneTerminal::new());
         edge.set_payment_provider(mock.clone());
+        let hq = Arc::new(df_sync::MemoryHq::new());
+        edge.set_hq(hq.clone());
         Ok(Self {
-            edge,
+            edge: Arc::new(edge),
             printer,
             mock,
             standalone,
             provider_name: Mutex::new(PROVIDER_MOCK.to_string()),
-            hq: Arc::new(df_sync::MemoryHq::new()),
+            hq,
+            loopback_url: Mutex::new(None),
         })
+    }
+
+    /// Start the embedded loopback `df-edge` HTTP server bound strictly
+    /// to `127.0.0.1:0` (ephemeral OS-assigned port, never exposed on
+    /// the LAN). Idempotent: calling twice returns the existing URL.
+    ///
+    /// Serves the full RBAC-gated `df-edge` API (all 14 desktop
+    /// sections including back-office, Sync dead-letter triage, and
+    /// Admin store/user/service-token screens) sharing the exact same
+    /// `Arc<Edge>` instance as the hardware/provider commands.
+    pub async fn start_loopback_server(&self) -> Result<String, PosError> {
+        if let Some(existing) = self.loopback_url() {
+            return Ok(existing);
+        }
+        let mut hardening = df_auth_http::HttpHardeningConfig::from_env();
+        for origin in DESKTOP_LOOPBACK_ORIGINS {
+            if !hardening.cors_origins.iter().any(|o| o == origin) {
+                hardening.cors_origins.push((*origin).to_string());
+            }
+        }
+        hardening.validate().map_err(PosError::Loopback)?;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| PosError::Loopback(format!("bind 127.0.0.1:0 failed: {e}")))?;
+        let addr = listener
+            .local_addr()
+            .map_err(|e| PosError::Loopback(format!("local_addr failed: {e}")))?;
+        let router = df_edge::http::router_from_arc(Arc::clone(&self.edge), hardening);
+        tokio::spawn(async move {
+            let _ = axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await;
+        });
+
+        let url = format!("http://127.0.0.1:{}", addr.port());
+        *self.loopback_url.lock().expect("loopback url lock") = Some(url.clone());
+        Ok(url)
+    }
+
+    /// Base URL (`http://127.0.0.1:<port>`) of the embedded loopback
+    /// edge HTTP server, once [`PosApp::start_loopback_server`] has run.
+    pub fn loopback_url(&self) -> Option<String> {
+        self.loopback_url.lock().expect("loopback url lock").clone()
     }
 
     pub fn edge(&self) -> &Edge {
@@ -1402,6 +1468,16 @@ mod commands {
             &approval,
         ))
     }
+
+    /// Return the base URL (`http://127.0.0.1:<port>`) of the embedded
+    /// loopback `df-edge` HTTP server started in `main.rs`, so the
+    /// frontend reaches every edge endpoint (including back-office,
+    /// Sync dead-letters, and Admin screens) with full Bearer RBAC.
+    #[tauri::command]
+    pub fn get_api_base_url(app: State<'_, PosApp>) -> Result<String, String> {
+        app.loopback_url()
+            .ok_or_else(|| "embedded edge HTTP server is not running".to_string())
+    }
 }
 
 /// Run the native Tauri shell around an already-opened [`PosApp`].
@@ -1412,6 +1488,7 @@ pub fn run(app: PosApp) {
     tauri::Builder::default()
         .manage(app)
         .invoke_handler(tauri::generate_handler![
+            commands::get_api_base_url,
             commands::get_status,
             commands::set_provider,
             commands::price_preview,
@@ -1784,5 +1861,117 @@ mod tests {
             }],
         };
         assert!(app.create_tint_formula(bad_formula).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn pos_app_embedded_loopback_http_parity() {
+        let app = PosApp::open(test_config()).await.unwrap();
+        let base = app.start_loopback_server().await.unwrap();
+        assert!(base.starts_with("http://127.0.0.1:"));
+        // Idempotent second call returns the exact same loopback URL.
+        assert_eq!(app.start_loopback_server().await.unwrap(), base);
+
+        let client = reqwest::Client::new();
+
+        // 1. CORS preflight for both Linux/macOS (`tauri://localhost`)
+        //    and Windows WebView2 (`http://tauri.localhost`) origins.
+        for origin in ["tauri://localhost", "http://tauri.localhost"] {
+            let preflight = client
+                .request(reqwest::Method::OPTIONS, format!("{base}/admin/store"))
+                .header("Origin", origin)
+                .header("Access-Control-Request-Method", "POST")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(preflight.status(), reqwest::StatusCode::NO_CONTENT);
+            assert_eq!(
+                preflight
+                    .headers()
+                    .get("access-control-allow-origin")
+                    .and_then(|v| v.to_str().ok()),
+                Some(origin)
+            );
+        }
+
+        // Unlisted external origin gets no Allow-Origin header.
+        let evil = client
+            .get(format!("{base}/health"))
+            .header("Origin", "https://evil.example.com")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(evil.status(), reqwest::StatusCode::OK);
+        assert!(evil.headers().get("access-control-allow-origin").is_none());
+
+        // 2. First-run setup over loopback issues a real Admin `dfp_` session.
+        let status_json: serde_json::Value = client
+            .get(format!("{base}/pos/auth/setup-status"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(status_json["needs_setup"], true);
+
+        let setup_res = client
+            .post(format!("{base}/pos/auth/setup"))
+            .json(&serde_json::json!({
+                "email": "desktop-admin@store.test",
+                "display_name": "Desktop Admin",
+                "password": "desktop-password-123"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(setup_res.status(), reqwest::StatusCode::CREATED);
+        let setup_json: serde_json::Value = setup_res.json().await.unwrap();
+        let token = setup_json["token"].as_str().unwrap().to_string();
+        assert!(token.starts_with("dfp_"));
+
+        // 3. Real RBAC enforcement over loopback: unauthenticated -> 401.
+        let unauth = client
+            .get(format!("{base}/admin/users"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unauth.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // 4. All consolidated back-office, Sync, and Admin routes answer 200
+        //    with the real Admin Bearer token on the embedded loopback server.
+        let today = chrono::Utc::now().date_naive().to_string();
+        let store_id = Uuid::from_u128(0xA000);
+        for path in [
+            "/admin/store".to_string(),
+            "/admin/users".to_string(),
+            "/admin/service-tokens".to_string(),
+            "/pos/sync/state".to_string(),
+            "/pos/sync/dead-letters".to_string(),
+            format!("/inventory/counts?store_id={store_id}"),
+            "/pricing/rules".to_string(),
+            "/crm/activities".to_string(),
+            "/deliveries/dispatch".to_string(),
+            "/scheduling/templates".to_string(),
+            format!("/scheduling/shifts?date={today}"),
+            format!("/pos/reports/daily-usage?date={today}"),
+        ] {
+            let res = client
+                .get(format!("{base}{path}"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(res.status(), reqwest::StatusCode::OK, "GET {path}");
+        }
+
+        // 5. `POST /pos/sync/run` works out of the box via the shared in-process MemoryHq.
+        let sync_res = client
+            .post(format!("{base}/pos/sync/run"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(sync_res.status(), reqwest::StatusCode::OK);
     }
 }
