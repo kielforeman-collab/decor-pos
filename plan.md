@@ -435,4 +435,7 @@ only its own section, ticking items as they are verified — not when code merel
   - `Edge::record_return_inner` refunds original card payment references via `PaymentProvider::refund` (capped to each card payment's amount using exact `Decimal` math), persists negative refund `PaymentRow` rows on the return transaction, and returns them in `CompletedSale.payments` + return receipts.
   - `Edge::void_transaction` / `void_transaction_with_provider` voids original card payment references through the configured payment provider before flipping status to `"voided"`.
 ### Verification
-- 🔄 Local fmt, clippy (`-D warnings`), float-money guard, PCI migration scan, `pos_counter_completeness` integration suite, `pos-desktop` `npm run build`, and GitHub CI verification in progress.
+- ✅ `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, float-money guard across all 8 financial crates, and `pci_no_pan_columns` (including migration `0017`) — all clean.
+- ✅ GitHub `CI` green on `03e8417` (run `46153292778`, `check` in **2m18s**: **485/485** workspace nextest tests passed, 0 failed, 0 skipped + doc tests + Typst + all 4 frontend builds).
+### GitHub
+- ✅ Pushed to `main`: `03e8417` (`feat(pos): DB-backed holds, real cashier attribution, and card auto-void/refunds`).
