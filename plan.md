@@ -380,15 +380,14 @@ only its own section, ticking items as they are verified — not when code merel
   - Updated `GET /pos/tinting/colorants`, `GET /api/v1/tinting/colorants`, and `apps/pos-desktop` (`src-tauri` + `src/api.ts` + `src/types.ts`) to serve the org's `colorants` catalog directly (`Vec<ColorantView>`) for the formula builder without canister levels; replaced `tint_dispense_end_to_end.rs` with `tint_formula_end_to_end.rs`.
   - Updated `docs/auth.md` and `README.md`.
 - ✅ Release workflow speedup (`.github/workflows/release.yml`):
-  - Replaced `cargo install tauri-cli --version "^2" --locked` (compiling from source) with prebuilt `npm install -g @tauri-apps/cli@2` + `tauri icon` / `tauri build` on both Windows and Linux.
-  - Upgraded `actions/upload-artifact@v4` → `@v6` and `actions/download-artifact@v4` → `@v7` (native Node 24 runtime, clearing Node 20 deprecation warnings).
+  - Replaced `cargo install tauri-cli --version "^2" --locked` (compiling from source) with prebuilt `npm install -g @tauri-apps/cli@2` (`~5s`) + `tauri icon` (`~4s`) / `tauri build` on both Windows and Linux (quoting `--bundles "nsis,msi"` for `pwsh`).
+  - Added `Swatinem/rust-cache@v2` (`shared-key: release-windows`, native Node 24) to `build-windows` so compiled release dependencies (`~715 MB` compressed) are cached across Windows releases.
+  - Upgraded `actions/upload-artifact@v4` → `@v6` and `actions/download-artifact@v4` → `@v7` (native Node 24 runtime — zero Node 20 deprecation warnings on both Linux and Windows).
 ### Verification
-- ✅ `cargo fmt --all -- --check` — clean.
-- ✅ `cargo clippy --workspace --all-targets -- -D warnings` — clean.
-- ✅ `apps/pos-desktop` `npm run build` — clean (`445.36 kB` main bundle).
-- ✅ Rust tests on all touched crates passed (`df-api` 11+3, `df-plugin-sdk` 6+3, `pos-desktop` 4, `df-reports` daily/low_stock 4, `df-jobs` phase2, `df-db` 3+6, `df-edge` `tint_formula_end_to_end` 1).
-- 🔄 GitHub CI + `release.yml` `workflow_dispatch` timing verification queued after push.
-
-
-
-
+- ✅ `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `apps/pos-desktop` `npm run build` (`445.36 kB` main bundle) — all clean.
+- ✅ GitHub `CI` green on both `cf8e603` (run `46134785390`, 2m56s Rust `check` incl. nextest + clippy + fmt + doc tests + Typst + all 4 frontend builds) and `7229161` (run `46135286815`).
+- ✅ GitHub `Release` dry-run timings (zero warnings/annotations):
+  - **`build-linux`** (run `46134789543`, `cf8e603`): **4m39s** (down from ~7m42s).
+  - **`build-windows`** (run `46135296077`, `7229161`): **15m11s** cold cache (down from **22m12s**, saving ~7m on cold builds; `Install Tauri CLI` dropped to **5s**, and `Swatinem/rust-cache@v2` saved the 715 MB compiled dependency cache for even faster warm runs).
+### GitHub
+- ✅ Pushed to `main`: `cf8e603` (`-3,720` net LOC machine-tinting cleanup + Tauri CLI / Node 24 workflow upgrades) and `7229161` (Windows `pwsh` `--bundles "nsis,msi"` fix + `Swatinem/rust-cache@v2`).
