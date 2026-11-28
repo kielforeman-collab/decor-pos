@@ -545,3 +545,17 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ GitHub `CI` green on `5d018b6` (run `46177962622`, `check` in **1m44s** + all 4 frontends).
 ### GitHub
 - ✅ Pushed to `main`: `5d018b6` (`feat(customers): add customer setup create/edit endpoints and POS UI`).
+
+## Release v1.2.6 — ✅ PUBLISHED Nov 28, 2026
+### Scope
+- ✅ Register customer picker enhancement (`da3bcfe`): quick **+ New** and **Edit** customer buttons directly on `TillPanel`, wired to `CustomerFormModal` so newly created customers are immediately attached to the active ticket.
+- ✅ Version bump `1.2.5 → 1.2.6` across workspace `Cargo.toml` (+ `Cargo.lock`), `apps/pos-desktop`, `tauri.conf.json`, `df-api`, test assertions, `docs/self-hosting.md`, and `docs/index.html` (`ec7607e`), shipping Customer Setup (`5d018b6`) and quick register customer creation (`da3bcfe`).
+### Verification
+- ✅ GitHub `CI` green on `ec7607e` (run `46179216260`, `check` in **1m52s** + all 4 frontends).
+- ✅ Tagged release `v1.2.6` **PUBLISHED** (run `46179417521`: `build-linux` **3m23s**, `build-windows` **8m1s**, `publish` **14s**) — all 6 assets verified live at https://github.com/kielforeman-collab/decor-pos/releases/tag/v1.2.6:
+  - `Decor.POS_1.2.6_x64-setup.exe` (7.1 MB) — Windows NSIS installer
+  - `Decor.POS_1.2.6_x64_en-US.msi` (10.2 MB) — Windows MSI installer
+  - `df-server-v1.2.6-windows-x86_64.exe` (22.4 MB) — Windows server binary
+  - `Decor.POS-1.2.6-1.x86_64.rpm` (11.4 MB) — Linux RPM package
+  - `Decor.POS_1.2.6_amd64.AppImage` (85.2 MB) — Linux AppImage
+  - `df-server-v1.2.6-linux-x86_64` (27.3 MB) — Linux server binary
