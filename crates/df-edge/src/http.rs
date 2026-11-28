@@ -2599,7 +2599,7 @@ mod tests {
         let (status, body) = get_json(router.clone(), "/health", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ok");
-        assert_eq!(body["version"], "1.2.1");
+        assert_eq!(body["version"], "1.2.2");
 
         let (status, body) = post_json(
             router,

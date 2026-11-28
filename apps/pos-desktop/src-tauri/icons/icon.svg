@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Decor POS app icon. Same mark as the PWA icon
+       (apps/mobile-pwa/public/icon-512.png): navy rounded square with a
+       white ticket, cut by a navy band. Kept as SVG (text) so the icon set
+       can be generated in CI with `cargo tauri icon` without committing
+       binary icon files. -->
+  <rect width="512" height="512" fill="#1a1a2e"/>
+  <rect x="64" y="64" width="384" height="384" rx="48" fill="#ffffff"/>
+  <rect x="64" y="224" width="384" height="65" fill="#1a1a2e"/>
+</svg>

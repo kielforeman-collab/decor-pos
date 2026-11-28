@@ -79,7 +79,7 @@ pub struct ApiState {
 impl Default for ApiState {
     fn default() -> Self {
         Self {
-            version: "1.2.1",
+            version: "1.2.2",
             pool: None,
             org_id: None,
             store_id: None,
@@ -1375,7 +1375,7 @@ mod tests {
         let users = df_auth_http::test_support::seed_test_users(&pool, org_id).await;
         (
             ApiState {
-                version: "1.2.1",
+                version: "1.2.2",
                 pool: Some(pool),
                 org_id: Some(org_id),
                 store_id: Some(store_id),
@@ -1446,7 +1446,7 @@ mod tests {
             .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["status"], "ok");
-        assert_eq!(value["version"], "1.2.1");
+        assert_eq!(value["version"], "1.2.2");
     }
 
     #[tokio::test]
