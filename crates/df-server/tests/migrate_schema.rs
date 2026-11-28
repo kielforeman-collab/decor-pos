@@ -36,7 +36,7 @@ fn migrate_schema_applies_once_then_reports_up_to_date() {
     assert_eq!(first["dialect"], "sqlite");
     assert_eq!(
         first["newly_applied"],
-        serde_json::json!([1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16])
+        serde_json::json!([1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17])
     );
     // Second run, this time via DATABASE_URL: no changes, exit 0.
     let (code, stdout, stderr) = run_schema(&db, true);

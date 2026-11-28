@@ -635,9 +635,12 @@ export default function App() {
   }
 
   async function doOpenTill() {
+    if (!session?.user.id) {
+      fail('Sign in before opening a till.')
+      return
+    }
     try {
-      const cashierId = session?.user.id ?? '00000000-0000-7000-8000-000000000099'
-      const till = await openTill(cashierId, cad(openingFloat || '0.0000'))
+      const till = await openTill(session.user.id, cad(openingFloat || '0.0000'))
       setTillId(till.id)
       say(`Till open — float ${fmtMoney(cad(openingFloat || '0.0000'))}.`)
     } catch (e) {

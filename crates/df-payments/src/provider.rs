@@ -75,6 +75,22 @@ impl TenderKind {
             TenderKind::GiftCard => "Gift Card",
         }
     }
+
+    /// Parse a stored `payments.tender` string back to a [`TenderKind`].
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s {
+            "cash" => Some(Self::Cash),
+            "card" => Some(Self::Card),
+            "visa" => Some(Self::Visa),
+            "mastercard" => Some(Self::Mastercard),
+            "amex" => Some(Self::Amex),
+            "debit" => Some(Self::Debit),
+            "etransfer" => Some(Self::ETransfer),
+            "charge_account" => Some(Self::ChargeAccount),
+            "gift_card" => Some(Self::GiftCard),
+            _ => None,
+        }
+    }
 }
 
 /// Outcome of an authorization or refund.
@@ -132,6 +148,17 @@ pub trait PaymentProvider: Send + Sync {
     fn authorize<'a>(
         &'a self,
         req: &'a PaymentRequest,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<PaymentResult, PaymentError>> + Send + 'a>,
+    >;
+
+    /// Void / cancel a previously authorized transaction identified by
+    /// `transaction_ref` (a [`PaymentResult::reference`]). Used both
+    /// for auto-voiding an authorized card when a checkout fails before
+    /// commit and for operator voids before settlement.
+    fn void<'a>(
+        &'a self,
+        transaction_ref: &'a str,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<PaymentResult, PaymentError>> + Send + 'a>,
     >;

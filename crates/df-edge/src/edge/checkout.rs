@@ -109,6 +109,14 @@ pub(super) fn resolve_tenders(
     Ok((resolved, change_due))
 }
 
+/// Best-effort rollback of already-authorized card tenders when a
+/// later split-tender fails or the local SQLite commit fails.
+pub(super) async fn void_authorized_cards(provider: &dyn PaymentProvider, refs: &[String]) {
+    for reference in refs.iter().rev() {
+        let _ = provider.void(reference).await;
+    }
+}
+
 impl Edge {
     // --- checkout -----------------------------------------------------------
 
@@ -121,6 +129,19 @@ impl Edge {
         &self,
         input: SaleInput,
         provider: &dyn PaymentProvider,
+    ) -> Result<CompletedSale, EdgeError> {
+        self.checkout_as(input, provider, None).await
+    }
+
+    /// Same as [`Edge::checkout`], stamping `cashier_id` when supplied
+    /// (falling back to the open till's cashier when `None`). Any card
+    /// authorization taken before a split-tender decline or failed DB
+    /// commit is automatically voided via [`PaymentProvider::void`].
+    pub async fn checkout_as(
+        &self,
+        input: SaleInput,
+        provider: &dyn PaymentProvider,
+        cashier_id: Option<Uuid>,
     ) -> Result<CompletedSale, EdgeError> {
         self.validate_lines(&input.lines)?;
         if input.tenders.is_empty() {
@@ -167,13 +188,9 @@ impl Edge {
             });
         let grand_total = pre_surcharge.checked_add(pos_fee_total)?;
 
-        // Charge-account credit check (Phase 3): the charge
-        // portion is the tendered amount on ChargeAccount tenders
-        // (card surcharges never land on AR). Runs before any
-        // authorization or write, so a blocked charge leaves
-        // nothing behind. Returns the due date for the AR entry
-        // (sale date + the account's terms), or None when no
-        // charge is being made / no credit record has synced.
+        // Charge-account credit check (Phase 3): runs before any card
+        // authorization or write, so a blocked charge leaves nothing
+        // behind.
         let charge_total = resolved
             .iter()
             .filter(|t| t.kind == TenderKind::ChargeAccount)
@@ -185,31 +202,37 @@ impl Edge {
             .check_charge_credit(input.customer_id, charge_total)
             .await?;
 
-        // Authorize card tenders before writing anything. A
-        // branded card (Visa / Mastercard / Amex / Debit) authorizes
-        // through the same provider call as generic Card, with the
-        // same 3% surcharge — but the recorded tender stays the
-        // brand, never generic Card. E-Transfer authorizes nothing
-        // and carries no surcharge; its reference is the one the
-        // counter supplied (or `ETRANSFER` when none was given).
+        // Authorize card tenders before writing anything. Track every
+        // approved card reference so a later split-tender decline/error
+        // or a failed DB commit automatically voids prior authorizations.
         let mut payments: Vec<PaymentResult> = Vec::with_capacity(resolved.len());
+        let mut authorized_card_refs: Vec<String> = Vec::new();
         for tender in &resolved {
             match tender.kind {
                 kind if kind.is_card() => {
-                    let result = provider
+                    let result = match provider
                         .authorize(&PaymentRequest {
                             amount: tender.charged,
                             idempotency_key: Uuid::now_v7(),
                             tender: kind,
                             surcharge: tender.surcharge,
                         })
-                        .await?;
+                        .await
+                    {
+                        Ok(res) => res,
+                        Err(err) => {
+                            void_authorized_cards(provider, &authorized_card_refs).await;
+                            return Err(EdgeError::Payment(err));
+                        }
+                    };
                     if result.status != PaymentStatus::Approved {
+                        void_authorized_cards(provider, &authorized_card_refs).await;
                         return Err(EdgeError::PaymentDeclined(format!(
                             "card authorization declined (ref {})",
                             result.reference
                         )));
                     }
+                    authorized_card_refs.push(result.reference.clone());
                     payments.push(result);
                 }
                 TenderKind::ETransfer => payments.push(PaymentResult {
@@ -260,190 +283,203 @@ impl Edge {
             }
         }
 
-        let tx_id = Uuid::now_v7();
-        let now = Utc::now();
-        let till = df_db::open_till_for_store(&self.pool, self.config.store_id).await?;
-        let doc_number = format!(
-            "TX-{:06}",
-            df_db::count_transactions_for_store(&self.pool, self.config.store_id).await? + 1
-        );
-        let transaction = Transaction {
-            id: tx_id,
-            org_id: self.config.org_id,
-            store_id: self.config.store_id,
-            till_session_id: till.as_ref().map(|t| t.id),
-            doc_number: doc_number.clone(),
-            doc_type: "sale".to_string(),
-            status: "completed".to_string(),
-            customer_id: input.customer_id,
-            job_id: input.job_id,
-            po_number: input.po_number.clone(),
-            job_name: input.job_name.clone(),
-            salesperson_id: None,
-            cashier_id: till.as_ref().map(|t| t.cashier_id),
-            currency: self.currency().code().to_string(),
-            subtotal: priced.subtotal.amount(),
-            tax_total: priced.tax_total.amount(),
-            eco_fee_total: priced.eco_fee_total.amount(),
-            pos_fee_total: pos_fee_total.amount(),
-            grand_total: grand_total.amount(),
-            deposit_paid: Money::zero(self.currency()).amount(),
-            fulfillment_mode: "counter".to_string(),
-            scheduled_at: None,
-            completed_at: Some(now),
-            created_at: now,
-        };
+        // Persist the sale in one local SQLite transaction. If ANY DB
+        // step or the commit fails, auto-void every card authorization
+        // taken above so the customer is never left with an orphaned charge.
+        let persist_result: Result<(Uuid, String), EdgeError> = async {
+            let tx_id = Uuid::now_v7();
+            let now = Utc::now();
+            let till = df_db::open_till_for_store(&self.pool, self.config.store_id).await?;
+            let doc_number = format!(
+                "TX-{:06}",
+                df_db::count_transactions_for_store(&self.pool, self.config.store_id).await? + 1
+            );
+            let transaction = Transaction {
+                id: tx_id,
+                org_id: self.config.org_id,
+                store_id: self.config.store_id,
+                till_session_id: till.as_ref().map(|t| t.id),
+                doc_number: doc_number.clone(),
+                doc_type: "sale".to_string(),
+                status: "completed".to_string(),
+                customer_id: input.customer_id,
+                job_id: input.job_id,
+                po_number: input.po_number.clone(),
+                job_name: input.job_name.clone(),
+                salesperson_id: None,
+                cashier_id: cashier_id.or_else(|| till.as_ref().map(|t| t.cashier_id)),
+                currency: self.currency().code().to_string(),
+                subtotal: priced.subtotal.amount(),
+                tax_total: priced.tax_total.amount(),
+                eco_fee_total: priced.eco_fee_total.amount(),
+                pos_fee_total: pos_fee_total.amount(),
+                grand_total: grand_total.amount(),
+                deposit_paid: Money::zero(self.currency()).amount(),
+                fulfillment_mode: "counter".to_string(),
+                scheduled_at: None,
+                completed_at: Some(now),
+                created_at: now,
+            };
 
-        let mut db_tx = self.pool.begin().await.map_err(DbError::Sqlx)?;
-        df_db::insert_transaction(&mut *db_tx, &transaction).await?;
-        let mut outbox_entries: Vec<OutboxEntry> = Vec::new();
-        for (index, line) in priced.lines.iter().enumerate() {
-            let line_id = Uuid::now_v7();
-            df_db::insert_transaction_line(
-                &mut *db_tx,
-                &TransactionLine {
-                    id: line_id,
-                    transaction_id: tx_id,
-                    line_no: (index + 1) as i32,
-                    product_id: line.product_id,
-                    description: line.description.clone(),
-                    qty: line.qty,
-                    uom_code: line.uom.clone(),
-                    unit_price: line.unit_price.amount(),
-                    base_unit_cost: line.unit_cost.amount(),
-                    tint_unit_cost: Money::zero(self.currency()).amount(),
-                    discount_amount: Money::zero(self.currency()).amount(),
-                    tax_amount: line.tax_amount.amount(),
-                    eco_fee_amount: line.eco_fee_amount.amount(),
-                    line_total: line.line_total.amount(),
-                    tint_formula_id: None,
-                    prompts_json: serde_json::json!({}),
-                    vertical_spec_json: serde_json::json!({}),
-                    linked_po_line_id: None,
-                    fulfilled_qty: line.qty,
-                },
-            )
-            .await?;
-            let delta_id = Uuid::now_v7();
-            df_db::insert_inventory_delta(
-                &mut *db_tx,
-                &InventoryLedgerEntry {
-                    id: delta_id,
-                    org_id: self.config.org_id,
-                    store_id: self.config.store_id,
-                    product_id: line.product_id,
-                    lot_number: None,
-                    delta_on_hand: -line.qty,
-                    delta_committed: Decimal::ZERO,
-                    delta_on_order: Decimal::ZERO,
-                    delta_in_transit: Decimal::ZERO,
-                    unit_cost: line.unit_cost.amount(),
-                    reason_type: "sale".to_string(),
-                    reference_id: tx_id,
-                    created_at: now,
-                },
-            )
-            .await?;
+            let mut db_tx = self.pool.begin().await.map_err(DbError::Sqlx)?;
+            df_db::insert_transaction(&mut *db_tx, &transaction).await?;
+            let mut outbox_entries: Vec<OutboxEntry> = Vec::new();
+            for (index, line) in priced.lines.iter().enumerate() {
+                let line_id = Uuid::now_v7();
+                df_db::insert_transaction_line(
+                    &mut *db_tx,
+                    &TransactionLine {
+                        id: line_id,
+                        transaction_id: tx_id,
+                        line_no: (index + 1) as i32,
+                        product_id: line.product_id,
+                        description: line.description.clone(),
+                        qty: line.qty,
+                        uom_code: line.uom.clone(),
+                        unit_price: line.unit_price.amount(),
+                        base_unit_cost: line.unit_cost.amount(),
+                        tint_unit_cost: Money::zero(self.currency()).amount(),
+                        discount_amount: Money::zero(self.currency()).amount(),
+                        tax_amount: line.tax_amount.amount(),
+                        eco_fee_amount: line.eco_fee_amount.amount(),
+                        line_total: line.line_total.amount(),
+                        tint_formula_id: None,
+                        prompts_json: serde_json::json!({}),
+                        vertical_spec_json: serde_json::json!({}),
+                        linked_po_line_id: None,
+                        fulfilled_qty: line.qty,
+                    },
+                )
+                .await?;
+                let delta_id = Uuid::now_v7();
+                df_db::insert_inventory_delta(
+                    &mut *db_tx,
+                    &InventoryLedgerEntry {
+                        id: delta_id,
+                        org_id: self.config.org_id,
+                        store_id: self.config.store_id,
+                        product_id: line.product_id,
+                        lot_number: None,
+                        delta_on_hand: -line.qty,
+                        delta_committed: Decimal::ZERO,
+                        delta_on_order: Decimal::ZERO,
+                        delta_in_transit: Decimal::ZERO,
+                        unit_cost: line.unit_cost.amount(),
+                        reason_type: "sale".to_string(),
+                        reference_id: tx_id,
+                        created_at: now,
+                    },
+                )
+                .await?;
+                outbox_entries.push(OutboxEntry::new(
+                    self.config.store_id,
+                    "inventory_ledger",
+                    delta_id,
+                    serde_json::json!({
+                        "product_id": line.product_id.to_string(),
+                        "delta_on_hand": (-line.qty).to_string(),
+                        "delta_committed": "0",
+                        "delta_on_order": "0",
+                        "delta_in_transit": "0",
+                        "unit_cost": line.unit_cost.amount().to_string(),
+                        "lot_number": null,
+                        "reason_type": "sale",
+                        "reference_id": tx_id.to_string(),
+                        "created_at": now.to_rfc3339(),
+                    }),
+                ));
+            }
+
+            // Charge-account AR entry (the charge portion only — card
+            // surcharges never land on AR).
+            if !charge_total.is_zero() {
+                let customer_id = input.customer_id.expect("charge requires a customer");
+                let ar_id = Uuid::now_v7();
+                df_db::insert_ar_entry_exec(
+                    &mut *db_tx,
+                    &ArLedgerEntry {
+                        id: ar_id,
+                        org_id: self.config.org_id,
+                        store_id: self.config.store_id,
+                        customer_id,
+                        job_id: input.job_id,
+                        entry_type: "charge".to_string(),
+                        reference_type: "transaction".to_string(),
+                        reference_id: tx_id,
+                        amount: charge_total.amount(),
+                        due_date: charge_due_date,
+                        statement_id: None,
+                        created_at: now,
+                    },
+                )
+                .await?;
+                outbox_entries.push(OutboxEntry::new(
+                    self.config.store_id,
+                    "ar_ledger",
+                    ar_id,
+                    serde_json::json!({
+                        "customer_id": customer_id.to_string(),
+                        "amount": charge_total.amount().to_string(),
+                        "entry_type": "charge",
+                        "reference_type": "transaction",
+                        "reference_id": tx_id.to_string(),
+                        "due_date": charge_due_date.map(|d| d.to_string()),
+                        "job_id": input.job_id.map(|id| id.to_string()),
+                        "created_at": now.to_rfc3339(),
+                    }),
+                ));
+            }
+
+            for payment in &payments {
+                df_db::insert_payment(
+                    &mut *db_tx,
+                    &PaymentRow {
+                        id: Uuid::now_v7(),
+                        transaction_id: tx_id,
+                        tender: payment.tender.as_str().to_string(),
+                        amount: payment.amount.amount(),
+                        reference: payment.reference.clone(),
+                        authorization: payment.authorization.clone(),
+                        created_at: now,
+                    },
+                )
+                .await?;
+            }
+
             outbox_entries.push(OutboxEntry::new(
                 self.config.store_id,
-                "inventory_ledger",
-                delta_id,
+                "transaction",
+                tx_id,
                 serde_json::json!({
-                    "product_id": line.product_id.to_string(),
-                    "delta_on_hand": (-line.qty).to_string(),
-                    "delta_committed": "0",
-                    "delta_on_order": "0",
-                    "delta_in_transit": "0",
-                    "unit_cost": line.unit_cost.amount().to_string(),
-                    "lot_number": null,
-                    "reason_type": "sale",
-                    "reference_id": tx_id.to_string(),
-                    "created_at": now.to_rfc3339(),
-                }),
-            ));
-        }
-
-        // Charge-account AR entry (the charge portion only — card
-        // surcharges never land on AR). `charge_total` and
-        // `charge_due_date` were resolved (and credit-checked)
-        // before authorization, above.
-        if !charge_total.is_zero() {
-            let customer_id = input.customer_id.expect("charge requires a customer");
-            let ar_id = Uuid::now_v7();
-            df_db::insert_ar_entry_exec(
-                &mut *db_tx,
-                &ArLedgerEntry {
-                    id: ar_id,
-                    org_id: self.config.org_id,
-                    store_id: self.config.store_id,
-                    customer_id,
-                    job_id: input.job_id,
-                    entry_type: "charge".to_string(),
-                    reference_type: "transaction".to_string(),
-                    reference_id: tx_id,
-                    amount: charge_total.amount(),
-                    due_date: charge_due_date,
-                    statement_id: None,
-                    created_at: now,
-                },
-            )
-            .await?;
-            outbox_entries.push(OutboxEntry::new(
-                self.config.store_id,
-                "ar_ledger",
-                ar_id,
-                serde_json::json!({
-                    "customer_id": customer_id.to_string(),
-                    "amount": charge_total.amount().to_string(),
-                    "entry_type": "charge",
-                    "reference_type": "transaction",
-                    "reference_id": tx_id.to_string(),
-                    "due_date": charge_due_date.map(|d| d.to_string()),
+                    "id": tx_id.to_string(),
+                    "doc_number": doc_number,
+                    "doc_type": "sale",
+                    "status": "completed",
+                    "customer_id": input.customer_id.map(|id| id.to_string()),
                     "job_id": input.job_id.map(|id| id.to_string()),
-                    "created_at": now.to_rfc3339(),
+                    "po_number": input.po_number.clone(),
+                    "subtotal": priced.subtotal.amount().to_string(),
+                    "tax_total": priced.tax_total.amount().to_string(),
+                    "eco_fee_total": priced.eco_fee_total.amount().to_string(),
+                    "pos_fee_total": pos_fee_total.amount().to_string(),
+                    "grand_total": grand_total.amount().to_string(),
                 }),
             ));
+            for entry in &outbox_entries {
+                Outbox::enqueue_exec(&mut *db_tx, entry).await?;
+            }
+            db_tx.commit().await.map_err(DbError::Sqlx)?;
+            Ok((tx_id, doc_number))
         }
+        .await;
 
-        for payment in &payments {
-            df_db::insert_payment(
-                &mut *db_tx,
-                &PaymentRow {
-                    id: Uuid::now_v7(),
-                    transaction_id: tx_id,
-                    tender: payment.tender.as_str().to_string(),
-                    amount: payment.amount.amount(),
-                    reference: payment.reference.clone(),
-                    authorization: payment.authorization.clone(),
-                    created_at: now,
-                },
-            )
-            .await?;
-        }
-
-        outbox_entries.push(OutboxEntry::new(
-            self.config.store_id,
-            "transaction",
-            tx_id,
-            serde_json::json!({
-                "id": tx_id.to_string(),
-                "doc_number": doc_number,
-                "doc_type": "sale",
-                "status": "completed",
-                "customer_id": input.customer_id.map(|id| id.to_string()),
-                "job_id": input.job_id.map(|id| id.to_string()),
-                "po_number": input.po_number.clone(),
-                "subtotal": priced.subtotal.amount().to_string(),
-                "tax_total": priced.tax_total.amount().to_string(),
-                "eco_fee_total": priced.eco_fee_total.amount().to_string(),
-                "pos_fee_total": pos_fee_total.amount().to_string(),
-                "grand_total": grand_total.amount().to_string(),
-            }),
-        ));
-        for entry in &outbox_entries {
-            Outbox::enqueue_exec(&mut *db_tx, entry).await?;
-        }
-        db_tx.commit().await.map_err(DbError::Sqlx)?;
+        let (tx_id, doc_number) = match persist_result {
+            Ok(ok) => ok,
+            Err(err) => {
+                void_authorized_cards(provider, &authorized_card_refs).await;
+                return Err(err);
+            }
+        };
 
         // Best-effort receipt + drawer kick, after the commit.
         let kick_drawer = payments.iter().any(|p| p.tender == TenderKind::Cash);
@@ -503,8 +539,17 @@ impl Edge {
         &self,
         input: SaleInput,
     ) -> Result<CompletedSale, EdgeError> {
+        self.checkout_with_default_provider_as(input, None).await
+    }
+
+    /// HTTP checkout attributed to the signed-in cashier's `user_id`.
+    pub async fn checkout_with_default_provider_as(
+        &self,
+        input: SaleInput,
+        cashier_id: Option<Uuid>,
+    ) -> Result<CompletedSale, EdgeError> {
         let has_card = input.tenders.iter().any(|t| t.kind.is_card());
         let provider = self.http_provider(has_card)?;
-        self.checkout(input, provider.as_ref()).await
+        self.checkout_as(input, provider.as_ref(), cashier_id).await
     }
 }

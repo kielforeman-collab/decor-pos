@@ -306,3 +306,78 @@ where
     .await?;
     Ok(())
 }
+
+// --- POS counter holds (migration 0017) ----------------------------------
+
+/// One parked counter hold persisted in `pos_holds` so holds survive
+/// edge restarts.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PosHoldRow {
+    pub id: Uuid,
+    pub store_id: Uuid,
+    pub cashier_id: Option<Uuid>,
+    pub payload_json: String,
+    pub created_at: DateTime<Utc>,
+}
+
+fn pos_hold_from_row(row: &sqlx::any::AnyRow) -> Result<PosHoldRow, DbError> {
+    Ok(PosHoldRow {
+        id: uuid_col(row, "id")?,
+        store_id: uuid_col(row, "store_id")?,
+        cashier_id: opt_uuid_col(row, "cashier_id")?,
+        payload_json: text_col(row, "payload_json")?,
+        created_at: dt_col(row, "created_at")?,
+    })
+}
+
+pub async fn insert_pos_hold(pool: &AnyPool, hold: &PosHoldRow) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO pos_holds (id, store_id, cashier_id, payload_json, created_at) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(uuid_str(hold.id))
+    .bind(uuid_str(hold.store_id))
+    .bind(opt_uuid_str(hold.cashier_id))
+    .bind(&hold.payload_json)
+    .bind(dt_str(hold.created_at))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn list_pos_holds(pool: &AnyPool, store_id: Uuid) -> Result<Vec<PosHoldRow>, DbError> {
+    let rows =
+        sqlx::query("SELECT * FROM pos_holds WHERE store_id = $1 ORDER BY created_at ASC, id ASC")
+            .bind(uuid_str(store_id))
+            .fetch_all(pool)
+            .await?;
+    rows.iter().map(pos_hold_from_row).collect()
+}
+
+/// Atomically fetch and remove one parked hold for `(store_id, id)`.
+/// Returns [`DbError::NotFound`] if the hold does not exist or was
+/// already resumed.
+pub async fn take_pos_hold(
+    pool: &AnyPool,
+    store_id: Uuid,
+    id: Uuid,
+) -> Result<PosHoldRow, DbError> {
+    let mut tx = pool.begin().await?;
+    let row = sqlx::query("SELECT * FROM pos_holds WHERE id = $1 AND store_id = $2")
+        .bind(uuid_str(id))
+        .bind(uuid_str(store_id))
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| DbError::NotFound(format!("hold {id}")))?;
+    let hold = pos_hold_from_row(&row)?;
+    let deleted = sqlx::query("DELETE FROM pos_holds WHERE id = $1 AND store_id = $2")
+        .bind(uuid_str(id))
+        .bind(uuid_str(store_id))
+        .execute(&mut *tx)
+        .await?;
+    if deleted.rows_affected() == 0 {
+        return Err(DbError::NotFound(format!("hold {id}")));
+    }
+    tx.commit().await?;
+    Ok(hold)
+}

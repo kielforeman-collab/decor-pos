@@ -102,9 +102,10 @@ pub(super) async fn price_preview(
 
 pub(super) async fn checkout(
     State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
     Json(body): Json<SaleInput>,
 ) -> HandlerResult<CompletedSale> {
-    edge.checkout_with_default_provider(body)
+    edge.checkout_with_default_provider_as(body, Some(auth.user_id))
         .await
         .map(Json)
         .map_err(err_response)
@@ -127,10 +128,11 @@ pub(super) async fn void_transaction(
 
 pub(super) async fn return_transaction(
     State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
     Path(id): Path<Uuid>,
     Json(lines): Json<Vec<ReturnLineInput>>,
 ) -> HandlerResult<CompletedSale> {
-    edge.record_return(id, lines)
+    edge.record_return_as(id, lines, Some(auth.user_id))
         .await
         .map(Json)
         .map_err(err_response)
@@ -138,9 +140,10 @@ pub(super) async fn return_transaction(
 
 pub(super) async fn park_hold(
     State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
     Json(body): Json<SaleInput>,
 ) -> HandlerResult<HoldResponse> {
-    edge.park_hold(body)
+    edge.park_hold_as(body, Some(auth.user_id))
         .await
         .map(|hold_id| Json(HoldResponse { hold_id }))
         .map_err(err_response)
@@ -161,9 +164,10 @@ pub(super) async fn resume_hold(
 
 pub(super) async fn record_quote(
     State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
     Json(body): Json<SaleInput>,
 ) -> HandlerResult<TransactionIdResponse> {
-    edge.record_quote(body)
+    edge.record_quote_as(body, Some(auth.user_id))
         .await
         .map(|transaction_id| Json(TransactionIdResponse { transaction_id }))
         .map_err(err_response)
@@ -171,9 +175,10 @@ pub(super) async fn record_quote(
 
 pub(super) async fn record_layaway(
     State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
     Json(body): Json<LayawayRequest>,
 ) -> HandlerResult<TransactionIdResponse> {
-    edge.record_layaway_with_default_provider(body.sale, body.deposit)
+    edge.record_layaway_with_default_provider_as(body.sale, body.deposit, Some(auth.user_id))
         .await
         .map(|transaction_id| Json(TransactionIdResponse { transaction_id }))
         .map_err(err_response)

@@ -13,26 +13,26 @@
 //! `pos_fee_total` and collected on the card), computed with
 //! `df_payments::compute_surcharge`.
 //!
-//! Phase 1 limitations, stated plainly:
+//! Phase 1 counter completeness notes:
 //!
-//! * Returns do not call the payment provider for a refund; the
-//!   reversal is local (inventory + AR + outbox) and the refund must
-//!   be run on the terminal. A provider refund is a Phase 2 item.
+//! * Holds are persisted in SQLite (`pos_holds`, migration `0017`) so
+//!   parked carts survive edge restarts; quotes are persisted as
+//!   `doc_type = 'quote'` transactions with no inventory movement and
+//!   no outbox entries.
+//! * Card authorizations auto-void via [`PaymentProvider::void`] if a
+//!   split-tender authorization fails mid-checkout or if the local
+//!   SQLite commit fails, preventing orphaned charges.
+//! * Returns against card sales refund the original card reference(s)
+//!   via [`PaymentProvider::refund`] and persist negative refund
+//!   payment rows; operator voids void original card references when
+//!   a payment provider is configured.
+//! * Authenticated HTTP counter routes stamp the signed-in cashier's
+//!   `user_id` onto sales, returns, quotes, layaways, and holds.
 //! * A return validates the returned quantity against the original
 //!   line quantity, not against quantities already returned by
 //!   earlier returns of the same sale.
-//! * Holds live in memory (lost on restart); quotes are persisted as
-//!   `doc_type = 'quote'` transactions with no inventory movement and
-//!   no outbox entries.
-//! * If card authorization succeeds but the local commit then fails,
-//!   the authorization is not voided automatically (no compensation
-//!   yet); the orphan authorization must be voided on the terminal.
-//! * The Z-report's `expected_cash` counts cash payments on sales
-//!   only; cash handed back on a return is not tracked as a payment
-//!   (returns carry no payment rows in Phase 1).
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
 use df_db::models::{Organization, Store};
@@ -91,7 +91,6 @@ pub struct Edge {
     /// with [`Edge::set_remote_hq`]. Preferred over the in-process
     /// `hq` by [`Edge::sync_now_with_configured_hq`].
     remote_hq: Arc<RwLock<Option<RemoteHq>>>,
-    holds: Arc<Mutex<HashMap<Uuid, SaleInput>>>,
     events: broadcast::Sender<String>,
     /// Operator-configured product min levels for the low-stock
     /// report (no min-level table exists yet — see `df-reports`).
@@ -128,11 +127,11 @@ impl Edge {
     ///
     /// Remote HQ: when both `DF_HQ_URL` and `DF_HQ_TOKEN` are set
     /// (non-empty), the edge pushes its outbox to that HQ
-    /// (`POST {DF_HQ_URL}/api/v1/sync/ingest`, staff session token
-    /// with the `SyncIngest` permission — Manager/Admin only, 8h
-    /// TTL). Either variable missing means no remote HQ; the
-    /// in-process sink ([`Edge::set_hq`]) still works for offline
-    /// tests. The token is held in memory only, never logged.
+    /// (`POST {DF_HQ_URL}/api/v1/sync/ingest`, with a store-scoped
+    /// `dfs_` service token or staff session token with `SyncIngest`).
+    /// Either variable missing means no remote HQ; the in-process sink
+    /// ([`Edge::set_hq`]) still works for offline tests. The token is
+    /// held in memory only, never logged.
     pub async fn open(config: EdgeConfig) -> Result<Self, EdgeError> {
         let pool = df_db::connect(&config.db_url).await?;
         df_db::migrate(&pool, df_db::Dialect::Sqlite).await?;
@@ -154,7 +153,6 @@ impl Edge {
             provider: Arc::new(RwLock::new(None)),
             hq: Arc::new(RwLock::new(None)),
             remote_hq: Arc::new(RwLock::new(remote_hq)),
-            holds: Arc::new(Mutex::new(HashMap::new())),
             events,
             product_thresholds: Arc::new(RwLock::new(Vec::new())),
             email_outbox_dir: Arc::new(RwLock::new(None)),
@@ -498,6 +496,7 @@ pub(crate) mod test_support {
     use crate::payments::TenderKind;
     use crate::types::TenderInput;
     use df_db::models::{Organization, Product, Store};
+    use std::sync::Mutex;
 
     pub(crate) fn test_config() -> EdgeConfig {
         EdgeConfig {

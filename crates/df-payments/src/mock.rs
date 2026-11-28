@@ -33,6 +33,8 @@ enum MockMode {
 pub struct MockTerminal {
     mode: Mutex<MockMode>,
     calls: Mutex<Vec<PaymentRequest>>,
+    voided_refs: Mutex<Vec<String>>,
+    refunded: Mutex<Vec<(String, Money)>>,
     approved_by_key: Mutex<HashMap<Uuid, PaymentResult>>,
     approved_by_ref: Mutex<HashMap<String, PaymentResult>>,
     counter: Mutex<u64>,
@@ -44,6 +46,8 @@ impl MockTerminal {
         Self {
             mode: Mutex::new(MockMode::ApproveAll),
             calls: Mutex::new(Vec::new()),
+            voided_refs: Mutex::new(Vec::new()),
+            refunded: Mutex::new(Vec::new()),
             approved_by_key: Mutex::new(HashMap::new()),
             approved_by_ref: Mutex::new(HashMap::new()),
             counter: Mutex::new(0),
@@ -55,6 +59,8 @@ impl MockTerminal {
         Self {
             mode: Mutex::new(MockMode::DeclineAll(reason.to_string())),
             calls: Mutex::new(Vec::new()),
+            voided_refs: Mutex::new(Vec::new()),
+            refunded: Mutex::new(Vec::new()),
             approved_by_key: Mutex::new(HashMap::new()),
             approved_by_ref: Mutex::new(HashMap::new()),
             counter: Mutex::new(0),
@@ -67,6 +73,8 @@ impl MockTerminal {
         Self {
             mode: Mutex::new(MockMode::Script(script.into())),
             calls: Mutex::new(Vec::new()),
+            voided_refs: Mutex::new(Vec::new()),
+            refunded: Mutex::new(Vec::new()),
             approved_by_key: Mutex::new(HashMap::new()),
             approved_by_ref: Mutex::new(HashMap::new()),
             counter: Mutex::new(0),
@@ -77,6 +85,16 @@ impl MockTerminal {
     /// Idempotent replays are not recorded twice.
     pub fn calls(&self) -> Vec<PaymentRequest> {
         self.calls.lock().expect("mock terminal lock").clone()
+    }
+
+    /// Snapshot of every `void` transaction reference received, in order.
+    pub fn voided_refs(&self) -> Vec<String> {
+        self.voided_refs.lock().expect("mock terminal lock").clone()
+    }
+
+    /// Snapshot of every `(transaction_ref, amount)` refund received, in order.
+    pub fn refunds(&self) -> Vec<(String, Money)> {
+        self.refunded.lock().expect("mock terminal lock").clone()
     }
 }
 
@@ -150,6 +168,48 @@ impl PaymentProvider for MockTerminal {
         })
     }
 
+    fn void<'a>(
+        &'a self,
+        transaction_ref: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<PaymentResult, PaymentError>> + Send + 'a>,
+    > {
+        let transaction_ref = transaction_ref.to_string();
+        Box::pin(async move {
+            self.voided_refs
+                .lock()
+                .expect("mock terminal lock")
+                .push(transaction_ref.clone());
+            let prior = self
+                .approved_by_ref
+                .lock()
+                .expect("mock terminal lock")
+                .get(&transaction_ref)
+                .cloned();
+            let n = {
+                let mut counter = self.counter.lock().expect("mock terminal lock");
+                *counter += 1;
+                *counter
+            };
+            let (amount, surcharge, tender) = match prior {
+                Some(res) => (res.amount, res.surcharge, res.tender),
+                None => (
+                    Money::zero(df_domain::Currency::Usd),
+                    Money::zero(df_domain::Currency::Usd),
+                    TenderKind::Card,
+                ),
+            };
+            Ok(PaymentResult {
+                status: PaymentStatus::Voided,
+                authorization: Some(format!("MOCKVD{n:06}")),
+                reference: format!("mock_void_{n}"),
+                amount,
+                surcharge,
+                tender,
+            })
+        })
+    }
+
     fn refund<'a>(
         &'a self,
         transaction_ref: &'a str,
@@ -159,6 +219,10 @@ impl PaymentProvider for MockTerminal {
     > {
         let transaction_ref = transaction_ref.to_string();
         Box::pin(async move {
+            self.refunded
+                .lock()
+                .expect("mock terminal lock")
+                .push((transaction_ref.clone(), amount));
             // Refunds keep the original tender when the transaction is known.
             let tender = self
                 .approved_by_ref

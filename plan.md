@@ -43,7 +43,7 @@ only its own section, ticking items as they are verified — not when code merel
 ### GitHub
 - ✅ Pushed via connector in ONE commit `267edca` (111 files). Connector writes confirmed working.
 ### Known limits
-- Returns don't refund via provider; holds in-memory; card authorized before a failed commit isn't auto-voided; POS cashier sign-in not wired (fixed demo id).
+- ✅ All four Phase 1 counter limits (provider refunds on returns, DB-backed holds, card auto-void on failed commit, and real signed-in cashier attribution) were closed on Nov 28, 2026 (see bottom section).
 
 ## Phase 2 — Formula Tracking & Vendor EDI (v0.3) — ✅ DONE Nov 25, 2026; rescoped Nov 26, 2026
 ### Scope — kept (formula tracking only; Kiel, Nov 26: the POS tracks formulas, it never drives a tint machine)
@@ -419,3 +419,20 @@ only its own section, ticking items as they are verified — not when code merel
 ### GitHub
 - ✅ Pushed to `main`: `f2ed8cc` (`feat(security,sync): close F8/F10 with dead-letter queue, store service tokens, CORS & auth rate limiting`).
 
+## POS counter completeness (Phase 1 caveats closed) — ✅ DONE Nov 28, 2026
+### Scope
+- ✅ **DB-backed holds (`0017_pos_holds.sql`, SQLite & Postgres):**
+  - Added `pos_holds` table (`id`, `store_id`, `cashier_id`, `payload_json`, `created_at`) and `df-db::transactions` repos (`PosHoldRow`, `insert_pos_hold`, `list_pos_holds`, atomic `take_pos_hold`).
+  - Removed the in-memory `holds` map from `df-edge::Edge`; `park_hold` / `park_hold_as` / `list_holds` / `resume_hold` now persist across edge restarts.
+- ✅ **Real signed-in cashier attribution:**
+  - Added `checkout_as`, `checkout_with_default_provider_as`, `record_return_as`, `record_return_with_provider`, `park_hold_as`, `record_quote_as`, `record_layaway_as`, and `record_layaway_with_default_provider_as` on `Edge`.
+  - Wired `Extension<AuthSession>` (`auth.user_id`) in `crates/df-edge/src/http/pos.rs` across checkout, return, hold, quote, and layaway handlers.
+  - Removed hardcoded demo cashier UUID fallback in `apps/pos-desktop/src/App.tsx::doOpenTill`.
+- ✅ **Card auto-void on failed split-tender / failed DB commit:**
+  - Added `PaymentProvider::void` (`df-payments`, implemented on `MockTerminal`, `StandaloneTerminal`, `StripeTerminal`, plus `MockTerminal::voided_refs()` / `refunds()` tracking and `TenderKind::from_str_opt`).
+  - `Edge::checkout_as` and `Edge::record_layaway_as` automatically void all previously authorized card references via `PaymentProvider::void` if a later split-tender declines/errors or if the local SQLite write/commit fails.
+- ✅ **Card provider refunds on returns & voids:**
+  - `Edge::record_return_inner` refunds original card payment references via `PaymentProvider::refund` (capped to each card payment's amount using exact `Decimal` math), persists negative refund `PaymentRow` rows on the return transaction, and returns them in `CompletedSale.payments` + return receipts.
+  - `Edge::void_transaction` / `void_transaction_with_provider` voids original card payment references through the configured payment provider before flipping status to `"voided"`.
+### Verification
+- 🔄 Local fmt, clippy (`-D warnings`), float-money guard, PCI migration scan, `pos_counter_completeness` integration suite, `pos-desktop` `npm run build`, and GitHub CI verification in progress.

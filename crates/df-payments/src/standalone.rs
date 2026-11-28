@@ -146,6 +146,59 @@ impl PaymentProvider for StandaloneTerminal {
         })
     }
 
+    fn void<'a>(
+        &'a self,
+        transaction_ref: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<PaymentResult, PaymentError>> + Send + 'a>,
+    > {
+        let transaction_ref = transaction_ref.to_string();
+        Box::pin(async move {
+            // Remove from pending if unconfirmed, and record a void entry
+            // so the end-of-day reconciliation log matches the physical terminal.
+            let prior = self
+                .pending
+                .lock()
+                .expect("standalone lock")
+                .remove(&transaction_ref);
+            let amount = prior
+                .map(|r| r.amount)
+                .or_else(|| {
+                    self.records
+                        .lock()
+                        .expect("standalone lock")
+                        .iter()
+                        .find(|r| r.reference == transaction_ref)
+                        .map(|r| r.amount)
+                })
+                .unwrap_or_else(|| Money::zero(df_domain::Currency::Usd));
+            let reference = format!("void:{transaction_ref}");
+            self.records
+                .lock()
+                .expect("standalone lock")
+                .push(ReconciliationRecord {
+                    reference: reference.clone(),
+                    amount,
+                    authorized_at: Utc::now(),
+                });
+            let tender = self
+                .tenders
+                .lock()
+                .expect("standalone lock")
+                .get(&transaction_ref)
+                .copied()
+                .unwrap_or(TenderKind::Card);
+            Ok(PaymentResult {
+                status: PaymentStatus::Voided,
+                authorization: None,
+                reference,
+                amount,
+                surcharge: Money::zero(amount.currency()),
+                tender,
+            })
+        })
+    }
+
     fn refund<'a>(
         &'a self,
         transaction_ref: &'a str,

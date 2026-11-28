@@ -80,6 +80,25 @@ impl PaymentProvider for StripeTerminal {
         })
     }
 
+    fn void<'a>(
+        &'a self,
+        _transaction_ref: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<PaymentResult, PaymentError>> + Send + 'a>,
+    > {
+        let has_credentials = self.has_credentials();
+        Box::pin(async move {
+            if !has_credentials {
+                return Err(PaymentError::MissingCredentials(
+                    "Stripe Terminal credentials are not configured".to_string(),
+                ));
+            }
+            Err(PaymentError::NotSupported(
+                "Stripe Terminal live calls are not implemented in Phase 1".to_string(),
+            ))
+        })
+    }
+
     fn refund<'a>(
         &'a self,
         _transaction_ref: &'a str,

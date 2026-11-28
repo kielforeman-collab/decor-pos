@@ -1,8 +1,11 @@
-//! Sale returns: inventory & AR reversal with outbox recording.
+//! Sale returns: inventory, AR, and card-provider refund reversal with
+//! outbox recording.
 
 use chrono::Utc;
 use df_db::DbError;
-use df_db::models::{ArLedgerEntry, InventoryLedgerEntry, Transaction, TransactionLine};
+use df_db::models::{
+    ArLedgerEntry, InventoryLedgerEntry, PaymentRow, Transaction, TransactionLine,
+};
 use df_domain::Money;
 use df_sync::{Outbox, OutboxEntry};
 use rust_decimal::Decimal;
@@ -11,6 +14,7 @@ use uuid::Uuid;
 use super::{Edge, money_add};
 use crate::error::EdgeError;
 use crate::hw::{ReceiptData, ReceiptLine};
+use crate::payments::{PaymentProvider, PaymentResult, PaymentStatus, TenderKind};
 use crate::pricing::{PricedLine, PricingContext, tax_and_eco_for};
 use crate::types::{CompletedSale, ReturnLineInput};
 
@@ -18,13 +22,50 @@ impl Edge {
     // --- returns ------------------------------------------------------------
 
     /// Record a return against a completed sale: negative-qty lines
-    /// reversing inventory (and AR when the original was charged),
-    /// with outbox entries. No provider refund is issued in Phase 1
-    /// (see module docs).
+    /// reversing inventory, AR credit memo when originally charged,
+    /// and card provider refund via the default payment provider when
+    /// the original sale was paid by card.
     pub async fn record_return(
         &self,
         original_tx_id: Uuid,
         lines: Vec<ReturnLineInput>,
+    ) -> Result<CompletedSale, EdgeError> {
+        self.record_return_as(original_tx_id, lines, None).await
+    }
+
+    /// Same as [`Edge::record_return`], stamping the signed-in
+    /// `cashier_id` and refunding original card payments via the
+    /// configured default payment provider.
+    pub async fn record_return_as(
+        &self,
+        original_tx_id: Uuid,
+        lines: Vec<ReturnLineInput>,
+        cashier_id: Option<Uuid>,
+    ) -> Result<CompletedSale, EdgeError> {
+        let provider = self.default_provider();
+        self.record_return_inner(original_tx_id, lines, provider.as_deref(), cashier_id)
+            .await
+    }
+
+    /// Record a return using an explicit [`PaymentProvider`] (useful
+    /// when a caller manages its own provider handle).
+    pub async fn record_return_with_provider(
+        &self,
+        original_tx_id: Uuid,
+        lines: Vec<ReturnLineInput>,
+        provider: &dyn PaymentProvider,
+        cashier_id: Option<Uuid>,
+    ) -> Result<CompletedSale, EdgeError> {
+        self.record_return_inner(original_tx_id, lines, Some(provider), cashier_id)
+            .await
+    }
+
+    async fn record_return_inner(
+        &self,
+        original_tx_id: Uuid,
+        lines: Vec<ReturnLineInput>,
+        provider: Option<&dyn PaymentProvider>,
+        cashier_id: Option<Uuid>,
     ) -> Result<CompletedSale, EdgeError> {
         if lines.is_empty() {
             return Err(EdgeError::InvalidInput("return has no lines".to_string()));
@@ -99,6 +140,50 @@ impl Edge {
             .checked_add(eco_fee_total)?;
         let pos_fee_total = zero;
 
+        let original_payments =
+            df_db::list_payments_for_transaction(&self.pool, original_tx_id).await?;
+        let was_charged = original_payments
+            .iter()
+            .any(|p| p.tender == "charge_account");
+        let card_payments: Vec<&PaymentRow> = original_payments
+            .iter()
+            .filter(|p| {
+                p.amount > Decimal::ZERO
+                    && TenderKind::from_str_opt(&p.tender).is_some_and(TenderKind::is_card)
+            })
+            .collect();
+
+        // Issue card refunds through the payment provider before writing
+        // the return rows, capping each refund chunk at the original card
+        // payment amount (exact Decimal arithmetic — zero floats).
+        let mut refund_payments: Vec<PaymentResult> = Vec::new();
+        if !card_payments.is_empty() {
+            let Some(provider) = provider else {
+                return Err(EdgeError::NoPaymentProvider(
+                    "no payment provider configured for card refund (call Edge::set_payment_provider)"
+                        .to_string(),
+                ));
+            };
+            let mut remaining = -grand_total.amount();
+            for orig_payment in &card_payments {
+                if remaining <= Decimal::ZERO {
+                    break;
+                }
+                let chunk = remaining.min(orig_payment.amount);
+                let result = provider
+                    .refund(&orig_payment.reference, Money::new(chunk, currency))
+                    .await?;
+                if result.status != PaymentStatus::Approved {
+                    return Err(EdgeError::PaymentDeclined(format!(
+                        "card refund declined (ref {})",
+                        result.reference
+                    )));
+                }
+                remaining -= chunk;
+                refund_payments.push(result);
+            }
+        }
+
         let tx_id = Uuid::now_v7();
         let now = Utc::now();
         let doc_number = format!(
@@ -118,7 +203,7 @@ impl Edge {
             po_number: original.po_number.clone(),
             job_name: original.job_name.clone(),
             salesperson_id: None,
-            cashier_id: original.cashier_id,
+            cashier_id: cashier_id.or(original.cashier_id),
             currency: currency.code().to_string(),
             subtotal: subtotal.amount(),
             tax_total: tax_total.amount(),
@@ -131,11 +216,6 @@ impl Edge {
             completed_at: Some(now),
             created_at: now,
         };
-        let original_payments =
-            df_db::list_payments_for_transaction(&self.pool, original_tx_id).await?;
-        let was_charged = original_payments
-            .iter()
-            .any(|p| p.tender == "charge_account");
 
         let mut db_tx = self.pool.begin().await.map_err(DbError::Sqlx)?;
         df_db::insert_transaction(&mut *db_tx, &transaction).await?;
@@ -240,6 +320,21 @@ impl Edge {
                 }),
             ));
         }
+        for refund in &refund_payments {
+            df_db::insert_payment(
+                &mut *db_tx,
+                &PaymentRow {
+                    id: Uuid::now_v7(),
+                    transaction_id: tx_id,
+                    tender: refund.tender.as_str().to_string(),
+                    amount: -refund.amount.amount(),
+                    reference: refund.reference.clone(),
+                    authorization: refund.authorization.clone(),
+                    created_at: now,
+                },
+            )
+            .await?;
+        }
         outbox_entries.push(OutboxEntry::new(
             self.config.store_id,
             "transaction",
@@ -282,7 +377,7 @@ impl Edge {
                 eco_fee_total,
                 pos_fee_total,
                 grand_total,
-                payments: Vec::new(),
+                payments: refund_payments.iter().map(Self::payment_summary).collect(),
                 change_due: zero,
             },
             false,
@@ -307,7 +402,7 @@ impl Edge {
             pos_fee_total,
             grand_total,
             change_due: zero,
-            payments: Vec::new(),
+            payments: refund_payments,
             receipt_printed,
         })
     }
