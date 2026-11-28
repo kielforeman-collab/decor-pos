@@ -520,3 +520,17 @@ only its own section, ticking items as they are verified — not when code merel
 ### GitHub
 - ✅ Pushed to `main`: `c7b619c` (`fix(ui): keep Products detail pane visible with independent scrolling`), `82084da` (`feat(products): persist Product UPC and lossless source spreadsheet fields on import`).
 
+## Release v1.2.5 — ✅ PUBLISHED Nov 28, 2026
+### Scope
+- ✅ Version bump `1.2.4 → 1.2.5` across workspace `Cargo.toml` (+ `Cargo.lock`), `apps/pos-desktop`, `tauri.conf.json`, `df-api`, test assertions, `docs/self-hosting.md`, and `docs/index.html` (`5d16053`), shipping the Products screen split-pane scroll fix (`c7b619c`) and lossless `.xls`/`.xlsx`/`.csv` import + Product UPC persistence/barcode lookup/ZPL shelf-tag UPC (`82084da`).
+### Verification
+- ✅ GitHub `CI` green on `5d16053` (run `46168285156`, `check` in **1m39s** + all 4 frontends).
+- ✅ Tagged release `v1.2.5` **PUBLISHED** (run `46168470269`: `build-linux` **3m30s**, `build-windows` **8m13s**, `publish` **15s**) — all 6 assets verified live at https://github.com/kielforeman-collab/decor-pos/releases/tag/v1.2.5:
+  - `Decor.POS_1.2.5_x64-setup.exe` (7.4 MB) — Windows NSIS installer
+  - `Decor.POS_1.2.5_x64_en-US.msi` (10.7 MB) — Windows MSI installer
+  - `df-server-v1.2.5-windows-x86_64.exe` (23.4 MB) — Windows server binary
+  - `Decor.POS-1.2.5-1.x86_64.rpm` (11.9 MB) — Linux RPM package
+  - `Decor.POS_1.2.5_amd64.AppImage` (89.4 MB) — Linux AppImage
+  - `df-server-v1.2.5-linux-x86_64` (28.5 MB) — Linux server binary
+
+
