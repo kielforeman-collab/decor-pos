@@ -14,16 +14,16 @@
 @font-face { font-family: 'Courier Prime'; font-style: normal; font-weight: 700; font-display: swap; src: url('/fonts/CourierPrime-700.woff2') format('woff2'); }
 @font-face { font-family: 'Michroma'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/Michroma-400.woff2') format('woff2'); }
 
-/* --- Defaults (:root = TOS tokens, the default theme) --- */
+/* --- Defaults (:root = Document · B/W tokens, the default theme) --- */
 :root {
-  --touch-min: 56px; --pill: 6px; --elbow: 0px; --rail: 8px; --block-gap: 5px;
-  --bg: #cfc9b8; --panel: #e9e3cf; --panel-2: #ddd6bf; --ink: #171713; --ink-2: #4d4a3e;
-  --ink-3: #6f6a5a; --line: #a39d88; --line-strong: #121212; --field: #fffdf2; --sel: #ffe9a8;
-  --accent: #234f9e; --accent-ink: #f2edda; --chip: #121212; --chip-ink: #f2edda;
-  --good: #3d9948; --warn: #d9a441; --bad: #bc2117;
-  --font-body: Helvetica, Arial, sans-serif; --font-display: 'Michroma', 'Antonio', sans-serif;
-  --font-cond: 'Barlow Condensed', 'Arial Narrow', sans-serif; --font-mono: 'Courier Prime', 'Courier New', monospace;
-  --font-size: 15px;
+  --touch-min: 40px; --pill: 6px; --elbow: 0px; --rail: 3px; --block-gap: 6px;
+  --bg: #ececea; --panel: #ffffff; --panel-2: #f4f4f0; --ink: #111111; --ink-2: #55554f;
+  --ink-3: #77776e; --line: #d9d9d9; --line-strong: #111111; --field: #ffffff; --sel: #ececea;
+  --accent: #111111; --accent-ink: #ffffff; --chip: #111111; --chip-ink: #ffffff;
+  --good: #2e7d32; --warn: #8a6d00; --bad: #b00020;
+  --font-body: 'Archivo', system-ui, sans-serif; --font-display: 'Antonio', sans-serif;
+  --font-cond: 'Archivo', sans-serif; --font-mono: 'Courier Prime', monospace;
+  --font-size: 14px;
 }
 
 :root[data-theme="expanse"] {

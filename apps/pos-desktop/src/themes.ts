@@ -87,7 +87,7 @@ export const BUILTIN_THEMES: ThemeDef[] = [
   },
 ]
 
-export const DEFAULT_THEME_ID: ThemeId = 'tos'
+export const DEFAULT_THEME_ID: ThemeId = 'mono'
 
 export interface CustomTheme {
   id: string
