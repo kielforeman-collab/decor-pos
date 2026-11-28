@@ -321,3 +321,18 @@ only its own section, ticking items as they are verified — not when code merel
 - The release jobs do not re-run the test suite: a tag points at a main commit, and the check job runs on every push to main, so tagged code has already passed tests + clippy + fmt. A tag cut on a commit whose check run has not finished yet would ship untested code.
 - `df-server` is the only server binary in the release (edge + HQ modes in one binary); the mobile PWA / Tauri Mobile wrapper is not built here.
 - Windows installer needs WebView2 on the target machine (standard on Windows 10/11); the MSI build downloads WiX on first run.
+
+## pos-desktop polish & default theme — ✅ DONE Nov 27, 2026
+### Scope
+- ✅ Multi-line same-SKU ticket preview fix (`apps/pos-desktop/src/components/Ticket.tsx`): `lineAmount` matches server preview lines by row index (verified against `product_id`) instead of `.find()`, and uses exact decimal helpers (`mulDecimals` + `discountedPrice`) instead of `Number()` for provisional totals.
+- ✅ Real tint color swatches (`types.ts`, `TintModal.tsx`, `Ticket.tsx`): added optional `colorHex?: string | null` to `TintInfo`, persisted `rgb_hex` through `TintModal`, and rendered the actual swatch hex on ticket lines instead of hardcoded `#3d4a57`.
+- ✅ Sidebar cleanup (`Sidebar.tsx`): removed hardcoded `badge: '2'` on `Deliveries`.
+- ✅ Custom theme contrast (`styles.css`): `:root[data-theme="custom"]` now derives `--panel`, `--panel-2`, `--field`, `--ink-2`, `--ink-3`, `--line`, `--line-strong`, and `--sel` via `color-mix(in srgb, ...)` for readable hierarchy.
+- ✅ Lazy-loaded SheetJS (`productImport.ts`): converted `xlsx` to a type-only import + dynamic `await import('xlsx')` inside `parseImportFile`, splitting SheetJS into its own on-demand chunk.
+- ✅ Default theme (`themes.ts`, `styles.css`): switched `DEFAULT_THEME_ID` and `:root` fallback tokens from `tos` to `mono` (`Document · B/W`) so initial paint matches without FOUC; all themes (`tos`, `lcars`, `expanse`, `dark`, custom) stay selectable.
+- ✅ `.gitignore`: added `node_modules/`, `dist/`, and `*.tsbuildinfo`.
+### Verification
+- ✅ `apps/pos-desktop` `npm run build` (`tsc -b && vite build`) clean with zero errors and zero chunk-size warnings: main JS bundle `384.13 kB` (down from ~720 kB), lazy `xlsx` chunk `429.52 kB`.
+### GitHub
+- ✅ Pushed to `main`: `0f40ba8` (polish fixes + `.gitignore`) and `ff901ab` (default theme `mono`).
+
