@@ -342,12 +342,13 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ `crates/df-edge/src/edge.rs` (1,965 lines) → `crates/df-edge/src/edge/`: split into `mod.rs` (`Edge` struct, init/config/pricing/serve/`test_support`), `checkout.rs`, `tills.rs`, `returns.rs`, `holds_quotes.rs`, and `sync.rs`.
 - ✅ `crates/df-api/src/lib.rs` (2,070 lines) → split into `lib.rs` (state, OpenAPI `ApiDoc`, router, re-exports), `schemas.rs`, `auth.rs`, `tinting.rs`, `reports.rs`, `reads.rs`, and `tests.rs` (all public exports and OpenAPI 3.1 paths preserved).
 - ✅ `crates/df-server/src/main.rs` (2,197 lines) → split into `main.rs` (dispatch + unit tests), `cli.rs`, `db.rs`, `hq.rs`, `edge.rs`, `ops.rs`, `edi.rs`, and `users.rs`.
+- ✅ `crates/df-edge/src/inventory.rs` (1,554 lines) → `crates/df-edge/src/inventory/`: split into `mod.rs` (balances, reorder points, product import, shelf tags, shared outbox helper, public re-exports), `purchasing.rs` (replenishment + POs), `transfers.rs`, `counts.rs`, `pricing.rs`, and `ar_reads.rs`.
 - ✅ Bonus Rust 1.100 clippy fix in `crates/df-db/src/vendors.rs`: replaced redundant closure with `crate::purchase_orders::po_from_row`.
 ### Verification
 - ✅ `cargo fmt --all -- --check` — clean.
 - ✅ `cargo clippy --workspace --all-targets -- -D warnings` — clean across all workspace crates.
-- ✅ `cargo test -p df-api -p df-server -p df-edge` — **105 passed, 0 failed** across 27 test suites (incl. unit, HTTP auth/RBAC, checkout/tills/returns, EDI, CRM, POD, portal, scheduling, product import, first-admin setup, edge/HQ modes, and migrations).
+- ✅ `cargo test -p df-api -p df-server -p df-edge` — **105 passed, 0 failed** across 27 test suites (after `1ce55f9`), plus `cargo test -p df-edge --lib --test inventory_backoffice --test product_import --test ar_statement_batch` — **38 passed, 0 failed** after the `inventory/` split.
 ### GitHub
-- ✅ Pushed to `main` (see latest commit).
+- ✅ Pushed to `main`: `1ce55f9` (`http/`, `edge/`, `df-api`, `df-server`, `df-db` clippy fix) + follow-up commit for `inventory/`.
 
 
