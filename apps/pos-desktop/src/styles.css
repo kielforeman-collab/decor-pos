@@ -773,6 +773,27 @@ kbd { background: #eee; border: 1px solid #999; border-radius: 3px; padding: 0 5
 .screen-panel h3 { margin: 0 0 6px; font-size: 0.95rem; font-family: var(--font-display); }
 .screen-panel h4 { margin: 0 0 4px; font-size: 0.9rem; }
 .screen-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 10px; align-items: start; }
+.screen-split > .screen-panel:last-child {
+  position: sticky;
+  top: 0;
+  max-height: calc(100vh - 178px);
+  overflow-y: auto;
+}
+.screen-scroll-pane {
+  overflow-y: auto;
+  max-height: calc(100vh - 290px);
+  min-height: 220px;
+}
+.screen-scroll-pane .screen-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--panel-2);
+  z-index: 1;
+}
+@media (max-width: 900px) {
+  .screen-split { grid-template-columns: minmax(0, 1fr); }
+  .screen-split > .screen-panel:last-child { position: static; max-height: none; overflow-y: visible; }
+}
 .screen-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
 .screen-table th, .screen-table td { padding: 3px 6px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: middle; }
 .screen-table th { color: var(--ink-3); font-weight: 600; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.03em; }

@@ -107,6 +107,7 @@ export default function ProductsScreen({
   const [importResult, setImportResult] = useState<ProductImportResponse | null>(null)
   const [importing, setImporting] = useState(false)
   const importInputRef = useRef<HTMLInputElement>(null)
+  const detailPanelRef = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async () => {
     if (!storeId) return
@@ -147,6 +148,14 @@ export default function ProductsScreen({
   }, [q])
 
   const point = selected ? points.find((p) => p.product_id === selected.product_id) ?? null : null
+  const selectedProductId = selected?.product_id ?? null
+
+  // Reset the independent detail pane to the top when switching products.
+  useEffect(() => {
+    if (selectedProductId) {
+      detailPanelRef.current?.scrollTo({ top: 0 })
+    }
+  }, [selectedProductId])
 
   // Prefill the reorder-point form whenever the selection changes.
   useEffect(() => {
@@ -428,34 +437,36 @@ export default function ProductsScreen({
           ) : filtered.length === 0 ? (
             <p className="screen-empty">No products yet — import a price list above.</p>
           ) : (
-            <table className="screen-table screen-table-clickable">
-              <thead>
-                <tr>
-                  <th>SKU</th>
-                  <th>Product</th>
-                  <th className="num">On hand</th>
-                  <th className="num">List</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((b) => (
-                  <tr
-                    key={b.product_id}
-                    className={selected?.product_id === b.product_id ? 'selected' : ''}
-                    onClick={() => selectBalance(b)}
-                  >
-                    <td className="mono">{b.sku}</td>
-                    <td>{b.name}</td>
-                    <td className="num">{fmtQty(b.on_hand)}</td>
-                    <td className="num">{fmtMoney(cad(b.list_price))}</td>
+            <div className="screen-scroll-pane">
+              <table className="screen-table screen-table-clickable">
+                <thead>
+                  <tr>
+                    <th>SKU</th>
+                    <th>Product</th>
+                    <th className="num">On hand</th>
+                    <th className="num">List</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {filtered.map((b) => (
+                    <tr
+                      key={b.product_id}
+                      className={selected?.product_id === b.product_id ? 'selected' : ''}
+                      onClick={() => selectBalance(b)}
+                    >
+                      <td className="mono">{b.sku}</td>
+                      <td>{b.name}</td>
+                      <td className="num">{fmtQty(b.on_hand)}</td>
+                      <td className="num">{fmtMoney(cad(b.list_price))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
 
-        <div className="screen-panel">
+        <div ref={detailPanelRef} className="screen-panel">
           <h3>Product detail</h3>
           {!selected ? (
             <p className="screen-empty">Pick a product on the left.</p>
