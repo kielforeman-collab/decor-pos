@@ -293,11 +293,11 @@ only its own section, ticking items as they are verified — not when code merel
 
 ## CI installer downloads (v1.2.2) — ✅ DONE Nov 28, 2026
 ### Scope
-- ✅ Release workflow `.github/workflows/release.yml` — on tags `v*`, two build jobs: Windows (`windows-latest`, free for public repos with MSVC/Windows SDK/NSIS/WiX) builds the Decor POS desktop installer (NSIS `.exe` + WiX `.msi`) + `df-server` Windows binary; Linux (`groundbox-4vcpu`) builds the desktop installer (`.deb` + `.AppImage`) + `df-server` Linux binary. Each build job uploads run artifacts; a `publish` job (`groundbox-4vcpu`, tag runs only) attaches both sets to the GitHub release for the tag, so two jobs never race creating the release. `workflow_dispatch` builds everything and stops at artifacts — no release — which is how the pipeline is tested before any tag.
+- ✅ Release workflow `.github/workflows/release.yml` — on tags `v*`, two build jobs: Windows (`windows-latest`, free for public repos with MSVC/Windows SDK/NSIS/WiX) builds the Decor POS desktop installer (NSIS `.exe` + WiX `.msi`) + `df-server` Windows binary; Linux (`groundbox-4vcpu`) builds the desktop installer (`.rpm` + `.AppImage`, switched from `.deb` in `7fd897b`) + `df-server` Linux binary. Each build job uploads run artifacts; a `publish` job (`groundbox-4vcpu`, tag runs only) attaches both sets to the GitHub release for the tag, so two jobs never race creating the release. `workflow_dispatch` supports a `platform` choice (`all` / `linux` / `windows`) and stops at artifacts — no release — which is how the pipeline is tested before any tag.
 - ✅ Existing CI check job moved `ubuntu-latest` → `groundbox-4vcpu` (one-line change per Groundbox docs). Groundbox free plan: 3,000 CI minutes/month; the GitHub App must be installed for this repo or Groundbox jobs queue forever.
 - ✅ Version bump 1.2.1 → 1.2.2 for real — workspace Cargo.toml, df-api health version, all version-asserting tests, docs/self-hosting.md examples; tauri.conf.json + pos-desktop package.json were still at 0.2.0 (Phase 1) — both now 1.2.2, package-lock.json root version too.
 - ✅ App icon as text SVG `apps/pos-desktop/src-tauri/icons/icon.svg` — same mark as the PWA icon-512.png (navy `#1a1a2e` ticket: white rounded rect 64..448, rx 48, cut by a 65px navy band at y 224..288, measured from the PNG). CI generates the binary icon set with `cargo tauri icon` before building; `tauri.conf.json` lists `32x32.png`, `128x128.png`, `128x128@2x.png`, `icon.icns`, `icon.ico`, `icon.png`; no binary icon files are committed.
-- ✅ Tauri builds use `cargo tauri build --features tauri-shell` (plain build exits 2 without the shell feature) with explicit bundles (`nsis,msi` on Windows, `deb,appimage` on Linux); Linux job installs the webkit/appindicator/librsvg/patchelf deps first.
+- ✅ Tauri builds use `cargo tauri build --features tauri-shell` (plain build exits 2 without the shell feature) with explicit bundles (`nsis,msi` on Windows, `rpm,appimage` on Linux); Linux job installs the webkit/appindicator/librsvg/patchelf deps first.
 ### Verification
 - ✅ Both workflow files parse as YAML and pass on GitHub Actions
 - ✅ CI on `82a2967` passed (run `46120986250`, 2m44s — Rust `check` + all 4 frontend builds)
@@ -307,13 +307,15 @@ only its own section, ticking items as they are verified — not when code merel
   - `Decor.POS_1.2.2_x64-setup.exe` (5.8 MB) — Windows NSIS installer
   - `Decor.POS_1.2.2_x64_en-US.msi` (8.3 MB) — Windows MSI installer
   - `df-server-v1.2.2-windows-x86_64.exe` (22.6 MB) — Windows server binary
-  - `Decor.POS_1.2.2_amd64.deb` (9.4 MB) — Linux Debian/Ubuntu package
+  - `Decor.POS_1.2.2_amd64.deb` (9.4 MB) — Linux Debian/Ubuntu package (before `.rpm` switch)
   - `Decor.POS_1.2.2_amd64.AppImage` (87.3 MB) — Linux AppImage
   - `df-server-v1.2.2-linux-x86_64` (27.8 MB) — Linux server binary
+- ✅ Linux `.rpm` switch (`7fd897b`) verified via `workflow_dispatch` (`platform=linux`, run `46125808511`, 6m16s): `Decor POS-1.2.2-1.x86_64.rpm` (9.0 MB), `Decor POS_1.2.2_amd64.AppImage` (84 MB), `df-server-main-linux-x86_64` (27 MB) built and uploaded to `decor-pos-linux`.
 ### GitHub
 - ✅ Historical troubleshooting: Release #1 (`46107924150`) failed on Windows (no bash for `dtolnay/rust-toolchain`) and Linux (missing `bundle.icon` for AppImage); Release #2 (`46109942823`) & #3 (`46111316618`) passed Linux, failed Windows on `groundbox-windows-4vcpu` because `rustup` defaulted to `x86_64-pc-windows-gnu` without `dlltool.exe`.
 - ✅ Final fix committed & pushed in `82a2967`: switched `build-windows` to GitHub-hosted `windows-latest` + `dtolnay/rust-toolchain@stable` and added `icons/icon.ico`/`icons/icon.icns` to `tauri.conf.json`.
 - ✅ Release `v1.2.2` tagged at `82a2967` and published live: https://github.com/kielforeman-collab/decor-pos/releases/tag/v1.2.2
+- ✅ Linux bundle switched `.deb` → `.rpm` in `7fd897b`; verified `.rpm` artifact available on run https://github.com/kielforeman-collab/decor-pos/actions/runs/46125808511.
 ### Known limits
 - The release jobs do not re-run the test suite: a tag points at a main commit, and the check job runs on every push to main, so tagged code has already passed tests + clippy + fmt. A tag cut on a commit whose check run has not finished yet would ship untested code.
 - `df-server` is the only server binary in the release (edge + HQ modes in one binary); the mobile PWA / Tauri Mobile wrapper is not built here.
