@@ -516,5 +516,7 @@ only its own section, ticking items as they are verified — not when code merel
   - `apps/pos-desktop`: `productImport.ts` now captures every non-empty raw column keyed by its original header into `source_metadata`, accepts `Product UPC`/`UPC`/`Barcode` aliases, and avoids scientific-notation truncation on 12-digit numeric `.xls` UPCs; `ProductsScreen.tsx` accepts `.xls,.xlsx,.csv`, filters across UPC/catalog/source columns, displays Product UPC in the inventory & preview tables and detail pane, and renders a collapsible **Source spreadsheet fields** table showing every preserved column verbatim.
 ### Verification
 - ✅ `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, float-money guard across all 8 financial crates, `apps/pos-desktop` `npm run build` (`474.85 kB` main bundle, lazy `xlsx` chunk `429.52 kB`), and targeted suites (`pci_no_pan_columns` 3/3, `sqlite_product_import` 7/7, `df-edge` `product_import` 5/5, `df-server` unit + `migrate_schema` 5/5) — all clean.
-- 🔄 GitHub `CI` pending push.
+- ✅ GitHub `CI` green on `82084da` (run `46167668250`, `check` in **2m35s** — full workspace nextest suite, doc tests, Typst, clippy, fmt, float-money guard + all 4 frontend builds).
+### GitHub
+- ✅ Pushed to `main`: `c7b619c` (`fix(ui): keep Products detail pane visible with independent scrolling`), `82084da` (`feat(products): persist Product UPC and lossless source spreadsheet fields on import`).
 
