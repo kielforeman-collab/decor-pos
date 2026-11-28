@@ -11,7 +11,7 @@ env:
 
 jobs:
   check:
-    runs-on: groundbox-4vcpu
+    runs-on: groundbox-8vcpu
     steps:
       - uses: actions/checkout@v5
 
@@ -60,7 +60,7 @@ jobs:
         run: cargo test --workspace --doc
 
   frontend:
-    runs-on: groundbox-4vcpu
+    runs-on: groundbox-8vcpu
     strategy:
       matrix:
         app: [pos-desktop, mobile-pwa, web-portal, web-storefront]
