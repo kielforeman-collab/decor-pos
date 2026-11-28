@@ -542,3 +542,6 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ **POS Desktop UI (`apps/pos-desktop`):** added `CustomerFormModal.tsx` and wired **+ New customer** and **Edit customer** into `AccountsScreen.tsx`, displaying full contact, billing address, tax-exempt cert/expiry, PO/job rules, portal status, and account notes, with immediate customer directory listing.
 ### Verification
 - ✅ `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, float-money guard across all 8 financial crates, `df-server` migration tests (5/5), `df-edge` `customer_setup` integration tests + `customers` unit test, `pci_no_pan_columns` (3/3), and `apps/pos-desktop` `npm run build` — all clean.
+- ✅ GitHub `CI` green on `5d018b6` (run `46177962622`, `check` in **1m44s** + all 4 frontends).
+### GitHub
+- ✅ Pushed to `main`: `5d018b6` (`feat(customers): add customer setup create/edit endpoints and POS UI`).
