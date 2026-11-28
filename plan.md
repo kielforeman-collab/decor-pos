@@ -458,3 +458,17 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ GitHub `CI` green on `bf88d41` (run `46155448491`, `check` in **2m21s**: **489/489** workspace nextest tests passed, 0 failed, 0 skipped + doc tests + Typst + all 4 frontend builds).
 ### GitHub
 - ✅ Pushed to `main`: `bf88d41` (`feat(admin,sync): add edge admin APIs and pos-desktop Sync & Admin screens`).
+
+## Release v1.2.3 — ✅ PUBLISHED Nov 28, 2026
+### Scope
+- ✅ Version bump `1.2.2 → 1.2.3` across workspace `Cargo.toml` (+ `Cargo.lock`), `apps/pos-desktop` (`package.json`, `package-lock.json`, `src-tauri/tauri.conf.json`), `df-api` health response, version-asserting tests, and `docs/self-hosting.md` (`f78d9ac`).
+- ✅ Includes all work since `v1.2.2`: machine-tinting cleanup (`-3,720` LOC), F8/F10 security & sync hardening (`dfs_` store service tokens, dead-letter queue, HQ conflict triage, CORS allowlist, per-IP auth rate limiting), POS counter completeness (DB-backed `pos_holds`, real cashier IDs, card auto-void & provider refunds), Admin & Sync UI in `pos-desktop` (`SyncScreen`, `AdminScreen`, edge `/admin/*` APIs), and `groundbox-8vcpu` CI + warm-cache Windows release builds.
+### Verification
+- ✅ GitHub `CI` green on `f78d9ac` (run `46157655870`, `check` in **1m34s** on `groundbox-8vcpu` + all 4 frontend builds).
+- ✅ Tagged release `v1.2.3` **PUBLISHED** (run `46157847579`: `build-linux` **3m54s**, `build-windows` **7m35s** warm cache — down from 22m12s, `publish` **13s**) — all 6 assets verified live at https://github.com/kielforeman-collab/decor-pos/releases/tag/v1.2.3:
+  - `Decor.POS_1.2.3_x64-setup.exe` (5.9 MB) — Windows NSIS installer
+  - `Decor.POS_1.2.3_x64_en-US.msi` (8.3 MB) — Windows MSI installer
+  - `df-server-v1.2.3-windows-x86_64.exe` (23.2 MB) — Windows server binary
+  - `Decor.POS-1.2.3-1.x86_64.rpm` (9.6 MB) — Linux RPM package
+  - `Decor.POS_1.2.3_amd64.AppImage` (87.3 MB) — Linux AppImage
+  - `df-server-v1.2.3-linux-x86_64` (28.4 MB) — Linux server binary
