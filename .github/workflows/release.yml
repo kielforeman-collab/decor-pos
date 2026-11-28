@@ -2,7 +2,7 @@ name: Release
 
 # Builds installer downloads on every version tag (v*):
 #  - Windows: Decor POS desktop installer (.msi + NSIS .exe) + df-server binary
-#  - Linux:   Decor POS desktop installer (.deb + .AppImage) + df-server binary
+#  - Linux:   Decor POS desktop installer (.rpm + .AppImage) + df-server binary
 # Linux + publish run on Groundbox runners; Windows runs on GitHub-hosted
 # windows-latest (free for public repos, with full VS 2022 MSVC, Windows SDK,
 # NSIS, WiX, and Git Bash — Groundbox Windows defaulted rustup to -gnu without
@@ -20,6 +20,15 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platform(s) to build (manual test runs only)"
+        type: choice
+        default: all
+        options:
+          - all
+          - linux
+          - windows
 
 permissions:
   contents: write
@@ -30,6 +39,7 @@ env:
 
 jobs:
   build-windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows'
     runs-on: windows-latest
     defaults:
       run:
@@ -85,6 +95,7 @@ jobs:
           if-no-files-found: error
 
   build-linux:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux'
     runs-on: groundbox-4vcpu
     steps:
       - uses: actions/checkout@v5
@@ -117,7 +128,7 @@ jobs:
 
       - name: Build desktop installers
         working-directory: apps/pos-desktop
-        run: cargo tauri build --features tauri-shell --bundles deb,appimage
+        run: cargo tauri build --features tauri-shell --bundles rpm,appimage
 
       - name: Build server binary
         run: cargo build --release -p df-server
@@ -125,7 +136,7 @@ jobs:
       - name: Stage artifacts
         run: |
           mkdir -p dist-release
-          cp target/release/bundle/deb/*.deb dist-release/
+          cp target/release/bundle/rpm/*.rpm dist-release/
           cp target/release/bundle/appimage/*.AppImage dist-release/
           cp target/release/df-server "dist-release/df-server-${{ github.ref_name }}-linux-x86_64"
 
