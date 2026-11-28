@@ -113,7 +113,7 @@ async fn seeded_state() -> (ApiState, df_auth_http::test_support::SeededUsers) {
     let users = df_auth_http::test_support::seed_test_users(&pool, org_id).await;
     (
         ApiState {
-            version: "1.2.3",
+            version: "1.2.4",
             pool: Some(pool),
             org_id: Some(org_id),
             store_id: Some(store_id),
@@ -184,7 +184,7 @@ async fn health_returns_ok() {
         .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(value["status"], "ok");
-    assert_eq!(value["version"], "1.2.3");
+    assert_eq!(value["version"], "1.2.4");
 }
 
 #[tokio::test]

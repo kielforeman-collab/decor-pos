@@ -39,14 +39,14 @@
   <h1>Deploy decor-pos</h1>
   <p class="sub">Open-source Rust paint &amp; decorating POS — offline-first SQLite edge, PostgreSQL HQ, native Windows &amp; Linux desktop installers, and <strong>490/490</strong> workspace tests passing.</p>
   <p>
-    <span class="badge">Release v1.2.3</span>
+    <span class="badge">Release v1.2.4</span>
     <span class="badge">490/490 tests</span>
     <span class="badge">Rust 2024</span>
     <span class="badge">Exact Decimal money</span>
     <span class="badge">Apache-2.0 OR MIT</span>
   </p>
   <div class="links">
-    <a class="primary" href="https://github.com/kielforeman-collab/decor-pos/releases/latest">Download latest release (v1.2.3)</a>
+    <a class="primary" href="https://github.com/kielforeman-collab/decor-pos/releases/latest">Download latest release (v1.2.4)</a>
     <a href="https://github.com/kielforeman-collab/decor-pos">Repository</a>
     <a href="https://github.com/kielforeman-collab/decor-pos/blob/main/plan.md">Progress plan</a>
     <a href="https://github.com/kielforeman-collab/decor-pos/blob/main/docs/auth.md">Auth &amp; RBAC</a>
@@ -68,12 +68,12 @@
   <p>Prebuilt installers for Windows and Linux ship on <a href="https://github.com/kielforeman-collab/decor-pos/releases/latest">GitHub Releases</a>. On first launch against an empty database, the app automatically presents the <strong>Create your admin account</strong> setup screen — no CLI required.</p>
   <table>
     <tr><th>Platform</th><th>Release asset</th><th>What it is</th></tr>
-    <tr><td>Windows (x64)</td><td><code>Decor.POS_1.2.3_x64-setup.exe</code> / <code>.msi</code></td><td>Native Tauri 2 desktop POS &amp; back-office installer (NSIS or WiX MSI; uses Windows WebView2)</td></tr>
-    <tr><td>Windows (x64)</td><td><code>df-server-v1.2.3-windows-x86_64.exe</code></td><td>Standalone server binary (<code>edge</code>, <code>hq</code>, <code>migrate</code>, <code>users</code>, <code>tokens</code>, <code>edi</code>, <code>statements</code>)</td></tr>
-    <tr><td>Linux (x64)</td><td><code>Decor.POS-1.2.3-1.x86_64.rpm</code> / <code>.AppImage</code></td><td>Native Tauri 2 desktop POS &amp; back-office package (RPM or portable AppImage)</td></tr>
-    <tr><td>Linux (x64)</td><td><code>df-server-v1.2.3-linux-x86_64</code></td><td>Standalone server binary (edge + HQ modes in one binary)</td></tr>
+    <tr><td>Windows (x64)</td><td><code>Decor.POS_1.2.4_x64-setup.exe</code> / <code>.msi</code></td><td>Native Tauri 2 desktop POS &amp; back-office installer (NSIS or WiX MSI; uses Windows WebView2)</td></tr>
+    <tr><td>Windows (x64)</td><td><code>df-server-v1.2.4-windows-x86_64.exe</code></td><td>Standalone server binary (<code>edge</code>, <code>hq</code>, <code>migrate</code>, <code>users</code>, <code>tokens</code>, <code>edi</code>, <code>statements</code>)</td></tr>
+    <tr><td>Linux (x64)</td><td><code>Decor.POS-1.2.4-1.x86_64.rpm</code> / <code>.AppImage</code></td><td>Native Tauri 2 desktop POS &amp; back-office package (RPM or portable AppImage)</td></tr>
+    <tr><td>Linux (x64)</td><td><code>df-server-v1.2.4-linux-x86_64</code></td><td>Standalone server binary (edge + HQ modes in one binary)</td></tr>
   </table>
-  <p><strong>Native parity on <code>main</code>:</strong> the Tauri desktop app starts an embedded loopback <code>df-edge</code> HTTP server (<code>127.0.0.1:&lt;ephemeral&gt;</code>, never exposed on the LAN), so all <strong>14 desktop sections</strong> — Transactions, Deliveries, Orders/EDI, Transfers, Counts, Products/Pricing, Customers/AR, CRM, Vendors, Scheduling, Dashboards, Reports, Sync, and Admin — run natively inside the desktop app with full Bearer RBAC and real cashier attribution.</p>
+  <p><strong>Full native desktop parity:</strong> the Tauri desktop app starts an embedded loopback <code>df-edge</code> HTTP server (<code>127.0.0.1:&lt;ephemeral&gt;</code>, never exposed on the LAN), so all <strong>14 desktop sections</strong> — Transactions, Deliveries, Orders/EDI, Transfers, Counts, Products/Pricing, Customers/AR, CRM, Vendors, Scheduling, Dashboards, Reports, Sync, and Admin — run natively inside the desktop app with full Bearer RBAC and real cashier attribution.</p>
 
   <h2>Option B — Store Edge + PostgreSQL HQ (multi-store production)</h2>
   <p><code>df-server</code> runs both store-level SQLite edge daemons and the central PostgreSQL HQ server from a single binary (requires Rust 1.85+ / 2024 edition if building from source):</p>
@@ -92,7 +92,7 @@ df-server edge --db sqlite:edge.db \
   --store-id &lt;store-uuid&gt; --org-id &lt;org-uuid&gt; \
   --hq-url https://hq.example.com --sync-interval-secs 30 \
   --listen 127.0.0.1:8080 --cors-origin http://localhost:1420</code></pre>
-  <p><code>df-server edge</code> creates and migrates SQLite automatically on first boot and seeds the configured store row. Check <code>GET /health</code> on either server (<code>{"status":"ok","version":"1.2.3"}</code>).</p>
+  <p><code>df-server edge</code> creates and migrates SQLite automatically on first boot and seeds the configured store row. Check <code>GET /health</code> on either server (<code>{"status":"ok","version":"1.2.4"}</code>).</p>
 
   <h2>Option C — Docker Compose + one-command <code>.env</code></h2>
   <p><span class="step">1.</span> Clone the repo and generate a fresh <code>.env</code> with random UUIDs and PostgreSQL password (refuses to overwrite an existing <code>.env</code>):</p>
@@ -163,7 +163,7 @@ curl -s http://localhost:3000/health   # api</code></pre>
 
   <footer>
     <p>Published with GitHub Pages from <code>docs/</code> on <code>main</code>. Full deployment &amp; security guides: <a href="https://github.com/kielforeman-collab/decor-pos/blob/main/docs/self-hosting.md">docs/self-hosting.md</a> · <a href="https://github.com/kielforeman-collab/decor-pos/blob/main/docs/auth.md">docs/auth.md</a> · <a href="https://github.com/kielforeman-collab/decor-pos/blob/main/docs/security-review-v1.0.md">docs/security-review-v1.0.md</a>.</p>
-    <p>decor-pos v1.2.3 · Apache-2.0 OR MIT · <a href="https://github.com/kielforeman-collab/decor-pos">github.com/kielforeman-collab/decor-pos</a></p>
+    <p>decor-pos v1.2.4 · Apache-2.0 OR MIT · <a href="https://github.com/kielforeman-collab/decor-pos">github.com/kielforeman-collab/decor-pos</a></p>
   </footer>
 </main>
 </body>
