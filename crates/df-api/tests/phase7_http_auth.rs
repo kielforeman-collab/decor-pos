@@ -167,7 +167,7 @@ async fn seeded_state() -> (ApiState, SeededUsers) {
     let users = seed_test_users(&pool, org_id).await;
     (
         ApiState {
-            version: "1.2.5",
+            version: "1.2.6",
             pool: Some(pool),
             org_id: Some(org_id),
             store_id: Some(store_id),

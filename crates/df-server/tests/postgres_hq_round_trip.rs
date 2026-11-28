@@ -750,7 +750,7 @@ async fn pg_hq_serves_health_and_gates_protected_routes() {
     println!("GET /health -> {status} {body}");
     assert_eq!(status, 200);
     assert!(body.contains("\"status\":\"ok\""), "{body}");
-    assert!(body.contains("\"version\":\"1.2.5\""), "{body}");
+    assert!(body.contains("\"version\":\"1.2.6\""), "{body}");
 
     for path in [
         format!("/api/v1/inventory/balances?store_id={}", store_id()),

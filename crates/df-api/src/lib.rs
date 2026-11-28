@@ -95,7 +95,7 @@ pub struct ApiState {
 impl Default for ApiState {
     fn default() -> Self {
         Self {
-            version: "1.2.5",
+            version: "1.2.6",
             pool: None,
             org_id: None,
             store_id: None,
