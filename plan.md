@@ -454,4 +454,7 @@ only its own section, ticking items as they are verified — not when code merel
   - Added `SyncScreen.tsx`: live edge sync health (`pending_count`, `dead_letter_count`, `last_synced_at`, `last_batch_id`), on-demand `Sync now`, and F8 dead-letter queue inspector with `Requeue for retry` and operator-reason `Dismiss`.
   - Added `AdminScreen.tsx` (3 tabs): `Store & tax` (editable store profile + clickable US/CA tax & PaintCare/eco-fee preset preview + immediate TopBar store-name update), `Staff & users` (account table, create/edit forms, password/PIN/badge rotation, session revocation), and `Service tokens` (issue `dfs_` tokens with one-time copyable reveal banner, list, revoke).
 ### Verification
-- 🔄 Local `admin_sync_http` tests, fmt, clippy (`-D warnings`), float-money guard, `pos-desktop` `npm run build`, and GitHub CI verification in progress.
+- ✅ `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, float-money guard across all 8 financial crates, and `apps/pos-desktop` `npm run build` (`476.06 kB` main bundle, lazy `xlsx` chunk `429.52 kB`, zero warnings) — all clean.
+- ✅ GitHub `CI` green on `bf88d41` (run `46155448491`, `check` in **2m21s**: **489/489** workspace nextest tests passed, 0 failed, 0 skipped + doc tests + Typst + all 4 frontend builds).
+### GitHub
+- ✅ Pushed to `main`: `bf88d41` (`feat(admin,sync): add edge admin APIs and pos-desktop Sync & Admin screens`).
