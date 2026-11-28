@@ -11,6 +11,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   getArAging,
   getArCollections,
+  getCustomer,
   getCustomerSummary,
   getPriceLevels,
   postArPayment,
@@ -20,20 +21,30 @@ import {
   type CollectionsView,
 } from '../api'
 import { cad, fmtMoney, type ArCustomerSummary, type CustomerSearchResult, type InvoiceData, type PriceLevel } from '../types'
+import CustomerFormModal from './CustomerFormModal'
 import HistoryModal from './HistoryModal'
 import InvoiceView from './InvoiceView'
 
 const PAYMENT_METHODS = ['Cash', 'Card', 'E-Transfer', 'Cheque']
 
 function displayName(c: CustomerSearchResult): string {
-  return c.company_name ?? [c.first_name, c.last_name].filter(Boolean).join(' ') ?? c.account_number
+  return c.company_name ?? ([c.first_name, c.last_name].filter(Boolean).join(' ') || c.account_number)
+}
+
+function formatAddress(c: CustomerSearchResult): string | null {
+  const line1 = [c.address_line1, c.address_line2].filter(Boolean).join(', ')
+  const line2 = [c.city, c.province, c.postal_code].filter(Boolean).join(' ')
+  const full = [line1, line2].filter(Boolean).join(' · ')
+  return full || null
 }
 
 export default function AccountsScreen({
   storeId,
+  userRole,
   onToast,
 }: {
   storeId: string | null
+  userRole: string
   onToast: (msg: string) => void
 }) {
   const [aging, setAging] = useState<AgingView | null>(null)
@@ -53,6 +64,7 @@ export default function AccountsScreen({
   const [payMethod, setPayMethod] = useState('Cash')
   const [busy, setBusy] = useState(false)
 
+  const [formMode, setFormMode] = useState<'create' | 'edit' | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [invoice, setInvoice] = useState<{ data: InvoiceData; reprint: boolean } | null>(null)
 
@@ -71,10 +83,22 @@ export default function AccountsScreen({
     }
   }, [storeId])
 
+  const loadCustomers = useCallback(async (q: string) => {
+    setSearching(true)
+    try {
+      setResults(await searchCustomers(q.trim()))
+    } catch {
+      setResults([])
+    } finally {
+      setSearching(false)
+    }
+  }, [])
+
   useEffect(() => {
     void loadAr()
+    void loadCustomers('')
     void getPriceLevels().then(setLevels).catch(() => setLevels([]))
-  }, [loadAr])
+  }, [loadAr, loadCustomers])
 
   const loadSummary = useCallback(async (id: string) => {
     try {
@@ -88,18 +112,7 @@ export default function AccountsScreen({
 
   async function doSearch(q: string) {
     setQuery(q)
-    if (q.trim().length < 2) {
-      setResults([])
-      return
-    }
-    setSearching(true)
-    try {
-      setResults(await searchCustomers(q.trim()))
-    } catch {
-      setResults([])
-    } finally {
-      setSearching(false)
-    }
+    await loadCustomers(q)
   }
 
   function selectCustomer(c: CustomerSearchResult) {
@@ -110,12 +123,12 @@ export default function AccountsScreen({
   }
 
   async function selectById(id: string, name: string) {
-    // Aging rows carry only an id + name — resolve the full
-    // customer record through search before opening the detail.
-    const found = await searchCustomers(name)
-    const match = found.find((c) => c.id === id) ?? found[0]
-    if (match) selectCustomer(match)
-    else setError(`Could not load ${name} — try searching for them below.`)
+    try {
+      const full = await getCustomer(id)
+      selectCustomer(full)
+    } catch {
+      setError(`Could not load ${name} — try searching for them below.`)
+    }
   }
 
   async function doSetPriceLevel(levelId: string) {
@@ -167,7 +180,22 @@ export default function AccountsScreen({
       <div className="screen-head">
         <h2>Customers</h2>
         <div className="screen-actions">
-          <button type="button" className="screen-btn" disabled={loading} onClick={() => void loadAr()}>
+          <button
+            type="button"
+            className="screen-btn screen-btn-primary"
+            onClick={() => setFormMode('create')}
+          >
+            + New customer
+          </button>
+          <button
+            type="button"
+            className="screen-btn"
+            disabled={loading}
+            onClick={() => {
+              void loadAr()
+              void loadCustomers(query)
+            }}
+          >
             Refresh
           </button>
         </div>
@@ -267,14 +295,16 @@ export default function AccountsScreen({
             type="search"
             className="screen-input"
             value={query}
-            placeholder="Search by name, company, account #…"
+            placeholder="Search by name, company, account #, email, phone…"
             aria-label="Search customers"
             onChange={(e) => void doSearch(e.target.value)}
           />
           {searching ? (
             <p className="screen-empty">Searching…</p>
-          ) : query.trim().length >= 2 && results.length === 0 ? (
-            <p className="screen-empty">No customers match “{query.trim()}”.</p>
+          ) : results.length === 0 ? (
+            <p className="screen-empty">
+              {query.trim() ? `No customers match “${query.trim()}”.` : 'No customers yet. Click “+ New customer” to add one.'}
+            </p>
           ) : (
             <ul className="screen-list">
               {results.map((c) => (
@@ -296,13 +326,15 @@ export default function AccountsScreen({
         <div className="screen-panel">
           <h3>Account detail</h3>
           {!selected ? (
-            <p className="screen-empty">Search above, or pick a row in the aging table.</p>
+            <p className="screen-empty">Pick a customer from the list, or click “+ New customer”.</p>
           ) : (
             <>
               <p className="screen-meta">
                 {displayName(selected)} · <span className="mono">{selected.account_number}</span>
+                {selected.customer_type ? ` · ${selected.customer_type}` : ''}
                 {selected.credit_hold ? ' · CREDIT HOLD' : ''}
                 {!selected.charge_enabled ? ' · Charge disabled' : ''}
+                {selected.portal_enabled ? ' · Portal enabled' : ''}
               </p>
               <dl className="screen-facts">
                 <div>
@@ -315,16 +347,65 @@ export default function AccountsScreen({
                 </div>
                 <div>
                   <dt>Terms</dt>
-                  <dd>{selected.payment_terms ?? '—'}</dd>
+                  <dd>
+                    {selected.payment_terms ?? '—'}
+                    {selected.terms_days != null ? ` (${selected.terms_days}d)` : ''}
+                  </dd>
                 </div>
                 <div>
                   <dt>Price level</dt>
                   <dd>{levelName}</dd>
                 </div>
+                {selected.phone && (
+                  <div>
+                    <dt>Phone</dt>
+                    <dd>{selected.phone}</dd>
+                  </div>
+                )}
+                {selected.email && (
+                  <div>
+                    <dt>Email</dt>
+                    <dd>{selected.email}</dd>
+                  </div>
+                )}
+                {formatAddress(selected) && (
+                  <div>
+                    <dt>Address</dt>
+                    <dd>{formatAddress(selected)}</dd>
+                  </div>
+                )}
+                {selected.tax_exempt_cert && (
+                  <div>
+                    <dt>Tax-exempt cert</dt>
+                    <dd>
+                      {selected.tax_exempt_cert}
+                      {selected.tax_exempt_expires ? ` (exp. ${selected.tax_exempt_expires})` : ''}
+                    </dd>
+                  </div>
+                )}
+                {(selected.require_po_number || selected.require_job_name) && (
+                  <div>
+                    <dt>Checkout rules</dt>
+                    <dd>
+                      {[
+                        selected.require_po_number ? 'PO # required' : null,
+                        selected.require_job_name ? 'Job name required' : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </dd>
+                  </div>
+                )}
                 {summary?.oldest_due_date && (
                   <div>
                     <dt>Oldest due</dt>
                     <dd>{new Date(summary.oldest_due_date).toLocaleDateString()}</dd>
+                  </div>
+                )}
+                {selected.notes && (
+                  <div>
+                    <dt>Notes</dt>
+                    <dd>{selected.notes}</dd>
                   </div>
                 )}
               </dl>
@@ -346,6 +427,13 @@ export default function AccountsScreen({
                     ))}
                   </select>
                 </label>
+                <button
+                  type="button"
+                  className="screen-btn"
+                  onClick={() => setFormMode('edit')}
+                >
+                  Edit customer
+                </button>
                 <button
                   type="button"
                   className="screen-btn"
@@ -403,6 +491,25 @@ export default function AccountsScreen({
         </div>
       </div>
 
+      {formMode && (
+        <CustomerFormModal
+          customer={formMode === 'edit' ? selected : null}
+          levels={levels}
+          userRole={userRole}
+          onSaved={(saved, created) => {
+            setFormMode(null)
+            selectCustomer(saved)
+            void loadCustomers(query)
+            void loadAr()
+            onToast(
+              created
+                ? `Customer ${displayName(saved)} (${saved.account_number}) created.`
+                : `Customer ${displayName(saved)} (${saved.account_number}) updated.`,
+            )
+          }}
+          onClose={() => setFormMode(null)}
+        />
+      )}
       {historyOpen && selected && (
         <HistoryModal
           customer={selected}

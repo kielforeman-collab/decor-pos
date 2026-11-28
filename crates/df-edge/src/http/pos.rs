@@ -8,6 +8,7 @@ use axum::Json;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use chrono::NaiveDate;
+use df_auth::Permission;
 use df_auth_http::AuthSession;
 use df_db::models::{
     ColorCatalogEntry, Customer, PriceLevel, TillSession, TintFormula, Transaction,
@@ -20,6 +21,7 @@ use uuid::Uuid;
 
 use super::{ErrorResponse, HandlerResult, err_response};
 use crate::counter::{ProductSearchResult, TransactionView};
+use crate::customers::CustomerInput;
 use crate::edge::Edge;
 use crate::invoice::InvoiceView;
 use crate::tinting::{ColorantView, CreateTintFormulaRequest};
@@ -361,6 +363,31 @@ pub(super) async fn get_customer(
         .await
         .map(Json)
         .map_err(|err| err_response(err.into()))
+}
+
+pub(super) async fn create_customer(
+    State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
+    Json(body): Json<CustomerInput>,
+) -> HandlerResult<Customer> {
+    let allow_credit = auth.role.has_permission(Permission::ArPayment);
+    edge.create_customer(body, allow_credit)
+        .await
+        .map(Json)
+        .map_err(err_response)
+}
+
+pub(super) async fn update_customer(
+    State(edge): State<Arc<Edge>>,
+    Extension(auth): Extension<AuthSession>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<CustomerInput>,
+) -> HandlerResult<Customer> {
+    let allow_credit = auth.role.has_permission(Permission::ArPayment);
+    edge.update_customer(id, body, allow_credit)
+        .await
+        .map(Json)
+        .map_err(err_response)
 }
 
 pub(super) async fn set_customer_price_level(

@@ -256,11 +256,52 @@ export interface CustomerSearchResult {
   last_name: string | null
   email: string | null
   phone: string | null
+  address_line1?: string | null
+  address_line2?: string | null
+  city?: string | null
+  province?: string | null
+  postal_code?: string | null
+  notes?: string | null
   price_level_id: string | null
+  tax_exempt_cert?: string | null
+  tax_exempt_expires?: string | null
   charge_enabled: boolean
   credit_limit: Money
   payment_terms: string | null
+  terms_days?: number | null
+  finance_rate_pct_monthly?: string | null
   credit_hold: boolean
+  require_po_number?: boolean
+  require_job_name?: boolean
+  portal_enabled?: boolean
+}
+
+export interface CustomerInputPayload {
+  account_number?: string | null
+  customer_type?: string | null
+  company_name?: string | null
+  first_name?: string | null
+  last_name?: string | null
+  email?: string | null
+  phone?: string | null
+  address_line1?: string | null
+  address_line2?: string | null
+  city?: string | null
+  province?: string | null
+  postal_code?: string | null
+  notes?: string | null
+  price_level_id?: string | null
+  tax_exempt_cert?: string | null
+  tax_exempt_expires?: string | null
+  require_po_number?: boolean
+  require_job_name?: boolean
+  charge_enabled?: boolean
+  credit_limit?: string | null
+  payment_terms?: string | null
+  terms_days?: number | null
+  finance_rate_pct_monthly?: string | null
+  credit_hold?: boolean
+  portal_enabled?: boolean
 }
 
 export interface ArCustomerSummary {

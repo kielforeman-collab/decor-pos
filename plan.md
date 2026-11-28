@@ -534,3 +534,11 @@ only its own section, ticking items as they are verified — not when code merel
   - `df-server-v1.2.5-linux-x86_64` (28.5 MB) — Linux server binary
 
 
+## Customer Setup (Create & Edit) — ✅ DONE Nov 28, 2026
+### Scope
+- ✅ **Schema (`0019_customer_setup.sql`, SQLite & PostgreSQL):** adds nullable `address_line1`, `address_line2`, `city`, `province`, `postal_code`, and `notes` columns to `customers`; expected migration lists updated in `df-server` unit & `migrate_schema` tests.
+- ✅ **Database (`df-db`):** extended `Customer`, `customer_from_row`, and `insert_customer`, and added full-row `update_customer` in `crates/df-db/src/repos.rs`.
+- ✅ **Edge API (`df-edge`):** added `Edge::create_customer` and `Edge::update_customer` (`crates/df-edge/src/customers.rs`) wired to `POST /pos/customers` and `POST /pos/customers/{id}` (`CustomerManage` route gate). Auto-assigns `C-1001`+ when account number is blank, validates uniqueness/email/type/credit limit/terms/price level, extends `GET /pos/customers/search` to match phone numbers, and gates credit-control changes (`charge_enabled`, `credit_limit`, `payment_terms`, `terms_days`, `finance_rate_pct_monthly`, `credit_hold`, `portal_enabled`) to roles holding `ArPayment` (Manager / Admin; returns `403` otherwise).
+- ✅ **POS Desktop UI (`apps/pos-desktop`):** added `CustomerFormModal.tsx` and wired **+ New customer** and **Edit customer** into `AccountsScreen.tsx`, displaying full contact, billing address, tax-exempt cert/expiry, PO/job rules, portal status, and account notes, with immediate customer directory listing.
+### Verification
+- ✅ `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, float-money guard across all 8 financial crates, `df-server` migration tests (5/5), `df-edge` `customer_setup` integration tests + `customers` unit test, `pci_no_pan_columns` (3/3), and `apps/pos-desktop` `npm run build` — all clean.

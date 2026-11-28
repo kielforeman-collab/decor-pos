@@ -31,6 +31,7 @@ import type {
   ApplyReport,
   ArCustomerSummary,
   CompletedSale,
+  CustomerInputPayload,
   CustomerSearchResult,
   CustomerTransaction,
   DashboardAggregate,
@@ -226,11 +227,24 @@ interface RawCustomer {
   last_name: string | null
   email: string | null
   phone: string | null
+  address_line1?: string | null
+  address_line2?: string | null
+  city?: string | null
+  province?: string | null
+  postal_code?: string | null
+  notes?: string | null
   price_level_id: string | null
+  tax_exempt_cert?: string | null
+  tax_exempt_expires?: string | null
   charge_enabled: boolean
   credit_limit: Dec
   payment_terms: string | null
+  terms_days?: number | null
+  finance_rate_pct_monthly?: Dec
   credit_hold: boolean
+  require_po_number?: boolean
+  require_job_name?: boolean
+  portal_enabled?: boolean
 }
 
 export function mapCustomer(raw: RawCustomer): CustomerSearchResult {
@@ -243,11 +257,25 @@ export function mapCustomer(raw: RawCustomer): CustomerSearchResult {
     last_name: raw.last_name ?? null,
     email: raw.email ?? null,
     phone: raw.phone ?? null,
+    address_line1: raw.address_line1 ?? null,
+    address_line2: raw.address_line2 ?? null,
+    city: raw.city ?? null,
+    province: raw.province ?? null,
+    postal_code: raw.postal_code ?? null,
+    notes: raw.notes ?? null,
     price_level_id: raw.price_level_id ?? null,
+    tax_exempt_cert: raw.tax_exempt_cert ?? null,
+    tax_exempt_expires: raw.tax_exempt_expires ?? null,
     charge_enabled: raw.charge_enabled,
     credit_limit: decToMoney(raw.credit_limit),
     payment_terms: raw.payment_terms ?? null,
+    terms_days: raw.terms_days ?? null,
+    finance_rate_pct_monthly:
+      raw.finance_rate_pct_monthly == null ? null : String(raw.finance_rate_pct_monthly),
     credit_hold: raw.credit_hold,
+    require_po_number: raw.require_po_number ?? false,
+    require_job_name: raw.require_job_name ?? false,
+    portal_enabled: raw.portal_enabled ?? false,
   }
 }
 
@@ -565,6 +593,26 @@ export async function saveTintFormula(body: {
 }
 
 // --- stores / orders / transfers / accounts ---
+
+export async function getCustomer(id: string): Promise<CustomerSearchResult> {
+  const raw = await http<RawCustomer>(`/pos/customers/${id}`)
+  return mapCustomer(raw)
+}
+
+export async function createCustomer(
+  body: CustomerInputPayload,
+): Promise<CustomerSearchResult> {
+  const raw = await http<RawCustomer>('/pos/customers', body)
+  return mapCustomer(raw)
+}
+
+export async function updateCustomer(
+  id: string,
+  body: CustomerInputPayload,
+): Promise<CustomerSearchResult> {
+  const raw = await http<RawCustomer>(`/pos/customers/${id}`, body)
+  return mapCustomer(raw)
+}
 
 export async function setCustomerPriceLevel(
   id: string,

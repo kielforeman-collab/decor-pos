@@ -948,7 +948,7 @@ export default function App() {
         ) : activeNav === 'Counts' ? (
           <CountsScreen storeId={storeId} onToast={say} />
         ) : activeNav === 'Customers' ? (
-          <AccountsScreen storeId={storeId} onToast={say} />
+          <AccountsScreen storeId={storeId} userRole={session.user.role} onToast={say} />
         ) : activeNav === 'CRM' ? (
           <CrmScreen storeId={storeId} onToast={say} />
         ) : activeNav === 'Products' ? (

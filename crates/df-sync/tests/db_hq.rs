@@ -130,6 +130,12 @@ async fn seed(pool: &AnyPool) -> Seed {
             require_po_number: false,
             require_job_name: false,
             portal_enabled: false,
+            address_line1: None,
+            address_line2: None,
+            city: None,
+            province: None,
+            postal_code: None,
+            notes: None,
         },
     )
     .await

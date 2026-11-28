@@ -12,7 +12,9 @@
 //! * `GET /pos/transactions/{id}/invoice` — letter-size invoice render data
 //! * `GET /pos/products/search?q=&sku=&barcode=&limit=` — counter product search (cap 50)
 //! * `GET /pos/customers/search?q=` — counter customer search
+//! * `POST /pos/customers` — create a customer (credit controls require Manager/Admin)
 //! * `GET /pos/customers/{id}` — one customer
+//! * `POST /pos/customers/{id}` — edit a customer (credit controls require Manager/Admin)
 //! * `POST /pos/customers/{id}/price-level` — `{price_level_id: Uuid|null}`
 //! * `GET /pos/customers/{id}/transactions?limit=` — a customer's transactions, newest first,
 //!   each with lines + payments
@@ -272,12 +274,12 @@ use portal::{
     portal_reorder, portal_statements,
 };
 use pos::{
-    checkout, close_till, create_tint_formula, customer_transactions, daily_usage,
+    checkout, close_till, create_customer, create_tint_formula, customer_transactions, daily_usage,
     dismiss_sync_dead_letter, get_customer, get_invoice, get_transaction, list_colorants,
     list_colors, list_formulas, list_holds, list_price_levels, list_sync_dead_letters, low_stock,
     open_till, park_hold, price_preview, record_layaway, record_quote, requeue_sync_dead_letter,
     resume_hold, return_transaction, search_customers, search_products, set_customer_price_level,
-    set_thresholds, sync_run, sync_state, void_transaction,
+    set_thresholds, sync_run, sync_state, update_customer, void_transaction,
 };
 use scheduling::{
     clock_in, clock_out, create_shift_template, create_staff_shift, labor_coverage, labor_forecast,
@@ -326,6 +328,7 @@ fn err_response(err: EdgeError) -> (StatusCode, Json<ErrorResponse>) {
     let status = match &err {
         EdgeError::NotFound(_) => StatusCode::NOT_FOUND,
         EdgeError::InvalidInput(_) => StatusCode::BAD_REQUEST,
+        EdgeError::Forbidden(_) => StatusCode::FORBIDDEN,
         EdgeError::PaymentDeclined(_) => StatusCode::PAYMENT_REQUIRED,
         EdgeError::Till(_) | EdgeError::CreditBlocked(_) => StatusCode::CONFLICT,
         EdgeError::NoPaymentProvider(_) | EdgeError::NoHq(_) => StatusCode::SERVICE_UNAVAILABLE,
@@ -667,8 +670,12 @@ pub fn router_from_arc(state: Arc<Edge>, hardening: HttpHardeningConfig) -> Rout
         .route_layer(ar_payment_gate);
 
     let crm_routes = Router::new()
+        .route("/pos/customers", post(create_customer))
         .route("/pos/customers/search", get(search_customers))
-        .route("/pos/customers/{id}", get(get_customer))
+        .route(
+            "/pos/customers/{id}",
+            get(get_customer).post(update_customer),
+        )
         .route(
             "/pos/customers/{id}/price-level",
             post(set_customer_price_level),

@@ -184,6 +184,18 @@ pub struct Customer {
     pub require_po_number: bool,
     pub require_job_name: bool,
     pub portal_enabled: bool,
+    /// Billing / mailing address line 1 (`customers.address_line1`, migration `0019`).
+    pub address_line1: Option<String>,
+    /// Address line 2 (suite, unit; migration `0019`).
+    pub address_line2: Option<String>,
+    /// City (migration `0019`).
+    pub city: Option<String>,
+    /// Province / state (migration `0019`).
+    pub province: Option<String>,
+    /// Postal / ZIP code (migration `0019`).
+    pub postal_code: Option<String>,
+    /// Free-form account notes shown on the customer screen (migration `0019`).
+    pub notes: Option<String>,
 }
 
 /// One row of `customer_jobs` (spec §5.4): a job sub-ledger under

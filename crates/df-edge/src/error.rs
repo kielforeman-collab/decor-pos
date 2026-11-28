@@ -34,6 +34,8 @@ pub enum EdgeError {
     Portal(#[from] df_portal::PortalError),
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    #[error("forbidden: {0}")]
+    Forbidden(String),
     #[error("credit blocked: {0}")]
     CreditBlocked(String),
     #[error("not found: {0}")]

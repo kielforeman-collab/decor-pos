@@ -42,6 +42,7 @@ pub mod ar;
 pub mod bi;
 pub mod counter;
 pub mod crm;
+pub mod customers;
 pub mod delivery;
 pub mod edge;
 pub mod edi;
@@ -64,6 +65,7 @@ pub use crm::{
     CreateActivityRequest, CreateAppointmentRequest, CreateSavedViewRequest, LapsedReport,
     SavedViewCustomer, SnoozeActivityRequest, UpdateActivityRequest, UpdateAppointmentRequest,
 };
+pub use customers::CustomerInput;
 pub use delivery::{
     AssignDeliveryRequest, CreateDeliveryRequest, DeliveryView, PackingSlipLine, PackingSlipView,
     SetDeliveryStatusRequest, SubmitPodRequest,

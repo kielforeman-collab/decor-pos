@@ -288,6 +288,12 @@ async fn ar_ledger_balance_is_derived_from_append_only_rows() {
         require_po_number: false,
         require_job_name: false,
         portal_enabled: false,
+        address_line1: None,
+        address_line2: None,
+        city: None,
+        province: None,
+        postal_code: None,
+        notes: None,
     };
     df_db::insert_customer(&pool, &customer).await.unwrap();
     let back = df_db::get_customer_by_account(&pool, org.id, "C-1001")

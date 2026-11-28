@@ -267,6 +267,12 @@ pub(crate) fn customer_from_row(row: &AnyRow) -> Result<Customer, DbError> {
         require_po_number: bool_col(row, "require_po_number")?,
         require_job_name: bool_col(row, "require_job_name")?,
         portal_enabled: bool_col(row, "portal_enabled")?,
+        address_line1: opt_text_col(row, "address_line1")?,
+        address_line2: opt_text_col(row, "address_line2")?,
+        city: opt_text_col(row, "city")?,
+        province: opt_text_col(row, "province")?,
+        postal_code: opt_text_col(row, "postal_code")?,
+        notes: opt_text_col(row, "notes")?,
     })
 }
 
@@ -821,7 +827,7 @@ pub async fn list_tint_formulas_for_store(
 
 pub async fn insert_customer(pool: &AnyPool, customer: &Customer) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO customers (id, org_id, account_number, customer_type, company_name, first_name, last_name, email, phone, price_level_id, salesperson_id, tax_exempt_cert, tax_exempt_expires, charge_enabled, credit_limit, payment_terms, terms_days, finance_rate_pct_monthly, credit_hold, require_po_number, require_job_name, portal_enabled) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)",
+        "INSERT INTO customers (id, org_id, account_number, customer_type, company_name, first_name, last_name, email, phone, price_level_id, salesperson_id, tax_exempt_cert, tax_exempt_expires, charge_enabled, credit_limit, payment_terms, terms_days, finance_rate_pct_monthly, credit_hold, require_po_number, require_job_name, portal_enabled, address_line1, address_line2, city, province, postal_code, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)",
     )
     .bind(uuid_str(customer.id))
     .bind(uuid_str(customer.org_id))
@@ -845,8 +851,58 @@ pub async fn insert_customer(pool: &AnyPool, customer: &Customer) -> Result<(), 
     .bind(customer.require_po_number)
     .bind(customer.require_job_name)
     .bind(customer.portal_enabled)
+    .bind(&customer.address_line1)
+    .bind(&customer.address_line2)
+    .bind(&customer.city)
+    .bind(&customer.province)
+    .bind(&customer.postal_code)
+    .bind(&customer.notes)
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+/// Replace every editable field of a customer (the counter's
+/// "Edit customer" form, `POST /pos/customers/{id}`). `id` and
+/// `org_id` are the key and never change. Returns
+/// [`DbError::NotFound`] when no row matched.
+pub async fn update_customer(pool: &AnyPool, customer: &Customer) -> Result<(), DbError> {
+    let result = sqlx::query(
+        "UPDATE customers SET account_number = $1, customer_type = $2, company_name = $3, first_name = $4, last_name = $5, email = $6, phone = $7, price_level_id = $8, salesperson_id = $9, tax_exempt_cert = $10, tax_exempt_expires = $11, charge_enabled = $12, credit_limit = $13, payment_terms = $14, terms_days = $15, finance_rate_pct_monthly = $16, credit_hold = $17, require_po_number = $18, require_job_name = $19, portal_enabled = $20, address_line1 = $21, address_line2 = $22, city = $23, province = $24, postal_code = $25, notes = $26 WHERE id = $27 AND org_id = $28",
+    )
+    .bind(&customer.account_number)
+    .bind(&customer.customer_type)
+    .bind(&customer.company_name)
+    .bind(&customer.first_name)
+    .bind(&customer.last_name)
+    .bind(&customer.email)
+    .bind(&customer.phone)
+    .bind(opt_uuid_str(customer.price_level_id))
+    .bind(opt_uuid_str(customer.salesperson_id))
+    .bind(&customer.tax_exempt_cert)
+    .bind(opt_date_str(customer.tax_exempt_expires))
+    .bind(customer.charge_enabled)
+    .bind(dec_str(customer.credit_limit))
+    .bind(&customer.payment_terms)
+    .bind(customer.terms_days)
+    .bind(opt_dec_str(customer.finance_rate_pct_monthly))
+    .bind(customer.credit_hold)
+    .bind(customer.require_po_number)
+    .bind(customer.require_job_name)
+    .bind(customer.portal_enabled)
+    .bind(&customer.address_line1)
+    .bind(&customer.address_line2)
+    .bind(&customer.city)
+    .bind(&customer.province)
+    .bind(&customer.postal_code)
+    .bind(&customer.notes)
+    .bind(uuid_str(customer.id))
+    .bind(uuid_str(customer.org_id))
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(DbError::NotFound(format!("customer {}", customer.id)));
+    }
     Ok(())
 }
 

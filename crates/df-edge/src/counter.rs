@@ -184,6 +184,9 @@ impl Edge {
                             || c.email
                                 .as_deref()
                                 .is_some_and(|v| contains_needle(v, &needle))
+                            || c.phone
+                                .as_deref()
+                                .is_some_and(|v| contains_needle(v, &needle))
                     })
                     .collect())
             }
