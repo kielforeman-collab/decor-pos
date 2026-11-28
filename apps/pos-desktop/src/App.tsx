@@ -39,6 +39,7 @@ import AccountsScreen from './components/AccountsScreen'
 import AdminScreen from './components/AdminScreen'
 import CountsScreen from './components/CountsScreen'
 import CrmScreen from './components/CrmScreen'
+import CustomerFormModal from './components/CustomerFormModal'
 import DashboardsScreen from './components/DashboardsScreen'
 import DeliveriesScreen from './components/DeliveriesScreen'
 import OrdersScreen from './components/OrdersScreen'
@@ -271,6 +272,7 @@ export default function App() {
   const [preview, setPreview] = useState<PricePreview | null>(null)
   const [customer, setCustomer] = useState<CustomerSearchResult | null>(null)
   const [customerSummary, setCustomerSummary] = useState<ArCustomerSummary | null>(null)
+  const [customerFormMode, setCustomerFormMode] = useState<'create' | 'edit' | null>(null)
   const [poNumber, setPoNumber] = useState('')
   const [jobName, setJobName] = useState('')
   const [fulfilment, setFulfilment] = useState<FulfilmentMode>('take_now')
@@ -1202,6 +1204,10 @@ export default function App() {
             customer={customer}
             summary={customerSummary}
             onSelectCustomer={selectCustomer}
+            onNewCustomer={() => setCustomerFormMode('create')}
+            onEditCustomer={() => {
+              if (customer) setCustomerFormMode('edit')
+            }}
             priceLevels={priceLevels}
             priceLevelId={priceLevelId}
             onPriceLevel={setPriceLevelId}
@@ -1331,6 +1337,23 @@ export default function App() {
           onClose={() => setInvoice(null)}
           onNewSale={newSale}
           onToast={say}
+        />
+      )}
+      {customerFormMode && (
+        <CustomerFormModal
+          customer={customerFormMode === 'edit' ? customer : null}
+          levels={priceLevels.filter((l) => l.id !== 'retail')}
+          userRole={session.user.role}
+          onSaved={(saved, created) => {
+            setCustomerFormMode(null)
+            selectCustomer(saved)
+            say(
+              created
+                ? `Customer ${saved.company_name ?? saved.account_number} (${saved.account_number}) created and attached.`
+                : `Customer ${saved.company_name ?? saved.account_number} (${saved.account_number}) updated.`,
+            )
+          }}
+          onClose={() => setCustomerFormMode(null)}
         />
       )}
       {tintTarget && (

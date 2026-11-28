@@ -16,6 +16,8 @@ interface TillPanelProps {
   customer: CustomerSearchResult | null
   summary: ArCustomerSummary | null
   onSelectCustomer: (c: CustomerSearchResult | null) => void
+  onNewCustomer: () => void
+  onEditCustomer: () => void
   priceLevels: PriceLevel[]
   priceLevelId: string
   onPriceLevel: (id: string) => void
@@ -106,7 +108,19 @@ export default function TillPanel(props: TillPanelProps) {
   return (
     <div className="till-panel">
       <section className="till-section customer-card">
-        <h2>Customer</h2>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+          <h2>Customer</h2>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {customer && (
+              <button type="button" className="walkin-btn" onClick={props.onEditCustomer}>
+                Edit
+              </button>
+            )}
+            <button type="button" className="walkin-btn" onClick={props.onNewCustomer}>
+              + New
+            </button>
+          </div>
+        </div>
         <div className="cust-search" ref={custBoxRef}>
           <input
             id="customer-search"
