@@ -176,6 +176,7 @@
 //! require the session's linked customer to match the requested
 //! customer.
 
+mod admin;
 mod auth;
 mod bi;
 mod crm;
@@ -188,6 +189,13 @@ mod scheduling;
 #[cfg(test)]
 mod tests;
 
+pub use admin::{
+    AdminUserSummary, CreateAdminUserRequest, CreateEdgeServiceTokenRequest,
+    CreateEdgeServiceTokenResponse, EdgeServiceTokenQuery, EdgeServiceTokenSummary,
+    RevokeEdgeServiceTokenResponse, RevokeUserSessionsResponse, StoreSettingsResponse,
+    TaxJurisdictionPresetView, TaxPresetComponentView, UpdateAdminUserRequest,
+    UpdateStoreSettingsRequest,
+};
 pub use auth::{EdgeCounterSwitchRequest, EdgeLoginRequest, EdgeOverrideVerifyRequest};
 pub use bi::{BiEcoQuery, BiInquiryQuery, BiKpiQuery};
 pub use crm::{ActivityQuery, AppointmentQuery, DeletedResponse, LapsedQuery, RemindersQuery};
@@ -224,6 +232,11 @@ use uuid::Uuid;
 use crate::edge::Edge;
 use crate::error::EdgeError;
 
+use admin::{
+    create_admin_service_token, create_admin_user, get_store_settings, list_admin_service_tokens,
+    list_admin_users, revoke_admin_service_token, revoke_admin_user_sessions, update_admin_user,
+    update_store_settings,
+};
 use auth::{
     edge_counter_switch, edge_login, edge_logout, edge_override_verify, edge_portal_login,
     edge_setup, edge_setup_status,
@@ -427,6 +440,8 @@ pub fn router_with_hardening(edge: Edge, hardening: HttpHardeningConfig) -> Rout
     let till_gate = gate(AuthRule::AnyOf(vec![Permission::PosTillManage]));
     let void_gate = gate(AuthRule::AnyOf(vec![Permission::PosVoid]));
     let sync_admin_gate = gate(AuthRule::AnyOf(vec![Permission::SyncIngest]));
+    let user_manage_gate = gate(AuthRule::AnyOf(vec![Permission::UserManage]));
+    let system_admin_gate = gate(AuthRule::AnyOf(vec![Permission::SystemAdmin]));
     let reports_gate = gate(AuthRule::AnyOf(vec![Permission::ReportView]));
     let inventory_view_gate = gate(AuthRule::AnyOf(vec![Permission::InventoryView]));
     let inventory_adjust_gate = gate(AuthRule::AnyOf(vec![Permission::InventoryAdjust]));
@@ -486,8 +501,8 @@ pub fn router_with_hardening(edge: Edge, hardening: HttpHardeningConfig) -> Rout
         .route("/pos/auth/logout", post(edge_logout))
         .route_layer(authenticated_gate.clone());
 
-    // Dead-letter triage for quarantined sync entries (closes F8):
-    // Manager / Admin only (`SyncIngest`).
+    // Dead-letter triage for quarantined sync entries (closes F8) and
+    // read-only store settings view: Manager / Admin only (`SyncIngest`).
     let sync_dead_letter_routes = Router::new()
         .route("/pos/sync/dead-letters", get(list_sync_dead_letters))
         .route(
@@ -498,7 +513,34 @@ pub fn router_with_hardening(edge: Edge, hardening: HttpHardeningConfig) -> Rout
             "/pos/sync/dead-letters/{id}/dismiss",
             post(dismiss_sync_dead_letter),
         )
+        .route("/admin/store", get(get_store_settings))
         .route_layer(sync_admin_gate);
+
+    // Store settings updates: Admin only (`SystemAdmin`).
+    let admin_store_write_routes = Router::new()
+        .route("/admin/store", post(update_store_settings))
+        .route_layer(system_admin_gate);
+
+    // Staff/user management and store service tokens: Admin only (`UserManage`).
+    let admin_user_routes = Router::new()
+        .route(
+            "/admin/users",
+            get(list_admin_users).post(create_admin_user),
+        )
+        .route("/admin/users/{id}", post(update_admin_user))
+        .route(
+            "/admin/users/{id}/revoke-sessions",
+            post(revoke_admin_user_sessions),
+        )
+        .route(
+            "/admin/service-tokens",
+            get(list_admin_service_tokens).post(create_admin_service_token),
+        )
+        .route(
+            "/admin/service-tokens/{id}/revoke",
+            post(revoke_admin_service_token),
+        )
+        .route_layer(user_manage_gate);
 
     let checkout_routes = Router::new()
         .route("/pos/carts/price-preview", post(price_preview))
@@ -731,6 +773,8 @@ pub fn router_with_hardening(edge: Edge, hardening: HttpHardeningConfig) -> Rout
         .merge(rate_limited_auth)
         .merge(logout)
         .merge(sync_dead_letter_routes)
+        .merge(admin_store_write_routes)
+        .merge(admin_user_routes)
         .merge(checkout_routes)
         .merge(till_routes)
         .merge(void_routes)

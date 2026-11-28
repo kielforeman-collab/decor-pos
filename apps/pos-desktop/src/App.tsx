@@ -36,6 +36,7 @@ import OverridePrompt from './OverridePrompt'
 import HistoryModal from './components/HistoryModal'
 import InvoiceView from './components/InvoiceView'
 import AccountsScreen from './components/AccountsScreen'
+import AdminScreen from './components/AdminScreen'
 import CountsScreen from './components/CountsScreen'
 import CrmScreen from './components/CrmScreen'
 import DashboardsScreen from './components/DashboardsScreen'
@@ -44,6 +45,7 @@ import OrdersScreen from './components/OrdersScreen'
 import ProductsScreen from './components/ProductsScreen'
 import ReportsScreen from './components/ReportsScreen'
 import SchedulingScreen from './components/SchedulingScreen'
+import SyncScreen from './components/SyncScreen'
 import TransfersScreen from './components/TransfersScreen'
 import VendorsScreen from './components/VendorsScreen'
 import PaymentModal from './components/PaymentModal'
@@ -925,6 +927,8 @@ export default function App() {
       />
       <Sidebar
         activeNav={activeNav}
+        deadLetterCount={sync?.dead_letter_count ?? 0}
+        userRole={session.user.role}
         onNavigate={(name) => {
           setActiveNav(name)
           document.documentElement.classList.remove('nav-open')
@@ -957,6 +961,16 @@ export default function App() {
           <DashboardsScreen storeId={storeId} onToast={say} />
         ) : activeNav === 'Reports' ? (
           <ReportsScreen storeId={storeId} onToast={say} />
+        ) : activeNav === 'Sync' ? (
+          <SyncScreen userRole={session.user.role} onSyncUpdated={setSync} onToast={say} />
+        ) : activeNav === 'Admin' ? (
+          <AdminScreen
+            currentUserId={session.user.id}
+            userRole={session.user.role}
+            storeId={storeId}
+            onStoreUpdated={(store) => setStoreName(store.name)}
+            onToast={say}
+          />
         ) : (
           <>
         <section className="register">

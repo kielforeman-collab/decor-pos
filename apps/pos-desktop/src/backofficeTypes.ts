@@ -412,3 +412,132 @@ export interface CoverageCheck {
   delta_hours: string | null
   status: 'adequate' | 'under' | 'over' | 'unknown'
 }
+
+// --- Sync dead-letters & Edge Admin (Store, Users, Service Tokens) ---------
+
+export interface DeadLetterEntry {
+  id: string
+  store_id: string
+  aggregate_type: string
+  aggregate_id: string
+  payload: unknown
+  created_at: string
+  synced_at: string | null
+  retry_count: number
+  last_error: string | null
+  quarantined_at: string | null
+  quarantine_reason: string | null
+}
+
+export interface DeadLetterActionResponse {
+  id: string
+  updated: boolean
+}
+
+export interface TaxPresetComponentView {
+  kind: string
+  /** Exact decimal fraction, e.g. "0.0725" for 7.25%. */
+  rate: string
+}
+
+export interface TaxJurisdictionPresetView {
+  country_code: string
+  region_code: string
+  total_rate: string
+  components: TaxPresetComponentView[]
+  eco_fee_rule_count: number
+}
+
+export interface StoreProfile {
+  id: string
+  org_id: string
+  code: string
+  name: string
+  country_code: string
+  region_code: string
+  postal_code: string
+  currency: string
+  tax_zone_id: string
+  timezone: string
+  is_warehouse: boolean
+}
+
+export interface StoreSettingsResponse {
+  store: StoreProfile
+  active_tax_preset: TaxJurisdictionPresetView | null
+  active_eco_fee_rule_count: number
+  available_presets: TaxJurisdictionPresetView[]
+}
+
+export interface UpdateStoreSettingsRequest {
+  code?: string
+  name?: string
+  country_code?: string
+  region_code?: string
+  postal_code?: string
+  currency?: string
+  timezone?: string
+  is_warehouse?: boolean
+}
+
+export interface AdminUserSummary {
+  id: string
+  org_id: string
+  email: string
+  display_name: string
+  role: string
+  active: boolean
+  has_password: boolean
+  has_pin: boolean
+  has_badge: boolean
+  portal_customer_id: string | null
+}
+
+export interface CreateAdminUserRequest {
+  email: string
+  display_name?: string
+  role: string
+  password?: string
+  pin?: string
+  badge_token?: string
+  portal_customer_id?: string | null
+  active?: boolean
+}
+
+export interface UpdateAdminUserRequest {
+  display_name?: string
+  role?: string
+  active?: boolean
+  password?: string
+  pin?: string
+  clear_pin?: boolean
+  badge_token?: string
+  clear_badge?: boolean
+  portal_customer_id?: string | null
+}
+
+export interface RevokeUserSessionsResponse {
+  user_id: string
+  revoked_count: number
+}
+
+export interface ServiceTokenSummary {
+  id: string
+  org_id: string
+  store_id: string
+  label: string
+  scopes: string[]
+  created_at: string
+  expires_at: string | null
+  revoked_at: string | null
+  last_used_at: string | null
+}
+
+export interface CreateServiceTokenResponse extends ServiceTokenSummary {
+  token: string
+}
+
+export interface RevokeServiceTokenResponse {
+  id: string
+  revoked: boolean
+}

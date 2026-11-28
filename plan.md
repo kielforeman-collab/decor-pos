@@ -439,3 +439,19 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ GitHub `CI` green on `03e8417` (run `46153292778`, `check` in **2m18s**: **485/485** workspace nextest tests passed, 0 failed, 0 skipped + doc tests + Typst + all 4 frontend builds).
 ### GitHub
 - ✅ Pushed to `main`: `03e8417` (`feat(pos): DB-backed holds, real cashier attribution, and card auto-void/refunds`).
+
+## Admin & Sync UI (`pos-desktop` + edge admin API) — ✅ DONE Nov 28, 2026
+### Scope
+- ✅ **Backend (`df-db` + `df-edge/src/http/admin.rs`):**
+  - Added `df_db::update_store` and `df_db::update_user_profile` (no new migration needed; uses existing `stores`, `users`, `sessions`, and `service_tokens` tables).
+  - Added RBAC-gated edge admin routes:
+    - `GET /admin/store` (`SyncIngest` — Manager/Admin) & `POST /admin/store` (`SystemAdmin` — Admin only): edit store name, code, country/region/postal, currency, timezone, and warehouse flag, with live active tax/eco-fee preset resolution (`df_domain::tax`) that immediately takes effect on register price previews and checkouts.
+    - `GET/POST /admin/users`, `POST /admin/users/{id}`, `POST /admin/users/{id}/revoke-sessions` (`UserManage` — Admin only): create/edit staff & portal accounts, rotate password/PIN/badge hashes (hashes never exposed), auto-revoke active sessions on role change/deactivation, and block self-deactivation/self-demotion (`400`).
+    - `GET/POST /admin/service-tokens`, `POST /admin/service-tokens/{id}/revoke` (`UserManage` — Admin only): issue store-scoped `dfs_` sync tokens (raw secret returned once on `201`), list metadata only, and revoke.
+  - Added end-to-end integration test suite `crates/df-edge/tests/admin_sync_http.rs` (4 tests covering RBAC, live tax recalculation after store jurisdiction update, user CRUD/guardrails/session revocation, and service token lifecycle) and updated `docs/auth.md`.
+- ✅ **Frontend (`apps/pos-desktop`):**
+  - Added `System` sidebar group (`Sync` with live dead-letter count badge + `Admin` for Manager/Admin roles) using the existing CSS token/theme system (works across `mono`, `dark`, `expanse`, `lcars`, `tos`, and custom themes).
+  - Added `SyncScreen.tsx`: live edge sync health (`pending_count`, `dead_letter_count`, `last_synced_at`, `last_batch_id`), on-demand `Sync now`, and F8 dead-letter queue inspector with `Requeue for retry` and operator-reason `Dismiss`.
+  - Added `AdminScreen.tsx` (3 tabs): `Store & tax` (editable store profile + clickable US/CA tax & PaintCare/eco-fee preset preview + immediate TopBar store-name update), `Staff & users` (account table, create/edit forms, password/PIN/badge rotation, session revocation), and `Service tokens` (issue `dfs_` tokens with one-time copyable reveal banner, list, revoke).
+### Verification
+- 🔄 Local `admin_sync_http` tests, fmt, clippy (`-D warnings`), float-money guard, `pos-desktop` `npm run build`, and GitHub CI verification in progress.

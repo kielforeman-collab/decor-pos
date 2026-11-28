@@ -9,13 +9,18 @@ import {
   notifyUnauthorized,
 } from './auth'
 import type {
+  AdminUserSummary,
   Appointment,
   CatalogImportResponse,
   CountReconcileResponse,
   CoverageCheck,
+  CreateAdminUserRequest,
+  CreateServiceTokenResponse,
   CrmActivity,
   CrmSavedView,
   DailyUsageReport,
+  DeadLetterActionResponse,
+  DeadLetterEntry,
   DeliveryView,
   EcoRemittanceReport,
   EmailDelivery,
@@ -28,11 +33,17 @@ import type {
   PhysicalCount,
   PriceCatalogApplicationRow,
   PricingRuleRow,
+  RevokeServiceTokenResponse,
+  RevokeUserSessionsResponse,
   SavedViewCustomer,
+  ServiceTokenSummary,
   ShelfTagResponse,
   ShiftTemplate,
   StaffShift,
+  StoreSettingsResponse,
   TimeclockEntry,
+  UpdateAdminUserRequest,
+  UpdateStoreSettingsRequest,
 } from './backofficeTypes'
 
 async function http<T>(path: string, body?: unknown): Promise<T> {
@@ -433,4 +444,75 @@ export async function getLaborForecast(params: {
 
 export async function getLaborCoverage(date: string): Promise<CoverageCheck> {
   return http(`/scheduling/coverage?date=${encodeURIComponent(date)}`)
+}
+
+// --- Sync dead-letters & Edge Admin ----------------------------------------
+
+export async function listSyncDeadLetters(limit = 100): Promise<DeadLetterEntry[]> {
+  return http(`/pos/sync/dead-letters?limit=${encodeURIComponent(String(limit))}`)
+}
+
+export async function requeueSyncDeadLetter(id: string): Promise<DeadLetterActionResponse> {
+  return http(`/pos/sync/dead-letters/${encodeURIComponent(id)}/requeue`, {})
+}
+
+export async function dismissSyncDeadLetter(
+  id: string,
+  reason: string,
+): Promise<DeadLetterActionResponse> {
+  return http(`/pos/sync/dead-letters/${encodeURIComponent(id)}/dismiss`, { reason })
+}
+
+export async function getStoreSettings(): Promise<StoreSettingsResponse> {
+  return http('/admin/store')
+}
+
+export async function updateStoreSettings(
+  body: UpdateStoreSettingsRequest,
+): Promise<StoreSettingsResponse> {
+  return http('/admin/store', body)
+}
+
+export async function listAdminUsers(): Promise<AdminUserSummary[]> {
+  return http('/admin/users')
+}
+
+export async function createAdminUser(
+  body: CreateAdminUserRequest,
+): Promise<AdminUserSummary> {
+  return http('/admin/users', body)
+}
+
+export async function updateAdminUser(
+  id: string,
+  body: UpdateAdminUserRequest,
+): Promise<AdminUserSummary> {
+  return http(`/admin/users/${encodeURIComponent(id)}`, body)
+}
+
+export async function revokeAdminUserSessions(
+  id: string,
+): Promise<RevokeUserSessionsResponse> {
+  return http(`/admin/users/${encodeURIComponent(id)}/revoke-sessions`, {})
+}
+
+export async function listAdminServiceTokens(
+  storeId?: string,
+): Promise<ServiceTokenSummary[]> {
+  const q = storeId ? `?store_id=${encodeURIComponent(storeId)}` : ''
+  return http(`/admin/service-tokens${q}`)
+}
+
+export async function createAdminServiceToken(body: {
+  store_id?: string
+  label: string
+  ttl_days?: number | null
+}): Promise<CreateServiceTokenResponse> {
+  return http('/admin/service-tokens', body)
+}
+
+export async function revokeAdminServiceToken(
+  id: string,
+): Promise<RevokeServiceTokenResponse> {
+  return http(`/admin/service-tokens/${encodeURIComponent(id)}/revoke`, {})
 }

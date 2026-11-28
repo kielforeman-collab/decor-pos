@@ -502,6 +502,27 @@ pub async fn set_user_active(pool: &AnyPool, user_id: Uuid, active: bool) -> Res
     Ok(())
 }
 
+/// Update a user's display name and role. Changing a role takes effect
+/// on new logins (existing sessions cache the role at issuance; callers
+/// should also revoke active sessions when downgrading privileges).
+pub async fn update_user_profile(
+    pool: &AnyPool,
+    user_id: Uuid,
+    display_name: &str,
+    role: Role,
+) -> Result<(), DbError> {
+    let result = sqlx::query("UPDATE users SET display_name = $1, role_id = $2 WHERE id = $3")
+        .bind(display_name)
+        .bind(uuid_str(role_id(role)))
+        .bind(uuid_str(user_id))
+        .execute(pool)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(DbError::NotFound(format!("user {user_id}")));
+    }
+    Ok(())
+}
+
 // --- sessions --------------------------------------------------------------
 
 /// Persist a session row over any executor, so a caller holding

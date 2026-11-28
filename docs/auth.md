@@ -304,6 +304,10 @@ customers' AR summaries through the unscoped staff AR routes).
 | `GET /mobile/kpis` | `PosCheckout` **or** `InventoryView` **or** `ArView` | |
 | `GET /scheduling/templates`, `/scheduling/shifts`, `/scheduling/timeclock`, `/scheduling/forecast`, `/scheduling/coverage` | `SchedulingView` | Reads + timeclock clock-in/out (every staff role) |
 | `POST /scheduling/templates`, `/scheduling/shifts`, `/scheduling/shifts/{id}/status` | `SchedulingManage` | Manager/Admin only |
+| `GET /pos/sync/dead-letters`, `POST /pos/sync/dead-letters/{id}/requeue\|dismiss`, `GET /admin/store` | `SyncIngest` | Manager/Admin only — dead-letter queue triage (F8) and read-only store/tax profile |
+| `POST /admin/store` | `SystemAdmin` | Admin only — update store profile, currency, timezone, and tax/eco-fee jurisdiction |
+| `GET/POST /admin/users`, `POST /admin/users/{id}`, `POST /admin/users/{id}/revoke-sessions` | `UserManage` | Admin only — staff/portal account CRUD, password/PIN/badge rotation, session revocation (hashes never returned; self-deactivate/self-demote rejected) |
+| `GET/POST /admin/service-tokens`, `POST /admin/service-tokens/{id}/revoke` | `UserManage` | Admin only — issue, list (metadata only), and revoke store `dfs_` sync tokens |
 | `GET /ws/v1/store/{store_id}` | any live session | `?token=` accepted (browsers cannot set WS headers) |
 
 ### Role → route matrix (HQ API, `df-api/src/lib.rs`)

@@ -135,11 +135,14 @@ export interface SyncState {
   last_batch_id: string | null
   last_synced_at: string | null
   pending_count: number
+  dead_letter_count?: number
 }
 
 export interface ApplyReport {
   applied: number
   duplicates: number
+  applied_ids?: string[]
+  conflict_ids?: string[]
 }
 
 export interface ScanResult {

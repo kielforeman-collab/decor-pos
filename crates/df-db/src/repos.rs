@@ -388,6 +388,34 @@ pub async fn list_stores_for_org(pool: &AnyPool, org_id: Uuid) -> Result<Vec<Sto
     rows.iter().map(store_from_row).collect()
 }
 
+/// Update an existing store's editable configuration fields (name,
+/// code, jurisdiction, postal code, currency, timezone, warehouse flag).
+/// Returns [`DbError::NotFound`] if the store does not exist in `org_id`.
+pub async fn update_store(pool: &AnyPool, store: &Store) -> Result<(), DbError> {
+    let result = sqlx::query(
+        "UPDATE stores \
+         SET code = $1, name = $2, country_code = $3, region_code = $4, \
+             postal_code = $5, currency = $6, timezone = $7, is_warehouse = $8 \
+         WHERE id = $9 AND org_id = $10",
+    )
+    .bind(&store.code)
+    .bind(&store.name)
+    .bind(&store.country_code)
+    .bind(&store.region_code)
+    .bind(&store.postal_code)
+    .bind(&store.currency)
+    .bind(&store.timezone)
+    .bind(store.is_warehouse)
+    .bind(uuid_str(store.id))
+    .bind(uuid_str(store.org_id))
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(DbError::NotFound(format!("store {}", store.id)));
+    }
+    Ok(())
+}
+
 // --- users ----------------------------------------------------------------
 
 /// Insert a user over any executor, so a caller holding a
