@@ -484,4 +484,8 @@ only its own section, ticking items as they are verified — not when code merel
   - Added `apiBase.ts` (`getApiBase()`, `apiUrl(path)`): targets `/api<path>` in Vite browser mode and caches `invoke('get_api_base_url')` (`http://127.0.0.1:<port>`) in the installed Tauri app.
   - Unified `api.ts`, `backofficeApi.ts`, and `auth.ts` onto `apiUrl()` so **all 14 desktop sections** (Transactions, Deliveries, Orders, Transfers, Counts, Products, Customers, CRM, Vendors, Scheduling, Dashboards, Reports, Sync, Admin) run identically inside the Windows & Linux installers with full `Bearer dfp_...` RBAC enforcement, real cashier `user_id` attribution, and auth rate limiting (closing the Phase 7 Tauri IPC RBAC gap). Native hardware/provider commands (`getStatus`, `setProvider`, `lastReceiptText`, `scanBarcode`) stay on `invoke()` sharing the same `Arc<Edge>`.
 ### Verification
-- 🔄 Local `df-auth-http` + `pos-desktop` (`pos_app_embedded_loopback_http_parity`) tests, fmt, clippy (`-D warnings`), `pos-desktop` `npm run build`, and GitHub CI + Linux/Windows Tauri dry-run build in progress.
+- ✅ `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, float-money guard across all 8 financial crates, `apps/pos-desktop` `npm run build` (`471.80 kB` main bundle, `-4.3 kB` net reduction, lazy `xlsx` chunk `429.52 kB`), and `pos_app_embedded_loopback_http_parity` — all clean.
+- ✅ GitHub `CI` green on `f90b585` (run `46160190576`, `check` in **1m30s**: **490/490** workspace nextest tests passed in 31.9s, 0 failed, 0 skipped + doc tests + Typst + all 4 frontend builds).
+- ✅ Native Tauri `--features tauri-shell` dry-run (`Release`, `platform=linux`, run `46160201614`): **`build-linux` passed in 2m52s** on `groundbox-8vcpu` (`.rpm` + `.AppImage` + `df-server` built and staged cleanly).
+### GitHub
+- ✅ Pushed to `main`: `f90b585` (`feat(desktop): embedded loopback df-edge HTTP server for full native Tauri parity`).
