@@ -15,7 +15,10 @@ import {
   type InventoryBalance,
   type ReorderPoint,
 } from '../api'
+import { getShelfTag } from '../backofficeApi'
+import type { ShelfTagResponse } from '../backofficeTypes'
 import { parseImportFile, type ImportPreview } from '../productImport'
+import PricingRulesPanel from './PricingRulesPanel'
 import {
   cad,
   discountedPrice,
@@ -94,6 +97,10 @@ export default function ProductsScreen({
   const [maxQty, setMaxQty] = useState('')
   const [reorderQty, setReorderQty] = useState('')
   const [savingPoint, setSavingPoint] = useState(false)
+
+  const [subView, setSubView] = useState<'catalog' | 'pricing'>('catalog')
+  const [shelfTag, setShelfTag] = useState<ShelfTagResponse | null>(null)
+  const [loadingTag, setLoadingTag] = useState(false)
 
   const [importFileName, setImportFileName] = useState('')
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
@@ -231,26 +238,53 @@ export default function ProductsScreen({
     <section className="screen" aria-label="Products">
       <div className="screen-head">
         <h2>Products</h2>
-        <div className="screen-actions">
-          <button type="button" className="screen-btn" onClick={() => importInputRef.current?.click()} disabled={importing}>
-            Import products…
+        <div className="screen-tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={subView === 'catalog'}
+            className={subView === 'catalog' ? 'active' : ''}
+            onClick={() => setSubView('catalog')}
+          >
+            Catalog &amp; stock
           </button>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept=".xlsx,.csv"
-            style={{ display: 'none' }}
-            onChange={(e) => {
-              const f = e.target.files?.[0]
-              if (f) void handleImportFilePicked(f)
-              e.target.value = ''
-            }}
-          />
-          <button type="button" className="screen-btn" disabled={loading} onClick={() => void load()}>
-            Refresh
+          <button
+            type="button"
+            role="tab"
+            aria-selected={subView === 'pricing'}
+            className={subView === 'pricing' ? 'active' : ''}
+            onClick={() => setSubView('pricing')}
+          >
+            Pricing rules
           </button>
         </div>
+        {subView === 'catalog' && (
+          <div className="screen-actions">
+            <button type="button" className="screen-btn" onClick={() => importInputRef.current?.click()} disabled={importing}>
+              Import products…
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".xlsx,.csv"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) void handleImportFilePicked(f)
+                e.target.value = ''
+              }}
+            />
+            <button type="button" className="screen-btn" disabled={loading} onClick={() => void load()}>
+              Refresh
+            </button>
+          </div>
+        )}
       </div>
+
+      {subView === 'pricing' ? (
+        <PricingRulesPanel onToast={onToast} />
+      ) : (
+        <>
 
       {error && (
         <div className="error" role="alert">
@@ -484,6 +518,45 @@ export default function ProductsScreen({
                 <p className="screen-note">Saved point: min {fmtQty(point.min_qty)} · max {fmtQty(point.max_qty)} · reorder {fmtQty(point.reorder_qty)}</p>
               )}
 
+              <div className="screen-sub">
+                <h4>Shelf tag (ZPL)</h4>
+                <div className="screen-actions">
+                  <button
+                    type="button"
+                    className="screen-btn"
+                    disabled={loadingTag}
+                    onClick={() => {
+                      setLoadingTag(true)
+                      setError(null)
+                      void getShelfTag(selected.product_id)
+                        .then((tag) => {
+                          setShelfTag(tag)
+                          onToast(`Shelf tag ZPL generated for ${tag.sku}.`)
+                        })
+                        .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+                        .finally(() => setLoadingTag(false))
+                    }}
+                  >
+                    {loadingTag ? 'Generating…' : 'Generate shelf tag (ZPL)'}
+                  </button>
+                  {shelfTag && shelfTag.product_id === selected.product_id && (
+                    <button
+                      type="button"
+                      className="screen-btn"
+                      onClick={() => {
+                        void navigator.clipboard?.writeText(shelfTag.zpl)
+                        onToast('ZPL copied to clipboard.')
+                      }}
+                    >
+                      Copy ZPL
+                    </button>
+                  )}
+                </div>
+                {shelfTag && shelfTag.product_id === selected.product_id && (
+                  <pre className="screen-pre">{shelfTag.zpl}</pre>
+                )}
+              </div>
+
               <h4>BM warehouse — Aldergrove</h4>
               <dl className="screen-facts">
                 <div><dt>On hand</dt><dd>—</dd></div>
@@ -495,6 +568,8 @@ export default function ProductsScreen({
           )}
         </div>
       </div>
+        </>
+      )}
     </section>
   )
 }

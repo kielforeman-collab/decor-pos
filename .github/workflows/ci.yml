@@ -35,7 +35,10 @@ jobs:
         # Zero floating-point money (spec §8): f32/f64 must not appear in
         # the financial crates' sources. Fails the build if it does.
         run: |
-          if grep -rnE '\bf(32|64)\b' crates/df-domain/src crates/df-db/src crates/df-auth/src; then
+          if grep -rnE '\bf(32|64)\b' \
+            crates/df-domain/src crates/df-db/src crates/df-auth/src \
+            crates/df-ar/src crates/df-accounting/src crates/df-edge/src \
+            crates/df-edi/src crates/df-payments/src; then
             echo "ERROR: f32/f64 found in a financial crate — money paths must use rust_decimal::Decimal"
             exit 1
           fi
@@ -55,3 +58,21 @@ jobs:
 
       - name: Doc tests
         run: cargo test --workspace --doc
+
+  frontend:
+    runs-on: groundbox-4vcpu
+    strategy:
+      matrix:
+        app: [pos-desktop, mobile-pwa, web-portal, web-storefront]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install & build ${{ matrix.app }}
+        working-directory: apps/${{ matrix.app }}
+        run: npm ci && npm run build
+

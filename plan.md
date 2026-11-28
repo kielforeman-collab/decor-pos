@@ -349,6 +349,28 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ `cargo clippy --workspace --all-targets -- -D warnings` — clean across all workspace crates.
 - ✅ `cargo test -p df-api -p df-server -p df-edge` — **105 passed, 0 failed** across 27 test suites (after `1ce55f9`), plus `cargo test -p df-edge --lib --test inventory_backoffice --test product_import --test ar_statement_batch` — **38 passed, 0 failed** after the `inventory/` split.
 ### GitHub
-- ✅ Pushed to `main`: `1ce55f9` (`http/`, `edge/`, `df-api`, `df-server`, `df-db` clippy fix) + follow-up commit for `inventory/`.
+- ✅ Pushed to `main`: `1ce55f9` (`http/`, `edge/`, `df-api`, `df-server`, `df-db` clippy fix) and `b4e2e8e` (`inventory/`).
+
+## Frontend consolidation (`pos-desktop` absorbs `web-backoffice`) — ✅ DONE Nov 27, 2026
+### Scope
+- ✅ Absorbed every remaining `apps/web-backoffice` workflow into `apps/pos-desktop` using `pos-desktop`'s CSS token/theme system (no hardcoded colors, works across `mono`, `dark`, `expanse`, `lcars`, `tos`, and custom themes):
+  - `backofficeTypes.ts` + `backofficeApi.ts` — modular types and authenticated `/api` client helpers (401 clears session).
+  - `DeliveriesScreen.tsx` — dispatch board (status/date filters), create delivery, assign driver/vehicle, status transitions, 42-col packing slip preview, and POD close-out (signature + photo ref + SHA-256).
+  - `CountsScreen.tsx` — start physical count, scan counted quantities via `ProductPicker`, reconcile variances and inspect posted adjustments.
+  - `CrmScreen.tsx` — activities CRUD, due/overdue reminder tickler (complete/+24h snooze), appointments CRUD/cancel, saved views (activity + customer dialects), and lapsed-contractor report.
+  - `SchedulingScreen.tsx` — shift templates, daily staff shifts & status, timeclock clock-in/out, labor forecast & coverage check.
+  - `ReportsScreen.tsx` — daily usage & low-stock reports, PaintCare/Eco remittance with CSV download, ad-hoc transaction inquiry, and scheduled email outbox.
+  - `PricingRulesPanel.tsx` + ZPL shelf tags integrated into `ProductsScreen.tsx` (`Catalog & stock` / `Pricing rules` tab + `Generate shelf tag (ZPL)` on product detail).
+  - `EdiIntakePanel.tsx` integrated into `OrdersScreen.tsx` (collapsible `EDI intake & 832` panel for 855/856/810/832 intake, 832 review `mark-applied`, and vendor catalog CSV import).
+- ✅ Updated `Sidebar.tsx` and `App.tsx` so all 12 sidebar items (`Transactions`, `Deliveries`, `Orders`, `Transfers`, `Counts`, `Products`, `Customers`, `CRM`, `Vendors`, `Scheduling`, `Dashboards`, `Reports`) are wired live.
+- ✅ Retired and removed `apps/web-backoffice/` (~4.8k LOC duplicate React app deleted) and updated `README.md`, `docs/index.html`, and `docs/auth.md`.
+- ✅ CI (`.github/workflows/ci.yml`): added `frontend` build matrix (`npm ci && npm run build` for `pos-desktop`, `mobile-pwa`, `web-portal`, `web-storefront`) and expanded the `f32`/`f64` guard across all 8 financial/transactional crates (`df-domain`, `df-db`, `df-auth`, `df-ar`, `df-accounting`, `df-edge`, `df-edi`, `df-payments`).
+### Verification
+- ✅ `apps/pos-desktop` `npm run build` (`tsc -b && vite build`) clean — main bundle `445.40 kB` (`122.08 kB` gzipped), lazy `xlsx` chunk `429.52 kB`, zero warnings.
+- ✅ `apps/mobile-pwa`, `apps/web-portal`, `apps/web-storefront` `npm ci && npm run build` — all 3 clean.
+- ✅ Float-money grep across all 8 financial crates — clean.
+### GitHub
+- ✅ Pushed to `main` (see latest commit).
+
 
 

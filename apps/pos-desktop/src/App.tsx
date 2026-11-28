@@ -35,12 +35,17 @@ import Login from './Login'
 import OverridePrompt from './OverridePrompt'
 import HistoryModal from './components/HistoryModal'
 import InvoiceView from './components/InvoiceView'
-import OrdersScreen from './components/OrdersScreen'
-import TransfersScreen from './components/TransfersScreen'
 import AccountsScreen from './components/AccountsScreen'
-import ProductsScreen from './components/ProductsScreen'
-import VendorsScreen from './components/VendorsScreen'
+import CountsScreen from './components/CountsScreen'
+import CrmScreen from './components/CrmScreen'
 import DashboardsScreen from './components/DashboardsScreen'
+import DeliveriesScreen from './components/DeliveriesScreen'
+import OrdersScreen from './components/OrdersScreen'
+import ProductsScreen from './components/ProductsScreen'
+import ReportsScreen from './components/ReportsScreen'
+import SchedulingScreen from './components/SchedulingScreen'
+import TransfersScreen from './components/TransfersScreen'
+import VendorsScreen from './components/VendorsScreen'
 import PaymentModal from './components/PaymentModal'
 import ProductSearch from './components/ProductSearch'
 import Sidebar from './components/Sidebar'
@@ -918,11 +923,8 @@ export default function App() {
       <Sidebar
         activeNav={activeNav}
         onNavigate={(name) => {
-          if (name === 'Transactions' || name === 'Orders' || name === 'Transfers' || name === 'Customers' || name === 'Products' || name === 'Vendors' || name === 'Dashboards') {
-            setActiveNav(name)
-          } else {
-            say(`${name} — not wired up in this build yet.`)
-          }
+          setActiveNav(name)
+          document.documentElement.classList.remove('nav-open')
         }}
         onChangeLocation={() => say('Location switching is not wired in this build — single store (Main counter).')}
         onSwitchOperator={() => setSwitching(true)}
@@ -930,18 +932,28 @@ export default function App() {
       />
 
       <main className="main">
-        {activeNav === 'Orders' ? (
+        {activeNav === 'Deliveries' ? (
+          <DeliveriesScreen onToast={say} />
+        ) : activeNav === 'Orders' ? (
           <OrdersScreen storeId={storeId} onToast={say} />
         ) : activeNav === 'Transfers' ? (
           <TransfersScreen storeId={storeId} onToast={say} />
+        ) : activeNav === 'Counts' ? (
+          <CountsScreen storeId={storeId} onToast={say} />
         ) : activeNav === 'Customers' ? (
           <AccountsScreen storeId={storeId} onToast={say} />
+        ) : activeNav === 'CRM' ? (
+          <CrmScreen storeId={storeId} onToast={say} />
         ) : activeNav === 'Products' ? (
           <ProductsScreen storeId={storeId} onToast={say} />
         ) : activeNav === 'Vendors' ? (
           <VendorsScreen storeId={storeId} onToast={say} />
+        ) : activeNav === 'Scheduling' ? (
+          <SchedulingScreen onToast={say} />
         ) : activeNav === 'Dashboards' ? (
           <DashboardsScreen storeId={storeId} onToast={say} />
+        ) : activeNav === 'Reports' ? (
+          <ReportsScreen storeId={storeId} onToast={say} />
         ) : (
           <>
         <section className="register">

@@ -503,9 +503,10 @@ CREATE INDEX idx_sessions_user_id ON sessions (user_id, created_at);
 - **EDI vendor config** has no separate permission: all `/edi/*`
   routes (including send/intake/import) are `ReportView`-gated.
 - **Frontend login screens:** landed in Phase 7 (login screens in
-  pos-desktop, web-backoffice, web-portal, mobile-pwa; token
-  `df-pos-token`, `Authorization: Bearer`; 401 returns to login).
-  Known limit: tokens live in localStorage, not httpOnly cookies.
+  pos-desktop, web-portal, mobile-pwa — `web-backoffice` was absorbed
+  into `pos-desktop`; token `df-pos-token`, `Authorization: Bearer`;
+  401 returns to login). Known limit: tokens live in localStorage, not
+  httpOnly cookies.
 - **Badge-only lookup:** a badge scan with no selected user cannot
   name its user (hashes can't be searched). Needs a non-secret badge
   identifier column if the counter UX wants tap-to-switch without

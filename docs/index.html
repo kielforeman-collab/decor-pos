@@ -86,8 +86,7 @@ curl -s http://localhost:3000/api-docs/openapi.json | head -c 400</code></pre>
   <p>For trying the screens. Start the edge daemon (Option B, or <code>cargo run -p df-server -- edge --db sqlite:edge.db --store-id &lt;uuid&gt; --listen 127.0.0.1:8080</code>), then any frontend with <code>npm install &amp;&amp; npm run dev</code>. Each app talks to the edge on <code>:8080</code>.</p>
   <table>
     <tr><th>App</th><th>Folder</th><th>Dev URL</th><th>What it is</th></tr>
-    <tr><td>Counter POS</td><td><code>apps/pos-desktop</code></td><td>http://localhost:1420</td><td>Till, checkout, holds, quotes, returns, Z-report</td></tr>
-    <tr><td>Back-office</td><td><code>apps/web-backoffice</code></td><td>http://localhost:1421</td><td>Inventory, purchasing, transfers, counts, pricing, AR, CRM, delivery, BI</td></tr>
+    <tr><td>Store POS &amp; Back-Office</td><td><code>apps/pos-desktop</code></td><td>http://localhost:1420</td><td>Unified counter POS &amp; back-office: checkout, tills, deliveries, orders/EDI, transfers, counts, products/pricing, customers/AR, CRM, vendors, scheduling, dashboards &amp; reports</td></tr>
     <tr><td>Mobile PWA</td><td><code>apps/mobile-pwa</code></td><td>http://localhost:1422</td><td>Warehouse, outside sales, driver POD (offline-first)</td></tr>
     <tr><td>Contractor portal</td><td><code>apps/web-portal</code></td><td>http://localhost:1423</td><td>Invoices, statements, formula reorders, online bill pay</td></tr>
     <tr><td>BOPIS storefront</td><td><code>apps/web-storefront</code></td><td>http://localhost:1424</td><td>Public catalog, cart, counter pickup</td></tr>

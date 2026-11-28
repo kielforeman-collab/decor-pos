@@ -1,88 +1,10 @@
-// Shared JSON shapes for the edge back-office API (Phase 3).
-// Money serializes as {amount: "12.3400", currency: "Usd"};
-// decimals serialize as strings; never floats.
+// Back-office domain types absorbed into pos-desktop (counts, shelf tags,
+// matrix pricing rules, CRM, deliveries/POD, EDI intake/832, reports/BI,
+// and Scheduling+). Mirrors df-edge JSON shapes verbatim.
 
-export type Money = { amount: string; currency: 'Usd' | 'Cad' }
+import type { Money } from './types'
 
-export interface InventoryBalance {
-  product_id: string
-  sku: string
-  name: string
-  base_uom: string
-  list_price: string
-  standard_cost: string
-  on_hand: string
-  committed: string
-  on_order: string
-  in_transit: string
-}
-
-export interface ReorderPoint {
-  id: string
-  store_id: string
-  product_id: string
-  min_qty: string
-  max_qty: string
-  reorder_qty: string
-}
-
-export interface SuggestedLine {
-  product_id: string
-  sku: string
-  description: string
-  qty: string
-  uom: string
-  unit_cost: string
-  on_hand: string
-  on_order: string
-  min_qty: string
-  max_qty: string
-  velocity_per_day: string
-}
-
-export interface SuggestedPurchaseOrder {
-  po_number: string
-  vendor_id: string
-  lines: SuggestedLine[]
-}
-
-export interface PoLineView {
-  id: string
-  line_no: number
-  product_id: string
-  sku: string
-  description: string
-  qty: string
-  received_qty: string
-  uom: string
-  unit_cost: string
-}
-
-export interface PurchaseOrderView {
-  id: string
-  po_number: string
-  vendor_id: string
-  store_id: string
-  status: string
-  total: string
-  lines: PoLineView[]
-  created_at: string
-}
-
-export interface TransferLineView {
-  product_id: string
-  qty: string
-  unit_cost: string
-}
-
-export interface Transfer {
-  id: string
-  from_store_id: string
-  to_store_id: string
-  status: string
-  lines: TransferLineView[]
-  created_at: string
-}
+// --- Physical counts -------------------------------------------------------
 
 export interface CountLineView {
   product_id: string
@@ -108,6 +30,15 @@ export interface PhysicalCount {
   created_at: string
   counted_at: string | null
 }
+
+export interface CountReconcileResponse {
+  count_id: string
+  store_id: string
+  status: string
+  adjustments: CountAdjustment[]
+}
+
+// --- Shelf tags & bulk matrix pricing --------------------------------------
 
 export interface ShelfTagResponse {
   product_id: string
@@ -138,66 +69,7 @@ export interface PricingRuleRow {
   effective_to: string | null
 }
 
-export interface ArCustomerSummary {
-  customer_id: string
-  account_number: string
-  company_name: string | null
-  customer_type: string
-  charge_enabled: boolean
-  credit_limit: Money
-  credit_hold: boolean
-  balance: Money
-  entry_count: number
-  oldest_due_date: string | null
-}
-
-export interface AgingCustomerRow {
-  customer_id: string
-  account_number: string
-  balance: Money
-  buckets: [Money, Money, Money, Money, Money]
-}
-
-export interface AgingView {
-  as_of: string
-  totals: [Money, Money, Money, Money, Money]
-  customers: AgingCustomerRow[]
-}
-
-export interface CollectionsRow {
-  customer_id: string
-  account_number: string
-  company_name: string | null
-  balance: Money
-  credit_limit: Money
-  credit_hold: boolean
-  overdue: Money
-  oldest_due_date: string | null
-}
-
-export interface CollectionsView {
-  as_of: string
-  customers: CollectionsRow[]
-}
-
-export function fmtMoney(m: Money | null | undefined): string {
-  if (!m) return '$0.00'
-  const n = Number(m.amount)
-  const symbol = m.currency === 'Cad' ? 'CA$' : '$'
-  const sign = n < 0 ? '-' : ''
-  return `${sign}${symbol}${Math.abs(n).toFixed(2)}`
-}
-
-export function fmtQty(qty: string): string {
-  const n = Number(qty)
-  return Number.isInteger(n) ? String(n) : String(n)
-}
-
-// --- Phase 4: CRM, delivery, EDI -------------------------------------------
-// Shapes mirror the edge JSON (df-crm / df-delivery / df-edi rows).
-// Decimals serialize as strings; datetimes as RFC 3339 strings.
-// Enum values serialize as their Rust variant names, except
-// LapsedStatus which is snake_case ("lapsed" / "never_purchased").
+// --- CRM -------------------------------------------------------------------
 
 export interface CrmActivity {
   id: string
@@ -266,6 +138,8 @@ export interface LapsedReport {
   customers: LapsedContractor[]
 }
 
+// --- Delivery & Proof of Delivery ------------------------------------------
+
 export interface DeliveryEvent {
   id: string
   delivery_id: string
@@ -327,16 +201,7 @@ export interface PackingSlipView {
   zpl: string
 }
 
-export interface EdiDocument {
-  id: string
-  doc_type: string
-  direction: string
-  vendor_id: string
-  related_po_id: string | null
-  raw_text: string
-  parsed_json: unknown
-  received_at: string
-}
+// --- EDI intake, 832 price review & catalog CSV ----------------------------
 
 export interface AckLineResult {
   line_no: number
@@ -368,71 +233,6 @@ export interface IntakeResponse {
   price_application_id?: string | null
 }
 
-export interface SendPoResponse {
-  po_id: string
-  po_number: string
-  doc_id: string
-  x12_850: string
-  written_to: string | null
-}
-
-export interface MatchLine {
-  po_line_no: number | null
-  vendor_sku: string
-  po_qty: string
-  received_qty: string
-  invoiced_qty: string
-  po_unit_cost: string
-  invoiced_unit_price: string
-  qty_variance: string
-  price_variance_per_unit: string
-  qty_variance_amount: string
-  price_variance_amount: string
-  total_variance_amount: string
-  status: string
-  variance_kind: string
-}
-
-export interface InvoiceMatchReport {
-  id: string
-  po_number: string
-  invoice_number: string
-  shipment_id: string
-  status: string
-  lines: MatchLine[]
-  po_total: string
-  invoiced_total: string
-  total_variance_amount: string
-  stated_total_difference: string | null
-  created_at: string
-}
-
-export interface InvoiceMatchReportRow {
-  id: string
-  po_id: string
-  report: InvoiceMatchReport
-}
-
-export interface PoAcknowledgmentRow {
-  id: string
-  po_id: string
-  ack: {
-    po_number: string
-    ack_date: string | null
-    vendor_id: string | null
-    lines: {
-      line_no: number
-      vendor_sku: string
-      ack_code: string
-      qty_acknowledged: string
-      uom: string
-      unit_cost: string | null
-      promised_date: string | null
-    }[]
-  }
-  received_at: string
-}
-
 export interface AppliedPriceLine {
   vendor_sku: string
   action: string
@@ -458,18 +258,6 @@ export interface PriceCatalogApplicationRow {
   applied_at: string | null
 }
 
-export interface TransportRecord {
-  id: string
-  vendor_id: string
-  direction: string
-  transport: string
-  file_name: string
-  doc_type: string | null
-  status: string
-  error: string | null
-  created_at: string
-}
-
 export interface CatalogItem {
   vendor_sku: string
   description: string
@@ -485,104 +273,22 @@ export interface CatalogImportResponse {
   errors: { row: number; message: string }[]
 }
 
-// --- GUI product import -----------------------------------------------------
-// Shapes mirror the edge JSON (df_db::product_import). `row` is the
-// 1-based spreadsheet row number (header is row 1). Prices travel as
-// strings ("$39.34"); the backend parses them to Decimal. Category,
-// UPC, MSRP and MAP are accepted by the backend but NOT stored —
-// `products` has no columns for them.
+// --- Reports & BI (Phase 2 + Phase 6) --------------------------------------
 
-export interface ProductImportRow {
-  row: number
-  sku: string
-  name: string
-  category: string
-  line: string
-  color: string
-  size: string
-  upc: string
-  msrp: string
-  map: string
-  net_price: string
-  list_price: string
-  brand_code: string
-}
-
-export interface ProductImportFailure {
-  row: number
-  sku: string
-  reason: string
-}
-
-export interface ProductImportResponse {
-  created: number
-  updated: number
-  failed: number
-  failures: ProductImportFailure[]
-}
-
-// --- Phase 6: BI -------------------------------------------------------------
-// Shapes mirror the edge JSON (df-reports kpi / eco / outbox).
-// Decimals serialize as strings; Money as {amount, currency}.
-
-export interface KpiSales {
-  sale_count: number
-  return_count: number
-  gross_sales: Money
-  returns: Money
-  net_sales: Money
-  tax_total: Money
-  eco_fee_total: Money
-  grand_total: Money
-  avg_ticket: Money | null
-}
-
-export interface KpiMargin {
-  revenue: Money
-  cogs: Money
-  gross_profit: Money
-  margin_pct: string | null
-}
-
-export interface KpiInventory {
-  on_hand_value: Money
-  avg_inventory_value: Money
-  turns: string | null
-}
-
-export interface FormulaColorUsage {
-  color_code: string
-  color_name: string
-  formulas: number
-}
-
-export interface FormulaUsage {
-  formulas_created: number
-  per_color: FormulaColorUsage[]
-  total_tint_cost: Money
-}
-
-export interface AgingSummary {
-  current: Money
-  days_31_60: Money
-  days_61_90: Money
-  days_91_120: Money
-  over_120: Money
-}
-
-export interface KpiDashboard {
-  org_id: string
+export interface DailyUsageReport {
+  date: string
   store_id: string
-  start: string
-  end: string
-  as_of: string
-  currency: 'Usd' | 'Cad'
-  sales: KpiSales
-  margin: KpiMargin
-  inventory: KpiInventory
-  ar_aging: AgingSummary
-  total_open_ar: Money
-  formulas: FormulaUsage
+  tint_count?: number
+  sales_total?: Money
+  [key: string]: unknown
+}
+
+export interface LowStockReport {
+  date: string
+  store_id: string
+  low_products?: unknown[]
+  low_colorants?: unknown[]
+  [key: string]: unknown
 }
 
 export interface EcoJurisdictionRow {
@@ -633,10 +339,7 @@ export interface EmailDelivery {
   status: string
 }
 
-// --- Phase 6: Scheduling+ ----------------------------------------------------
-// Shapes mirror the edge JSON (df-scheduling rows + forecast report).
-// Decimals serialize as strings; datetimes as RFC 3339 strings.
-// All scheduling times are UTC in v1.0 (see df-edge::scheduling).
+// --- Scheduling+ (Phase 6) -------------------------------------------------
 
 export interface ShiftTemplate {
   id: string

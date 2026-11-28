@@ -1,12 +1,6 @@
-// Back-office client: plain HTTP to the edge (Vite proxies
-// `/api/*` to a `df-server edge` on 127.0.0.1:8080). No mocks —
-// every call hits the real edge API against the same SQLite edge
-// database the counter POS uses.
-//
-// Phase 7: every call carries `Authorization: Bearer <token>` from
-// localStorage key `df-pos-token` (same key in all four Phase 7 apps).
-// A 401 clears the session and notifies the app (see src/auth.ts),
-// which returns to the login screen.
+// Back-office HTTP API helpers absorbed into pos-desktop (counts, shelf tags,
+// matrix pricing rules, CRM, deliveries/POD, EDI intake/832, reports/BI,
+// and Scheduling+). Uses the same Bearer session & 401 handling as api.ts.
 
 import {
   UnauthorizedError,
@@ -15,45 +9,31 @@ import {
   notifyUnauthorized,
 } from './auth'
 import type {
-  AgingView,
   Appointment,
-  ArCustomerSummary,
   CatalogImportResponse,
-  CollectionsView,
+  CountReconcileResponse,
   CoverageCheck,
-  ForecastReport,
-  ShiftTemplate,
-  StaffShift,
-  TimeclockEntry,
   CrmActivity,
   CrmSavedView,
+  DailyUsageReport,
   DeliveryView,
   EcoRemittanceReport,
   EmailDelivery,
-  EdiDocument,
+  ForecastReport,
   InquiryRow,
   IntakeResponse,
-  InventoryBalance,
-  InvoiceMatchReport,
-  KpiDashboard,
-  InvoiceMatchReportRow,
   LapsedReport,
+  LowStockReport,
   PackingSlipView,
   PhysicalCount,
-  PoAcknowledgmentRow,
   PriceCatalogApplicationRow,
   PricingRuleRow,
-  ProductImportResponse,
-  ProductImportRow,
-  PurchaseOrderView,
-  ReorderPoint,
   SavedViewCustomer,
-  SendPoResponse,
   ShelfTagResponse,
-  SuggestedPurchaseOrder,
-  Transfer,
-  TransportRecord,
-} from './types'
+  ShiftTemplate,
+  StaffShift,
+  TimeclockEntry,
+} from './backofficeTypes'
 
 async function http<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, {
@@ -73,81 +53,14 @@ async function http<T>(path: string, body?: unknown): Promise<T> {
   return json as T
 }
 
-export async function getHealth(): Promise<{ store_id: string; status: string }> {
-  return http('/health')
-}
-
-export async function getBalances(storeId: string): Promise<InventoryBalance[]> {
-  return http(`/inventory/balances?store_id=${storeId}`)
-}
-
-export async function getReorderPoints(storeId: string): Promise<ReorderPoint[]> {
-  return http(`/inventory/reorder-points?store_id=${storeId}`)
-}
-
-export async function setReorderPoint(body: {
-  product_id: string
-  store_id: string
-  min_qty: string
-  max_qty: string
-  reorder_qty: string
-}): Promise<ReorderPoint> {
-  return http('/inventory/reorder-points', body)
-}
-
-export async function suggestReplenishment(body: {
-  store_id: string
-  days: number
-  lead_time_days: number
-}): Promise<SuggestedPurchaseOrder[]> {
-  return http('/purchasing/replenishment/suggest', body)
-}
-
-export async function createPurchaseOrder(body: {
-  vendor_id: string
-  store_id: string
-  lines: { product_id: string; qty: string }[]
-}): Promise<PurchaseOrderView> {
-  return http('/purchasing/orders', body)
-}
-
-export async function listPurchaseOrders(storeId: string): Promise<PurchaseOrderView[]> {
-  return http(`/purchasing/orders?store_id=${storeId}`)
-}
-
-export async function receivePurchaseOrder(
-  poId: string,
-  lines: { product_id: string; qty: string }[],
-): Promise<PurchaseOrderView> {
-  return http(`/purchasing/orders/${poId}/receive`, { lines })
-}
-
-export async function createTransfer(body: {
-  from_store_id: string
-  to_store_id: string
-  lines: { product_id: string; qty: string; unit_cost: string }[]
-}): Promise<Transfer> {
-  return http('/inventory/transfers', body)
-}
-
-export async function listTransfers(storeId: string): Promise<Transfer[]> {
-  return http(`/inventory/transfers?store_id=${storeId}`)
-}
-
-export async function shipTransfer(id: string): Promise<Transfer> {
-  return http(`/inventory/transfers/${id}/ship`, {})
-}
-
-export async function receiveTransfer(id: string): Promise<Transfer> {
-  return http(`/inventory/transfers/${id}/receive`, {})
-}
+// --- Physical counts -------------------------------------------------------
 
 export async function startCount(storeId: string): Promise<PhysicalCount> {
   return http('/inventory/counts', { store_id: storeId })
 }
 
 export async function listCounts(storeId: string): Promise<PhysicalCount[]> {
-  return http(`/inventory/counts?store_id=${storeId}`)
+  return http(`/inventory/counts?store_id=${encodeURIComponent(storeId)}`)
 }
 
 export async function scanCount(
@@ -155,20 +68,20 @@ export async function scanCount(
   productId: string,
   countedQty: string,
 ): Promise<PhysicalCount> {
-  return http(`/inventory/counts/${id}/scan`, {
+  return http(`/inventory/counts/${encodeURIComponent(id)}/scan`, {
     product_id: productId,
     counted_qty: countedQty,
   })
 }
 
-export async function reconcileCount(
-  id: string,
-): Promise<{ count_id: string; adjustments: { product_id: string; on_hand_before: string; counted_qty: string; adjustment: string }[] }> {
-  return http(`/inventory/counts/${id}/reconcile`, {})
+export async function reconcileCount(id: string): Promise<CountReconcileResponse> {
+  return http(`/inventory/counts/${encodeURIComponent(id)}/reconcile`, {})
 }
 
+// --- Shelf tags & bulk matrix pricing --------------------------------------
+
 export async function getShelfTag(productId: string): Promise<ShelfTagResponse> {
-  return http(`/inventory/shelf-tags?product_id=${productId}`)
+  return http(`/inventory/shelf-tags?product_id=${encodeURIComponent(productId)}`)
 }
 
 export async function listPricingRules(): Promise<PricingRuleRow[]> {
@@ -176,25 +89,17 @@ export async function listPricingRules(): Promise<PricingRuleRow[]> {
 }
 
 export async function bulkUpdatePricingRules(
-  rules: { id: string; calc_method: string; calc_value: string; min_margin_floor: string | null }[],
+  rules: {
+    id: string
+    calc_method: string
+    calc_value: string
+    min_margin_floor: string | null
+  }[],
 ): Promise<PricingRuleRow[]> {
   return http('/pricing/rules', { rules })
 }
 
-export async function getArSummary(customerId: string): Promise<ArCustomerSummary> {
-  return http(`/ar/customers/${customerId}/summary`)
-}
-
-export async function getArAging(storeId: string, asOf?: string): Promise<AgingView> {
-  const query = asOf ? `?store_id=${storeId}&as_of=${asOf}` : `?store_id=${storeId}`
-  return http(`/ar/aging${query}`)
-}
-
-export async function getArCollections(storeId: string): Promise<CollectionsView> {
-  return http(`/ar/collections?store_id=${storeId}`)
-}
-
-// --- Phase 4: CRM -----------------------------------------------------------
+// --- CRM -------------------------------------------------------------------
 
 export async function listActivities(params?: {
   customer_id?: string
@@ -214,32 +119,33 @@ export async function createActivity(body: {
   activity_type: string
   subject: string
   notes?: string | null
-  created_by?: string | null
   due_at?: string | null
 }): Promise<CrmActivity> {
   return http('/crm/activities', body)
 }
 
 export async function completeActivity(id: string): Promise<CrmActivity> {
-  return http(`/crm/activities/${id}/complete`, {})
+  return http(`/crm/activities/${encodeURIComponent(id)}/complete`, {})
 }
 
 export async function snoozeActivity(id: string, snoozedUntil: string): Promise<CrmActivity> {
-  return http(`/crm/activities/${id}/snooze`, { snoozed_until: snoozedUntil })
+  return http(`/crm/activities/${encodeURIComponent(id)}/snooze`, {
+    snoozed_until: snoozedUntil,
+  })
 }
 
 export async function deleteActivity(id: string): Promise<{ id: string; deleted: boolean }> {
-  return http(`/crm/activities/${id}/delete`, {})
+  return http(`/crm/activities/${encodeURIComponent(id)}/delete`, {})
 }
 
 export async function listDueReminders(asOf?: string): Promise<CrmActivity[]> {
-  return http(asOf ? `/crm/reminders/due?as_of=${encodeURIComponent(asOf)}` : '/crm/reminders/due')
+  const suffix = asOf ? `?as_of=${encodeURIComponent(asOf)}` : ''
+  return http(`/crm/reminders/due${suffix}`)
 }
 
 export async function listOverdueReminders(asOf?: string): Promise<CrmActivity[]> {
-  return http(
-    asOf ? `/crm/reminders/overdue?as_of=${encodeURIComponent(asOf)}` : '/crm/reminders/overdue',
-  )
+  const suffix = asOf ? `?as_of=${encodeURIComponent(asOf)}` : ''
+  return http(`/crm/reminders/overdue${suffix}`)
 }
 
 export async function listAppointments(params?: {
@@ -267,11 +173,11 @@ export async function createAppointment(body: {
 }
 
 export async function cancelAppointment(id: string): Promise<Appointment> {
-  return http(`/crm/appointments/${id}/cancel`, {})
+  return http(`/crm/appointments/${encodeURIComponent(id)}/cancel`, {})
 }
 
 export async function deleteAppointment(id: string): Promise<{ id: string; deleted: boolean }> {
-  return http(`/crm/appointments/${id}/delete`, {})
+  return http(`/crm/appointments/${encodeURIComponent(id)}/delete`, {})
 }
 
 export async function listSavedViews(): Promise<CrmSavedView[]> {
@@ -286,31 +192,33 @@ export async function createSavedView(body: {
 }
 
 export async function runSavedView(id: string): Promise<CrmActivity[]> {
-  return http(`/crm/saved-views/${id}/run`)
+  return http(`/crm/saved-views/${encodeURIComponent(id)}/run`)
 }
 
 export async function runSavedViewCustomers(id: string): Promise<SavedViewCustomer[]> {
-  return http(`/crm/saved-views/${id}/run-customers`)
+  return http(`/crm/saved-views/${encodeURIComponent(id)}/run-customers`)
 }
 
 export async function deleteSavedView(id: string): Promise<{ id: string; deleted: boolean }> {
-  return http(`/crm/saved-views/${id}/delete`, {})
+  return http(`/crm/saved-views/${encodeURIComponent(id)}/delete`, {})
 }
 
 export async function getLapsedReport(params: {
-  store_id: string
+  store_id?: string
   as_of?: string
   inactive_days?: number
   include_never?: boolean
 }): Promise<LapsedReport> {
-  const q = new URLSearchParams({ store_id: params.store_id })
+  const q = new URLSearchParams()
+  if (params.store_id) q.set('store_id', params.store_id)
   if (params.as_of) q.set('as_of', params.as_of)
   if (params.inactive_days !== undefined) q.set('inactive_days', String(params.inactive_days))
   if (params.include_never !== undefined) q.set('include_never', String(params.include_never))
-  return http(`/crm/reports/lapsed?${q}`)
+  const suffix = q.toString() ? `?${q}` : ''
+  return http(`/crm/reports/lapsed${suffix}`)
 }
 
-// --- Phase 4: delivery ------------------------------------------------------
+// --- Deliveries & POD ------------------------------------------------------
 
 export async function createDelivery(body: {
   transaction_id?: string | null
@@ -337,25 +245,30 @@ export async function listDispatch(params?: {
 }
 
 export async function getDelivery(id: string): Promise<DeliveryView> {
-  return http(`/deliveries/${id}`)
+  return http(`/deliveries/${encodeURIComponent(id)}`)
 }
 
 export async function assignDelivery(
   id: string,
-  body: { driver_id: string; vehicle?: string | null; actor_user_id?: string | null; note?: string | null },
+  body: {
+    driver_id: string
+    vehicle?: string | null
+    actor_user_id?: string | null
+    note?: string | null
+  },
 ): Promise<DeliveryView> {
-  return http(`/deliveries/${id}/assign`, body)
+  return http(`/deliveries/${encodeURIComponent(id)}/assign`, body)
 }
 
 export async function setDeliveryStatus(
   id: string,
   body: { status: string; actor_user_id?: string | null; note?: string | null },
 ): Promise<DeliveryView> {
-  return http(`/deliveries/${id}/status`, body)
+  return http(`/deliveries/${encodeURIComponent(id)}/status`, body)
 }
 
 export async function getPackingSlip(id: string): Promise<PackingSlipView> {
-  return http(`/deliveries/${id}/packing-slip`)
+  return http(`/deliveries/${encodeURIComponent(id)}/packing-slip`)
 }
 
 export async function submitPod(
@@ -369,17 +282,10 @@ export async function submitPod(
     actor_user_id?: string | null
   },
 ): Promise<DeliveryView> {
-  return http(`/deliveries/${id}/pod`, body)
+  return http(`/deliveries/${encodeURIComponent(id)}/pod`, body)
 }
 
-// --- Phase 4: EDI -----------------------------------------------------------
-
-export async function sendPurchaseOrder(
-  poId: string,
-  outDir?: string | null,
-): Promise<SendPoResponse> {
-  return http(`/edi/purchase-orders/${poId}/send`, { out_dir: outDir ?? null })
-}
+// --- EDI intake, 832 price review & catalog CSV ----------------------------
 
 export async function intakeEdi(body: {
   doc_type: string
@@ -390,65 +296,36 @@ export async function intakeEdi(body: {
   return http('/edi/intake', body)
 }
 
-export async function listEdiDocuments(poId: string): Promise<EdiDocument[]> {
-  return http(`/edi/documents?po_id=${poId}`)
-}
-
-export async function listAcknowledgments(poId: string): Promise<PoAcknowledgmentRow[]> {
-  return http(`/edi/acknowledgments?po_id=${poId}`)
-}
-
-export async function threeWayMatch(poId: string): Promise<InvoiceMatchReport> {
-  return http(`/edi/three-way-match?po_id=${poId}`)
-}
-
-export async function listMatchReports(poId: string): Promise<InvoiceMatchReportRow[]> {
-  return http(`/edi/match-reports?po_id=${poId}`)
-}
-
 export async function getPriceApplication(id: string): Promise<PriceCatalogApplicationRow> {
-  return http(`/edi/price-applications/${id}`)
+  return http(`/edi/price-applications/${encodeURIComponent(id)}`)
 }
 
 export async function markPriceApplicationApplied(
   id: string,
   reviewedBy: string,
 ): Promise<PriceCatalogApplicationRow> {
-  return http(`/edi/price-applications/${id}/mark-applied`, { reviewed_by: reviewedBy })
+  return http(`/edi/price-applications/${encodeURIComponent(id)}/mark-applied`, {
+    reviewed_by: reviewedBy,
+  })
 }
 
-export async function listTransportRecords(vendorId: string): Promise<TransportRecord[]> {
-  return http(`/edi/transport?vendor_id=${encodeURIComponent(vendorId)}`)
-}
-
-export async function importCatalog(
+export async function importEdiCatalog(
   csvText: string,
   vendorId: string,
 ): Promise<CatalogImportResponse> {
   return http('/edi/catalog/import', { csv_text: csvText, vendor_id: vendorId })
 }
 
-// --- GUI product import -----------------------------------------------------
-// The spreadsheet is parsed in the browser (see productImport.ts);
-// only the parsed rows are posted — the file itself is never uploaded.
-export async function importProducts(body: {
-  store_id?: string
-  rows: ProductImportRow[]
-}): Promise<ProductImportResponse> {
-  return http('/pos/inventory/import', body)
+// --- Reports & BI ----------------------------------------------------------
+
+export async function getDailyUsageReport(date?: string): Promise<DailyUsageReport> {
+  const suffix = date ? `?date=${encodeURIComponent(date)}` : ''
+  return http(`/pos/reports/daily-usage${suffix}`)
 }
 
-// --- Phase 6: BI -------------------------------------------------------------
-
-export async function getKpiDashboard(
-  storeId: string,
-  start: string,
-  end: string,
-  asOf?: string,
-): Promise<KpiDashboard> {
-  const q = new URLSearchParams({ store_id: storeId, start, end })
-  if (asOf) q.set('as_of', asOf)
-  return http(`/bi/kpi?${q}`)
+export async function getLowStockReport(date?: string): Promise<LowStockReport> {
+  const suffix = date ? `?date=${encodeURIComponent(date)}` : ''
+  return http(`/pos/reports/low-stock${suffix}`)
 }
 
 export async function getEcoRemittance(start: string, end: string): Promise<EcoRemittanceReport> {
@@ -479,7 +356,11 @@ export async function runInquiry(params: {
   productId?: string
   docType?: string
 }): Promise<InquiryRow[]> {
-  const q = new URLSearchParams({ store_id: params.storeId, start: params.start, end: params.end })
+  const q = new URLSearchParams({
+    store_id: params.storeId,
+    start: params.start,
+    end: params.end,
+  })
   if (params.customerId) q.set('customer_id', params.customerId)
   if (params.productId) q.set('product_id', params.productId)
   if (params.docType) q.set('doc_type', params.docType)
@@ -490,7 +371,7 @@ export async function listEmailOutbox(): Promise<EmailDelivery[]> {
   return http('/bi/email-outbox')
 }
 
-// --- Phase 6: Scheduling+ ----------------------------------------------------
+// --- Scheduling+ -----------------------------------------------------------
 
 export async function listShiftTemplates(): Promise<ShiftTemplate[]> {
   return http('/scheduling/templates')
@@ -509,7 +390,7 @@ export async function createShiftTemplate(body: {
 }
 
 export async function listStaffShifts(date: string): Promise<StaffShift[]> {
-  return http(`/scheduling/shifts?date=${date}`)
+  return http(`/scheduling/shifts?date=${encodeURIComponent(date)}`)
 }
 
 export async function createStaffShift(body: {
@@ -524,7 +405,7 @@ export async function createStaffShift(body: {
 }
 
 export async function setShiftStatus(id: string, status: string): Promise<StaffShift> {
-  return http(`/scheduling/shifts/${id}/status`, { status })
+  return http(`/scheduling/shifts/${encodeURIComponent(id)}/status`, { status })
 }
 
 export async function clockIn(staffId: string): Promise<TimeclockEntry> {
@@ -536,7 +417,7 @@ export async function clockOut(staffId: string): Promise<TimeclockEntry> {
 }
 
 export async function listTimeclock(date: string): Promise<TimeclockEntry[]> {
-  return http(`/scheduling/timeclock?date=${date}`)
+  return http(`/scheduling/timeclock?date=${encodeURIComponent(date)}`)
 }
 
 export async function getLaborForecast(params: {
@@ -551,5 +432,5 @@ export async function getLaborForecast(params: {
 }
 
 export async function getLaborCoverage(date: string): Promise<CoverageCheck> {
-  return http(`/scheduling/coverage?date=${date}`)
+  return http(`/scheduling/coverage?date=${encodeURIComponent(date)}`)
 }

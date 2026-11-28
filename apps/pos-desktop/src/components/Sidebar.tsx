@@ -13,11 +13,17 @@ const GROUPS: { title: string; items: { name: string; badge?: string }[] }[] = [
   },
   {
     title: 'Inventory',
-    items: [{ name: 'Orders' }, { name: 'Transfers' }],
+    items: [{ name: 'Orders' }, { name: 'Transfers' }, { name: 'Counts' }],
   },
   {
     title: 'Store',
-    items: [{ name: 'Products' }, { name: 'Customers' }, { name: 'Vendors' }],
+    items: [
+      { name: 'Products' },
+      { name: 'Customers' },
+      { name: 'CRM' },
+      { name: 'Vendors' },
+      { name: 'Scheduling' },
+    ],
   },
   {
     title: 'Analytics',

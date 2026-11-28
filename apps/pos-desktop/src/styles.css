@@ -833,3 +833,14 @@ kbd { background: #eee; border: 1px solid #999; border-radius: 3px; padding: 0 5
 .screen-facts div { display: flex; flex-direction: column; gap: 1px; }
 .screen-facts dt { font-size: 0.8rem; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.03em; }
 .screen-facts dd { margin: 0; font-size: 1rem; }
+.screen-pre {
+  background: var(--field); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 6px; padding: 8px 10px; white-space: pre-wrap;
+  font-family: var(--font-mono); font-size: 0.82rem; max-height: 280px; overflow: auto; margin: 6px 0 0;
+}
+.screen-textarea {
+  background: var(--field); color: var(--ink); border: 1px solid var(--line-strong);
+  border-radius: 6px; padding: 6px 8px; font-family: var(--font-mono); font-size: 0.85rem;
+  width: 100%; min-height: 90px; resize: vertical;
+}
+

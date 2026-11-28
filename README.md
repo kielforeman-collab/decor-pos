@@ -297,37 +297,25 @@ Real, tested:
   `AccountingPlugin` trait and file-based CSV/IIF adapters. No
   live QuickBooks/Xero API — live sync is a Phase 4+ / vendor-pack
   concern.
-- `web-backoffice` — Phase 3 back-office web app
-  (`apps/web-backoffice/`, React 19 + TS + Vite on port 1421,
-  `/api` → `df-server edge` on 127.0.0.1:8080): nine tabs, all
-  calling the real edge API — Inventory browser (on-hand /
-  committed / on-order / in-transit + min/max editor),
-  Purchasing (replenishment suggestions from min/max + 30-day
-  velocity, PO create/receive), Transfers (draft → ship →
-  receive), Counts (scan/reconcile with variance table), Shelf
-  Tags (ZPL), Pricing (bulk matrix editor with min-margin
-  guardrail), AR (read-only summary/aging/collections). Phase 4
-  adds a CRM tab (activities, tickler, appointments, saved views,
-  lapsed report), a Delivery tab (dispatch board + assign + POD
-  status + packing slip), and an EDI view under Purchasing (PO
-  send, intake, three-way match, acks, price-application review,
-  transport records, catalog CSV import). Build verified (`tsc`
-  + Vite clean). No Tauri shell — web app only.
-- `pos-desktop` — Tauri 2 counter POS (`apps/pos-desktop/`):
-  React 19 + TypeScript + Vite frontend, complete and build-verified
-  (`tsc` + Vite clean): keyboard-first checkout, scan/entry,
-  matrix-priced totals, quotes, returns, holds, layaways, split
-  tender, tills + Z-report, mock/standalone provider selection,
-  receipt preview. The Rust backend (`PosApp`: in-process `Edge` +
-  capturing `MockPrinter` + provider switching + real `df-hw`
-  scanner command) compiles as a plain crate and is unit-tested.
-  **The native Tauri shell build is unverified in this VM**:
-  `libwebkit2gtk-4.1-dev` cannot be installed here (held broken
-  `libzstd` packages; see `apps/pos-desktop/README.md`), so the
-  served-frontend dev path (Vite → `df-server edge`) is the
-  verified way to run it; build the shell with
-  `cargo run -p pos-desktop --features tauri-shell` on a machine
-  with the Tauri 2 system libraries.
+- `pos-desktop` (unified counter POS & back-office,
+  `apps/pos-desktop/` — absorbed `apps/web-backoffice`): React 19 +
+  TypeScript + Vite + Tauri 2 shell on port 1420 (`/api` → `df-server
+  edge` on `127.0.0.1:8080`). Includes keyboard-first counter checkout
+  (scan/entry, matrix-priced totals, holds, quotes, returns, layaways,
+  split tender, tills + Z-report, tint formula tracking, receipt
+  preview) plus all back-office screens: Deliveries (dispatch board,
+  assign, packing slip, POD), Orders & EDI (replenishment, PO
+  create/receive, 850/855/3-way match, EDI intake, 832 review, catalog
+  CSV), Transfers, Physical Counts, Products (stock, reorder points,
+  `.xlsx`/`.csv` import, ZPL shelf tags, bulk matrix pricing rules),
+  Customers & AR, CRM (activities, tickler, appointments, saved views,
+  lapsed report), Vendors, Scheduling+, Dashboards, and Reports (daily
+  usage, low stock, PaintCare/Eco CSV, ad-hoc inquiry, email outbox).
+  The Rust backend (`PosApp`: in-process `Edge` + capturing
+  `MockPrinter` + provider switching + real `df-hw` scanner command)
+  compiles as a plain crate and is unit-tested; build the native shell
+  with `cargo run -p pos-desktop --features tauri-shell` on a machine
+  with Tauri 2 system libraries.
 
 Exit tests:
 

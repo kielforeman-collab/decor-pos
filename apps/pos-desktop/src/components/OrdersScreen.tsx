@@ -23,6 +23,7 @@ import {
   type SuggestedPurchaseOrder,
 } from '../api'
 import { cad, fmtMoney, fmtQty } from '../types'
+import EdiIntakePanel from './EdiIntakePanel'
 import { LineEditor, ProductPicker, newDraftLine, type DraftLine } from './ScreenBits'
 
 const PO_STATUS_LABELS: Record<string, string> = {
@@ -72,6 +73,7 @@ export default function OrdersScreen({
   const [ediAcks, setEdiAcks] = useState<PoAcknowledgmentRow[] | null>(null)
   const [match, setMatch] = useState<InvoiceMatchReport | null>(null)
   const [ediBusy, setEdiBusy] = useState(false)
+  const [showEdiIntake, setShowEdiIntake] = useState(false)
 
   const selected = pos.find((p) => p.id === selectedId) ?? null
 
@@ -288,6 +290,13 @@ export default function OrdersScreen({
             }}
           >
             {creating ? 'Close new order' : 'New purchase order'}
+          </button>
+          <button
+            type="button"
+            className="screen-btn"
+            onClick={() => setShowEdiIntake((v) => !v)}
+          >
+            {showEdiIntake ? 'Hide EDI intake' : 'EDI intake & 832'}
           </button>
           <button type="button" className="screen-btn" disabled={loading} onClick={() => void load()}>
             Refresh
@@ -623,6 +632,14 @@ export default function OrdersScreen({
           )}
         </div>
       </div>
+
+      {showEdiIntake && (
+        <EdiIntakePanel
+          selectedPoId={selected?.id ?? null}
+          defaultVendorId={selected?.vendor_id ?? knownVendors[0] ?? 'VENDOR1'}
+          onToast={onToast}
+        />
+      )}
     </section>
   )
 }
