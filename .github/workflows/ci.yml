@@ -11,7 +11,7 @@ env:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: groundbox-4vcpu
     steps:
       - uses: actions/checkout@v5
 
