@@ -489,3 +489,17 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ Native Tauri `--features tauri-shell` dry-run (`Release`, `platform=linux`, run `46160201614`): **`build-linux` passed in 2m52s** on `groundbox-8vcpu` (`.rpm` + `.AppImage` + `df-server` built and staged cleanly).
 ### GitHub
 - ✅ Pushed to `main`: `f90b585` (`feat(desktop): embedded loopback df-edge HTTP server for full native Tauri parity`).
+
+## Release v1.2.4 & GitHub Pages refresh — ✅ PUBLISHED Nov 28, 2026
+### Scope
+- ✅ Refreshed [`docs/index.html`](docs/index.html) (GitHub Pages at https://kielforeman-collab.github.io/decor-pos/) from stale `v1.0` docs to current `v1.2.4` installers, PostgreSQL HQ setup, Argon2id/RBAC/F8/F10 security summary, full env-var reference, and native desktop parity (`3b0c5fa`, `be63050`).
+- ✅ Version bump `1.2.3 → 1.2.4` across workspace `Cargo.toml` (+ `Cargo.lock`), `apps/pos-desktop`, `tauri.conf.json`, `df-api`, test assertions, `docs/self-hosting.md`, and `docs/index.html` (`be63050`), shipping **Native Desktop App Parity** (embedded loopback `df-edge` HTTP server + full 14-section RBAC parity) inside the downloadable Windows & Linux installers.
+### Verification
+- ✅ GitHub `CI` green on `be63050` (run `46161387382`, `check` in **1m30s** + all 4 frontends) and GitHub Pages deployed (`46161386844`, 25s).
+- ✅ Tagged release `v1.2.4` **PUBLISHED** (run `46161557459`: `build-linux` **2m54s**, `build-windows` **6m47s** warm cache, `publish` **14s**) — all 6 assets verified live at https://github.com/kielforeman-collab/decor-pos/releases/tag/v1.2.4:
+  - `Decor.POS_1.2.4_x64-setup.exe` (7.4 MB) — Windows NSIS installer
+  - `Decor.POS_1.2.4_x64_en-US.msi` (10.7 MB) — Windows MSI installer
+  - `df-server-v1.2.4-windows-x86_64.exe` (23.2 MB) — Windows server binary
+  - `Decor.POS-1.2.4-1.x86_64.rpm` (11.9 MB) — Linux RPM package
+  - `Decor.POS_1.2.4_amd64.AppImage` (89.4 MB) — Linux AppImage
+  - `df-server-v1.2.4-linux-x86_64` (28.4 MB) — Linux server binary
