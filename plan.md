@@ -303,19 +303,17 @@ only its own section, ticking items as they are verified — not when code merel
 - ✅ CI on `82a2967` passed (run `46120986250`, 2m44s — Rust `check` + all 4 frontend builds)
 - ✅ Version-asserting tests re-run green after the 1.2.2 bump: df-api lib 11/11, df-edge lib 22/22, df-server hq_mode 1/1, df-api phase7_http_auth 3/3, df-server postgres_hq_round_trip 4/4 (live leg skipped — no live Postgres in this VM)
 - ✅ `workflow_dispatch` dry-run of `release.yml` on `82a2967` **PASSED** (run `46120995977`: `build-linux` 7m6s, `build-windows` 23m39s; both `decor-pos-linux` and `decor-pos-windows` artifacts uploaded cleanly)
-- ✅ Tagged release `v1.2.2` **PUBLISHED** (run `46122843029`: `build-linux` 6m25s, `build-windows` 25m6s, `publish` 19s) — all 6 assets verified live on GitHub Release `v1.2.2`:
+- ✅ Tagged release `v1.2.2` **PUBLISHED** (re-tagged on `6b6bb73`, run `46130155428`: `build-linux` 7m42s, `build-windows` 22m12s, `publish` 13s; earlier `.deb` run `46122843029` superseded) — all 6 assets verified live on GitHub Release `v1.2.2`:
   - `Decor.POS_1.2.2_x64-setup.exe` (5.8 MB) — Windows NSIS installer
   - `Decor.POS_1.2.2_x64_en-US.msi` (8.3 MB) — Windows MSI installer
   - `df-server-v1.2.2-windows-x86_64.exe` (22.6 MB) — Windows server binary
-  - `Decor.POS_1.2.2_amd64.deb` (9.4 MB) — Linux Debian/Ubuntu package (before `.rpm` switch)
+  - `Decor.POS-1.2.2-1.x86_64.rpm` (9.4 MB) — Linux RPM package
   - `Decor.POS_1.2.2_amd64.AppImage` (87.3 MB) — Linux AppImage
   - `df-server-v1.2.2-linux-x86_64` (27.8 MB) — Linux server binary
-- ✅ Linux `.rpm` switch (`7fd897b`) verified via `workflow_dispatch` (`platform=linux`, run `46125808511`, 6m16s): `Decor POS-1.2.2-1.x86_64.rpm` (9.0 MB), `Decor POS_1.2.2_amd64.AppImage` (84 MB), `df-server-main-linux-x86_64` (27 MB) built and uploaded to `decor-pos-linux`.
 ### GitHub
 - ✅ Historical troubleshooting: Release #1 (`46107924150`) failed on Windows (no bash for `dtolnay/rust-toolchain`) and Linux (missing `bundle.icon` for AppImage); Release #2 (`46109942823`) & #3 (`46111316618`) passed Linux, failed Windows on `groundbox-windows-4vcpu` because `rustup` defaulted to `x86_64-pc-windows-gnu` without `dlltool.exe`.
-- ✅ Final fix committed & pushed in `82a2967`: switched `build-windows` to GitHub-hosted `windows-latest` + `dtolnay/rust-toolchain@stable` and added `icons/icon.ico`/`icons/icon.icns` to `tauri.conf.json`.
-- ✅ Release `v1.2.2` tagged at `82a2967` and published live: https://github.com/kielforeman-collab/decor-pos/releases/tag/v1.2.2
-- ✅ Linux bundle switched `.deb` → `.rpm` in `7fd897b`; verified `.rpm` artifact available on run https://github.com/kielforeman-collab/decor-pos/actions/runs/46125808511.
+- ✅ Fixes committed & pushed: `82a2967` switched `build-windows` to GitHub-hosted `windows-latest` + `dtolnay/rust-toolchain@stable` and added `icons/icon.ico`/`icons/icon.icns` to `tauri.conf.json`; `7fd897b` switched Linux bundle from `.deb` to `.rpm` (verified in run `46125808511`).
+- ✅ Release `v1.2.2` re-tagged at `6b6bb73` (CI run `46126461287` passed) and published live with `.rpm`: https://github.com/kielforeman-collab/decor-pos/releases/tag/v1.2.2
 ### Known limits
 - The release jobs do not re-run the test suite: a tag points at a main commit, and the check job runs on every push to main, so tagged code has already passed tests + clippy + fmt. A tag cut on a commit whose check run has not finished yet would ship untested code.
 - `df-server` is the only server binary in the release (edge + HQ modes in one binary); the mobile PWA / Tauri Mobile wrapper is not built here.
