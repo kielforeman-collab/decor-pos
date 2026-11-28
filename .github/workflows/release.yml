@@ -50,6 +50,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows
+
       - name: Install Node.js
         uses: actions/setup-node@v5
         with:
@@ -74,8 +79,10 @@ jobs:
       - name: Build desktop installers
         # --features tauri-shell: the plain build prints a message and
         # exits 2 without the shell feature. Bundles: NSIS .exe + WiX .msi.
+        # Quotes around "nsis,msi" are required in pwsh so PowerShell does not
+        # treat the comma as an array operator (which tauri.ps1 turns into "nsis msi").
         working-directory: apps/pos-desktop
-        run: tauri build --features tauri-shell --bundles nsis,msi
+        run: tauri build --features tauri-shell --bundles "nsis,msi"
 
       - name: Build server binary
         run: cargo build --release -p df-server
