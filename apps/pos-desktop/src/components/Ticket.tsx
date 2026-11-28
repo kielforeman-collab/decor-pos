@@ -1,4 +1,4 @@
-import { fmtMoney, cad, type CartLine, type PricePreview } from '../types'
+import { cad, discountedPrice, fmtMoney, mulDecimals, type CartLine, type PricePreview } from '../types'
 
 interface TicketProps {
   lines: CartLine[]
@@ -12,11 +12,10 @@ interface TicketProps {
 
 /** Line amount: the server preview is authoritative; before it
  * arrives the cell shows the discounted line amount as provisional. */
-function lineAmount(l: CartLine, preview: PricePreview | null): string {
-  const pv = preview?.lines.find((p) => p.product_id === l.product_id)
-  if (pv) return fmtMoney(pv.line_total)
-  const eff = Number(l.unit_price) * (1 - Math.min(90, Math.max(0, Number(l.discPct || '0'))) / 100)
-  return fmtMoney(cad((Number(l.qty || '0') * eff).toFixed(4)))
+function lineAmount(l: CartLine, index: number, preview: PricePreview | null): string {
+  const pv = preview?.lines[index]
+  if (pv && pv.product_id === l.product_id) return fmtMoney(pv.line_total)
+  return fmtMoney(cad(mulDecimals(discountedPrice(l.unit_price, l.discPct), l.qty || '0')))
 }
 
 export default function Ticket({ lines, preview, onQty, onDisc, onRemove, onTint, onClearTint }: TicketProps) {
@@ -46,7 +45,7 @@ export default function Ticket({ lines, preview, onQty, onDisc, onRemove, onTint
                 {l.sizeLabel && <span className="size-tag">{l.sizeLabel}</span>}
                 {l.tint && (
                   <span className="tint-line">
-                    <span className="swatch" style={{ background: '#3d4a57' }} aria-hidden="true" />
+                    <span className="swatch" style={{ background: l.tint.colorHex ?? '#888888' }} aria-hidden="true" />
                     TINT: {l.tint.colorName} {l.tint.colorCode} · {l.tint.base} ·{' '}
                     {l.tint.formula.length > 0
                       ? `Formula: ${l.tint.formula.map((f) => `${f.code} ${f.oz} oz`).join(', ')}`
@@ -100,7 +99,7 @@ export default function Ticket({ lines, preview, onQty, onDisc, onRemove, onTint
                 </span>
               </td>
               <td className="c-uom">{l.uom}</td>
-              <td className="c-amt">{lineAmount(l, preview)}</td>
+              <td className="c-amt">{lineAmount(l, i, preview)}</td>
               <td className="c-x">
                 <button type="button" aria-label={`Remove ${l.description}`} onClick={() => onRemove(l.key)}>✕</button>
               </td>

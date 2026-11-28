@@ -391,6 +391,7 @@ export interface TintFormulaEntry {
 export interface TintInfo {
   colorCode: string
   colorName: string
+  colorHex?: string | null
   base: string
   formula: TintColorantAmount[]
 }

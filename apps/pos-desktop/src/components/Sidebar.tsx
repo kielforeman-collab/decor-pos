@@ -9,7 +9,7 @@ interface SidebarProps {
 const GROUPS: { title: string; items: { name: string; badge?: string }[] }[] = [
   {
     title: 'Point of sale',
-    items: [{ name: 'Transactions' }, { name: 'Deliveries', badge: '2' }],
+    items: [{ name: 'Transactions' }, { name: 'Deliveries' }],
   },
   {
     title: 'Inventory',

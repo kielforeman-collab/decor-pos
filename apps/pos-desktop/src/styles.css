@@ -77,10 +77,16 @@
 }
 
 :root[data-theme="custom"] {
-  --bg: var(--custom-bg, #101826); --panel: var(--custom-bg, #101826); --panel-2: var(--custom-bg, #101826);
-  --ink: var(--custom-ink, #e8eef4); --ink-2: var(--custom-ink, #e8eef4); --ink-3: var(--custom-ink, #e8eef4);
-  --line: var(--custom-accent, #00d9ff); --line-strong: var(--custom-accent, #00d9ff);
-  --field: var(--custom-bg, #101826); --sel: var(--custom-accent, #00d9ff);
+  --bg: var(--custom-bg, #101826);
+  --panel: color-mix(in srgb, var(--custom-bg, #101826) 94%, var(--custom-ink, #e8eef4));
+  --panel-2: color-mix(in srgb, var(--custom-bg, #101826) 86%, var(--custom-ink, #e8eef4));
+  --ink: var(--custom-ink, #e8eef4);
+  --ink-2: color-mix(in srgb, var(--custom-ink, #e8eef4) 72%, var(--custom-bg, #101826));
+  --ink-3: color-mix(in srgb, var(--custom-ink, #e8eef4) 52%, var(--custom-bg, #101826));
+  --line: color-mix(in srgb, var(--custom-ink, #e8eef4) 22%, var(--custom-bg, #101826));
+  --line-strong: color-mix(in srgb, var(--custom-accent, #00d9ff) 65%, var(--custom-ink, #e8eef4));
+  --field: color-mix(in srgb, var(--custom-bg, #101826) 98%, var(--custom-ink, #e8eef4));
+  --sel: color-mix(in srgb, var(--custom-accent, #00d9ff) 24%, var(--custom-bg, #101826));
   --accent: var(--custom-accent, #00d9ff); --accent-ink: var(--custom-bg, #101826);
   --chip: var(--custom-accent, #00d9ff); --chip-ink: var(--custom-bg, #101826);
   --good: #34d399; --warn: #ffb020; --bad: #ff2e63;

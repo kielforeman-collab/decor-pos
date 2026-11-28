@@ -48,8 +48,8 @@ export default function TintModal({ line, customerId, onApply, onClose, onToast 
   const [query, setQuery] = useState('')
   const [colors, setColors] = useState<TintColorEntry[]>([])
   const [colorants, setColorants] = useState<TintColorantEntry[]>([])
-  const [picked, setPicked] = useState<TintColorEntry | { color_code: string; color_name: string; rgb_hex: string; recommended_base: string } | null>(
-    line.tint ? { color_code: line.tint.colorCode, color_name: line.tint.colorName, rgb_hex: null, recommended_base: line.tint.base } : null,
+  const [picked, setPicked] = useState<TintColorEntry | { color_code: string; color_name: string; rgb_hex: string | null; recommended_base: string } | null>(
+    line.tint ? { color_code: line.tint.colorCode, color_name: line.tint.colorName, rgb_hex: line.tint.colorHex ?? null, recommended_base: line.tint.base } : null,
   )
   const [ounces, setOunces] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {}
@@ -139,6 +139,7 @@ export default function TintModal({ line, customerId, onApply, onClose, onToast 
     const tint: TintInfo = {
       colorCode: picked.color_code,
       colorName: picked.color_name,
+      colorHex: picked.rgb_hex ?? null,
       base: base ?? 'Base 1',
       formula: pickedOunces,
     }

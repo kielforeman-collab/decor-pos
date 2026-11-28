@@ -17,7 +17,7 @@
 // Attention: New Catalog SKU. Prices arrive as strings like
 // "$39.34" — the "$" and commas are stripped before parsing.
 
-import * as XLSX from 'xlsx'
+import type { WorkSheet } from 'xlsx'
 import type { ProductImportRow } from './types'
 
 export interface PreviewRow {
@@ -96,7 +96,10 @@ export function validatePreviewRow(data: ProductImportRow): string | null {
   return null
 }
 
-function sheetToRows(sheet: XLSX.WorkSheet): ProductImportRow[] {
+function sheetToRows(
+  XLSX: typeof import('xlsx'),
+  sheet: WorkSheet,
+): ProductImportRow[] {
   const grid = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', raw: false })
   if (grid.length === 0) return []
   const header = (grid[0] as unknown[]).map((cell) => String(cell ?? '').trim().toLowerCase())
@@ -131,6 +134,7 @@ function sheetToRows(sheet: XLSX.WorkSheet): ProductImportRow[] {
  * "EXCEL" when present, else the first sheet.
  */
 export async function parseImportFile(file: File): Promise<ImportPreview> {
+  const XLSX = await import('xlsx')
   const isCsv = file.name.toLowerCase().endsWith('.csv')
   const workbook = isCsv
     ? XLSX.read(await file.text(), { type: 'string' })
@@ -139,7 +143,7 @@ export async function parseImportFile(file: File): Promise<ImportPreview> {
   if (!sheetName) return { rows: [], error: 'file has no sheets' }
   let parsed: ProductImportRow[]
   try {
-    parsed = sheetToRows(workbook.Sheets[sheetName])
+    parsed = sheetToRows(XLSX, workbook.Sheets[sheetName])
   } catch (e) {
     return { rows: [], error: e instanceof Error ? e.message : String(e) }
   }
