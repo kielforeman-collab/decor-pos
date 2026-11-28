@@ -336,3 +336,18 @@ only its own section, ticking items as they are verified — not when code merel
 ### GitHub
 - ✅ Pushed to `main`: `0f40ba8` (polish fixes + `.gitignore`) and `ff901ab` (default theme `mono`).
 
+## Backend monolith modularization — ✅ DONE Nov 27, 2026
+### Scope
+- ✅ `crates/df-edge/src/http.rs` (3,771 lines) → `crates/df-edge/src/http/`: split into `mod.rs` (router, WS, shared error/query helpers, public re-exports), `pos.rs`, `bi.rs`, `inventory.rs`, `crm.rs`, `delivery.rs`, `edi.rs`, `portal.rs`, `scheduling.rs`, `auth.rs`, and `tests.rs` (0 behavior change, all `df_edge::http::*` exports preserved).
+- ✅ `crates/df-edge/src/edge.rs` (1,965 lines) → `crates/df-edge/src/edge/`: split into `mod.rs` (`Edge` struct, init/config/pricing/serve/`test_support`), `checkout.rs`, `tills.rs`, `returns.rs`, `holds_quotes.rs`, and `sync.rs`.
+- ✅ `crates/df-api/src/lib.rs` (2,070 lines) → split into `lib.rs` (state, OpenAPI `ApiDoc`, router, re-exports), `schemas.rs`, `auth.rs`, `tinting.rs`, `reports.rs`, `reads.rs`, and `tests.rs` (all public exports and OpenAPI 3.1 paths preserved).
+- ✅ `crates/df-server/src/main.rs` (2,197 lines) → split into `main.rs` (dispatch + unit tests), `cli.rs`, `db.rs`, `hq.rs`, `edge.rs`, `ops.rs`, `edi.rs`, and `users.rs`.
+- ✅ Bonus Rust 1.100 clippy fix in `crates/df-db/src/vendors.rs`: replaced redundant closure with `crate::purchase_orders::po_from_row`.
+### Verification
+- ✅ `cargo fmt --all -- --check` — clean.
+- ✅ `cargo clippy --workspace --all-targets -- -D warnings` — clean across all workspace crates.
+- ✅ `cargo test -p df-api -p df-server -p df-edge` — **105 passed, 0 failed** across 27 test suites (incl. unit, HTTP auth/RBAC, checkout/tills/returns, EDI, CRM, POD, portal, scheduling, product import, first-admin setup, edge/HQ modes, and migrations).
+### GitHub
+- ✅ Pushed to `main` (see latest commit).
+
+

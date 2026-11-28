@@ -150,7 +150,7 @@ pub async fn list_purchase_orders_for_vendor(
             .fetch_all(pool)
             .await?;
     rows.iter()
-        .map(|row| crate::purchase_orders::po_from_row(row))
+        .map(crate::purchase_orders::po_from_row)
         .collect()
 }
 
